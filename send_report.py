@@ -38,7 +38,13 @@ INCLUDE_KEYWORDS = [
     "倉庫", "土地", "金利", "日銀", "利上げ", "利下げ", "為替", "円安", "円高",
     "原油", "エネルギー", "AI", "人工知能", "半導体", "中小企業", "経済", "投資",
     "DX", "自動化", "省人化", "ロボット", "住宅", "マンション", "オフィス",
-    "再開発", "インフレ", "物価", "サプライチェーン", "輸送", "運賃"
+    "再開発", "インフレ", "物価", "サプライチェーン", "輸送", "運賃",
+    "ホルムズ", "海運", "関税", "設備投資", "住宅着工"
+]
+
+PREFERRED_SOURCES = [
+    "Reuters", "Bloomberg", "日本経済新聞", "NHK", "共同通信", "時事通信",
+    "朝日新聞", "読売新聞", "毎日新聞", "産経新聞", "ITmedia", "Yahoo!ニュース"
 ]
 
 
@@ -66,49 +72,6 @@ def is_excluded(text: str) -> bool:
 
 def is_included(text: str) -> bool:
     return any(word in text for word in INCLUDE_KEYWORDS)
-
-
-def dedupe_news(items: List[Dict[str, str]]) -> List[Dict[str, str]]:
-    result = []
-
-    for item in items:
-        title = item.get("title", "")
-        link = item.get("link", "")
-        source = item.get("source", "")
-
-        duplicated = False
-
-        for kept in result:
-            kept_title = kept.get("title", "")
-
-            # 完全一致
-            if title == kept_title or link == kept.get("link", ""):
-                duplicated = True
-                break
-
-            # 同一テーマっぽいなら重複扱い
-            if is_same_topic(title, kept_title):
-                duplicated = True
-
-                # より信頼したい媒体を残したいならここで置換
-                preferred_sources = [
-                    "Reuters", "Bloomberg", "日本経済新聞", "NHK",
-                    "共同通信", "時事通信"
-                ]
-
-                kept_rank = preferred_sources.index(kept.get("source")) if kept.get("source") in preferred_sources else 999
-                new_rank = preferred_sources.index(source) if source in preferred_sources else 999
-
-                # 新しい方が優先媒体なら差し替え
-                if new_rank < kept_rank:
-                    kept.update(item)
-
-                break
-
-        if not duplicated:
-            result.append(item)
-
-    return result
 
 
 def normalize_star_line(line: str) -> str:
@@ -251,6 +214,106 @@ def fetch_article_text(url: str, timeout: int = 5) -> str:
 
 
 # =========================
+# 重複テーマ排除
+# =========================
+def normalize_title_for_grouping(title: str) -> str:
+    t = clean_text(title).lower()
+    t = re.sub(r"[【】\[\]（）()「」『』〈〉<>]", " ", t)
+    t = re.sub(r"[!！?？:：/／|｜・,，。.．\-—]", " ", t)
+    t = re.sub(r"\d+", " ", t)
+    t = re.sub(r"\s+", " ", t).strip()
+
+    stopwords = [
+        "速報", "続報", "詳報", "解説", "最新", "映像", "動画",
+        "写真", "まとめ", "について", "に関する", "を受け", "受けて",
+        "発表", "表明", "へ", "で", "が", "を", "に", "は", "と", "の"
+    ]
+    for w in stopwords:
+        t = t.replace(w, " ")
+
+    t = re.sub(r"\s+", " ", t).strip()
+    return t
+
+
+def title_token_set(title: str) -> set:
+    t = normalize_title_for_grouping(title)
+    tokens = [x for x in re.split(r"\s+", t) if len(x) >= 2]
+    return set(tokens)
+
+
+def is_same_topic(title1: str, title2: str) -> bool:
+    n1 = normalize_title_for_grouping(title1)
+    n2 = normalize_title_for_grouping(title2)
+
+    if not n1 or not n2:
+        return False
+
+    if n1 == n2:
+        return True
+
+    if n1 in n2 or n2 in n1:
+        shorter = min(len(n1), len(n2))
+        longer = max(len(n1), len(n2))
+        if longer > 0 and shorter / longer >= 0.7:
+            return True
+
+    s1 = title_token_set(title1)
+    s2 = title_token_set(title2)
+
+    if not s1 or not s2:
+        return False
+
+    overlap = len(s1 & s2)
+    base = min(len(s1), len(s2))
+
+    if base >= 2 and overlap / base >= 0.7:
+        return True
+
+    return False
+
+
+def source_rank(source: str) -> int:
+    return PREFERRED_SOURCES.index(source) if source in PREFERRED_SOURCES else 999
+
+
+def dedupe_news(items: List[Dict[str, str]]) -> List[Dict[str, str]]:
+    result: List[Dict[str, str]] = []
+
+    for item in items:
+        title = item.get("title", "")
+        link = item.get("link", "")
+        source = item.get("source", "")
+
+        duplicated = False
+
+        for kept in result:
+            kept_title = kept.get("title", "")
+            kept_link = kept.get("link", "")
+            kept_source = kept.get("source", "")
+
+            if title == kept_title or link == kept_link:
+                duplicated = True
+                break
+
+            if is_same_topic(title, kept_title):
+                duplicated = True
+
+                if source_rank(source) < source_rank(kept_source):
+                    kept.update(item)
+                elif source_rank(source) == source_rank(kept_source):
+                    new_body_len = len(item.get("summary", "") or item.get("article_text", ""))
+                    kept_body_len = len(kept.get("summary", "") or kept.get("article_text", ""))
+                    if new_body_len > kept_body_len:
+                        kept.update(item)
+                break
+
+        if not duplicated:
+            result.append(item)
+
+    return result
+
+
+# =========================
 # ニュース取得
 # =========================
 def fetch_news(max_items: int = MAX_ITEMS) -> List[Dict[str, str]]:
@@ -292,8 +355,7 @@ def fetch_news(max_items: int = MAX_ITEMS) -> List[Dict[str, str]]:
             "article_text": article_text
         })
 
-        # 多めに見てから最後に切る
-        if len(picked) >= max_items * 3:
+        if len(picked) >= max_items * 4:
             break
 
     picked = dedupe_news(picked)
@@ -367,6 +429,7 @@ def analyze_news_once(news_items: List[Dict[str, str]]) -> Dict[str, List[str]]:
 - "impact": 配列、最大5件
 - summary は1行で簡潔に
 - impact は各要素の先頭を ★ / ★★ / ★★★ のいずれかにする
+- 重複内容はなるべくまとめる
 - 誇張禁止
 - 不明なことは断定しない
 - 日本語で返す
