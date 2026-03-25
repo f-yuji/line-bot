@@ -1,8 +1,8 @@
 import requests
 from datetime import datetime
+import os
 
-TOKEN = "u12XtAVzJrnASMwApFDIK53jJOORcLJKjA0zZwfGIgU77XSSHqJWA1IKKfzAoYxm0++FKe0I5WyXRLE3nxi8DAvYwDzylr8AFTS/jVYUxhePTRKYbOlM6qKydzEC3IWAvs6TIeQ5B9hJQUtG9JBlnAdB04t89/1O/w1cDnyilFU=" \
-""
+TOKEN = os.environ["LINE_TOKEN"]" \
 
 url = "https://api.line.me/v2/bot/message/broadcast"
 

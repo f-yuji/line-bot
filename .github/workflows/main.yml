@@ -24,3 +24,5 @@ jobs:
 
       - name: 実行
         run: python test_line.py
+        env:
+         LINE_TOKEN: ${{ secrets.LINE_TOKEN }}
