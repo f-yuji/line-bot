@@ -1,9 +1,7 @@
 name: LINE Bot Auto
 
 on:
-  push:
-    branches:
-      - main
+
   schedule:
     - cron: '0 21 * * *'  # 日本時間6時
     - cron: '0 10 * * *'  # 日本時間19時
