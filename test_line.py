@@ -2,7 +2,7 @@ import requests
 from datetime import datetime
 import os
 
-TOKEN = os.environ["LINE_TOKEN"]" \
+TOKEN = os.environ["LINE_TOKEN"]
 
 url = "https://api.line.me/v2/bot/message/broadcast"
 
