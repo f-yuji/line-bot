@@ -368,28 +368,34 @@ def analyze(news: List[Dict[str, str]]) -> Dict[str, List[str]]:
 def build_messages(news: List[Dict[str, str]]) -> List[str]:
     a = analyze(news)
 
-    summary_text = "\n".join([
-        f"{i+1}. {x}" for i, x in enumerate(a["summary"])
-    ])
-
     if not news:
-        detail_text = "該当ニュースなし"
+        main_text = "該当ニュースなし"
     else:
-        detail_text = "\n\n".join([
-            f"{i+1}. {n['title']}\n[{n['source']}]\n{n.get('short_link') or n['link']}"
-            for i, n in enumerate(news)
-        ])
+        lines = []
+
+        for i, (s, n) in enumerate(zip(a["summary"], news)):
+            source = n.get("source", "不明")
+            url = n.get("short_link") or n.get("link")
+
+            block = f"""{i+1}. {s}
+[{source}]
+{url}"""
+
+            lines.append(block)
+
+        main_text = "\n\n".join(lines)
 
     impact_text = "\n\n".join(a["impact"])
 
-    msg1 = f"""【ニュース要約】
-{summary_text}
+    msg1 = f"""【ニュース】
 
---- 詳細 ---
-{detail_text}
+{main_text}
 """
 
-    msg2 = f"""--- お前にとってはこんな影響がある ---
+    msg2 = f"""
+
+--- お前にとってはこんな影響 ---
+
 {impact_text}
 """
 
