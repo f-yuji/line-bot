@@ -5,7 +5,8 @@ on:
     branches:
       - main
   schedule:
-    - cron: '2,7,12,17,22,27,32,37,42,47,52,57 * * * *'
+    - cron: '0 21 * * *'  # 日本時間6時
+    - cron: '0 10 * * *'  # 日本時間19時
   workflow_dispatch:
 
 jobs:
