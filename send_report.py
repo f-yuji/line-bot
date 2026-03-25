@@ -4,6 +4,7 @@ import re
 import hashlib
 from pathlib import Path
 from typing import List, Dict, Any
+from urllib.parse import urlparse
 
 import feedparser
 import requests
@@ -21,8 +22,8 @@ RSS_URL = "https://news.google.com/rss?hl=ja&gl=JP&ceid=JP:ja"
 
 # ========= 設定 =========
 MAX_ITEMS = 5
-LINE_MAX_MESSAGE_OBJECTS = 5   # LINE公式: 1リクエスト最大5 message objects
-LINE_TEXT_SAFE_LIMIT = 4500    # 安全側
+LINE_MAX_MESSAGE_OBJECTS = 5
+LINE_TEXT_SAFE_LIMIT = 4500
 CACHE_DIR = Path("./cache")
 CACHE_DIR.mkdir(exist_ok=True)
 
@@ -84,6 +85,19 @@ def normalize_star_line(line: str) -> str:
     return "★ " + s
 
 
+def impact_priority(line: str) -> int:
+    line = clean_text(line)
+    if line.startswith("★★★"):
+        return 0
+    if line.startswith("★★"):
+        return 1
+    return 2
+
+
+def sort_impact_lines(lines: List[str]) -> List[str]:
+    return sorted(lines, key=impact_priority)
+
+
 def sha256_text(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
@@ -96,7 +110,6 @@ def chunk_text(text: str, limit: int = LINE_TEXT_SAFE_LIMIT) -> List[str]:
     chunks = []
     current = ""
 
-    # 段落単位でなるべく分割
     for block in text.split("\n\n"):
         block = block.strip()
         if not block:
@@ -113,7 +126,6 @@ def chunk_text(text: str, limit: int = LINE_TEXT_SAFE_LIMIT) -> List[str]:
     if current:
         chunks.append(current)
 
-    # それでも長い塊は強制切断
     final_chunks = []
     for c in chunks:
         while len(c) > limit:
@@ -123,6 +135,63 @@ def chunk_text(text: str, limit: int = LINE_TEXT_SAFE_LIMIT) -> List[str]:
             final_chunks.append(c)
 
     return final_chunks
+
+
+def extract_source_name_from_google_news_link(url: str) -> str:
+    try:
+        parsed = urlparse(url)
+        host = (parsed.netloc or "").lower()
+
+        if "nikkei.com" in host:
+            return "日本経済新聞"
+        if "reuters.com" in host:
+            return "Reuters"
+        if "bloomberg.co.jp" in host or "bloomberg.com" in host:
+            return "Bloomberg"
+        if "itmedia.co.jp" in host:
+            return "ITmedia"
+        if "asahi.com" in host:
+            return "朝日新聞"
+        if "yomiuri.co.jp" in host:
+            return "読売新聞"
+        if "mainichi.jp" in host:
+            return "毎日新聞"
+        if "sankei.com" in host:
+            return "産経新聞"
+        if "nhk.or.jp" in host:
+            return "NHK"
+        if "jiji.com" in host:
+            return "時事通信"
+        if "kyodonews.jp" in host:
+            return "共同通信"
+        if "news.yahoo.co.jp" in host:
+            return "Yahoo!ニュース"
+        if "news.google.com" in host:
+            return "Google News"
+        if host.startswith("www."):
+            host = host[4:]
+        return host or "不明"
+    except Exception:
+        return "不明"
+
+
+def shorten_url(url: str, timeout: int = 10) -> str:
+    """
+    is.gd で短縮。失敗したら元URL返す。
+    """
+    try:
+        res = requests.get(
+            "https://is.gd/create.php",
+            params={"format": "simple", "url": url},
+            timeout=timeout
+        )
+        if res.status_code == 200:
+            short_url = res.text.strip()
+            if short_url.startswith("http"):
+                return short_url
+    except Exception:
+        pass
+    return url
 
 
 # =========================
@@ -143,9 +212,16 @@ def fetch_news(max_items: int = MAX_ITEMS) -> List[Dict[str, str]]:
         if not is_included(title):
             continue
 
-        picked.append({"title": title, "link": link})
+        source = extract_source_name_from_google_news_link(link)
+        short_link = shorten_url(link)
 
-        # 少し多めに拾ってから重複排除
+        picked.append({
+            "title": title,
+            "link": link,
+            "short_link": short_link,
+            "source": source
+        })
+
         if len(picked) >= max_items * 2:
             break
 
@@ -160,9 +236,10 @@ def build_analysis_input(news_items: List[Dict[str, str]]) -> str:
     if not news_items:
         return "該当ニュースなし"
 
-    return "\n".join(
-        [f"{i+1}. {item['title']}\nURL: {item['link']}" for i, item in enumerate(news_items)]
-    )
+    return "\n".join([
+        f"{i+1}. {item['title']}\nソース: {item.get('source', '不明')}\nURL: {item['link']}"
+        for i, item in enumerate(news_items)
+    ])
 
 
 def get_cache_path(headlines_blob: str) -> Path:
@@ -212,7 +289,7 @@ def analyze_news_once(news_items: List[Dict[str, str]]) -> Dict[str, List[str]]:
 - "impact": 配列、最大5件
 - summary は1行で簡潔に
 - impact は各要素の先頭を ★ / ★★ / ★★★ のいずれかにする
-- 見出しとURLから合理的に言える範囲だけ
+- 見出しとソース情報から合理的に言える範囲だけ
 - 誇張禁止
 - 不明なことは断定しない
 - 日本語で返す
@@ -271,6 +348,7 @@ def analyze_news_once(news_items: List[Dict[str, str]]) -> Dict[str, List[str]]:
 
     summary = [clean_text(str(x).strip("・ ")) for x in summary if clean_text(str(x))]
     impact = [normalize_star_line(str(x)) for x in impact if clean_text(str(x))]
+    impact = sort_impact_lines(impact)
 
     if not summary:
         summary = ["該当なし"]
@@ -296,24 +374,30 @@ def build_messages(news_items: List[Dict[str, str]]) -> List[str]:
     if not news_items:
         detail_text = "該当ニュースなし"
     else:
-        detail_text = "\n\n".join([
-            f"{i+1}. {item['title']}\n{item['link']}"
-            for i, item in enumerate(news_items)
-        ])
+        detail_lines = []
+        for i, item in enumerate(news_items):
+            source = item.get("source", "不明")
+            url = item.get("short_link") or item.get("link")
+            detail_lines.append(
+                f"{i+1}. {item['title']}\n[{source}]\n{url}"
+            )
+        detail_text = "\n\n".join(detail_lines)
 
     impact_text = "\n".join(analysis["impact"])
 
-    blocks = [
-        f"""【ニュース要約】
-{summary_text}""",
-        f"""--- 詳細 ---
-{detail_text}""",
-        f"""--- お前にとってはこんな影響がある ---
-{impact_text}"""
-    ]
+    msg1 = f"""【ニュース要約】
+{summary_text}
+
+--- 詳細 ---
+{detail_text}
+"""
+
+    msg2 = f"""--- お前にとってはこんな影響がある ---
+{impact_text}
+"""
 
     messages: List[str] = []
-    for block in blocks:
+    for block in [msg1, msg2]:
         messages.extend(chunk_text(block, LINE_TEXT_SAFE_LIMIT))
 
     return messages[:LINE_MAX_MESSAGE_OBJECTS]
