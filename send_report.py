@@ -3,8 +3,12 @@ from datetime import datetime
 
 import feedparser
 import requests
+from openai import OpenAI
 
-TOKEN = os.environ["LINE_TOKEN"]
+LINE_TOKEN = os.environ["LINE_TOKEN"]
+OPENAI_API_KEY = os.environ["OPENAI_API_KEY"]
+
+client = OpenAI(api_key=OPENAI_API_KEY)
 
 LINE_URL = "https://api.line.me/v2/bot/message/broadcast"
 RSS_URL = "https://news.google.com/rss?hl=ja&gl=JP&ceid=JP:ja"
@@ -36,6 +40,7 @@ def fetch_news(max_items=5):
 
     for entry in feed.entries:
         title = entry.title.strip()
+        link = entry.link.strip()
 
         if is_excluded(title):
             continue
@@ -43,7 +48,10 @@ def fetch_news(max_items=5):
         if not is_included(title):
             continue
 
-        picked.append(title)
+        picked.append({
+            "title": title,
+            "link": link
+        })
 
         if len(picked) >= max_items:
             break
@@ -51,24 +59,61 @@ def fetch_news(max_items=5):
     return picked
 
 
+def summarize_news(news_items):
+    if not news_items:
+        return "要約対象ニュースなし"
+
+    headlines = "\n".join(
+        [f"{i+1}. {item['title']}" for i, item in enumerate(news_items)]
+    )
+
+    prompt = f"""
+以下は今日のニュース見出しです。
+ユーザーは、不動産・建設・資材価格・金利・AIに関心があります。
+
+やること:
+1. 全体を3〜5行で日本語要約
+2. 最後に「実務インパクト」を1〜2行で書く
+3. 芸能・感情表現・大げさな煽りは不要
+4. 端的に書く
+
+ニュース見出し:
+{headlines}
+"""
+
+    response = client.responses.create(
+        model="gpt-5.4",
+        input=prompt
+    )
+
+    return response.output_text.strip()
+
+
 def build_message(news_items):
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
 
     if not news_items:
-        body = "該当ニュースなし"
+        raw_news = "該当ニュースなし"
+        summary = "要約なし"
     else:
-        body = "\n".join([f"{i+1}. {n}" for i, n in enumerate(news_items)])
+        raw_news = "\n".join(
+            [f"{i+1}. {item['title']}\nURL: {item['link']}" for i, item in enumerate(news_items)]
+        )
+        summary = summarize_news(news_items)
 
     return f"""ニュースレポ {now}
 
 ■抽出結果
-{body}
+{raw_news}
+
+■AI要約
+{summary}
 """
 
 
 def send_line(message):
     headers = {
-        "Authorization": f"Bearer {TOKEN}",
+        "Authorization": f"Bearer {LINE_TOKEN}",
         "Content-Type": "application/json"
     }
 
@@ -81,7 +126,7 @@ def send_line(message):
         ]
     }
 
-    res = requests.post(LINE_URL, headers=headers, json=data)
+    res = requests.post(LINE_URL, headers=headers, json=data, timeout=30)
     print(res.status_code, res.text)
 
 

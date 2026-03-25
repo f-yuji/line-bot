@@ -26,3 +26,4 @@ jobs:
         run: python send_report.py
         env:
          LINE_TOKEN: ${{ secrets.LINE_TOKEN }}
+         OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
