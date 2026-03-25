@@ -16,7 +16,7 @@ client = OpenAI(api_key=OPENAI_API_KEY)
 LINE_URL = "https://api.line.me/v2/bot/message/broadcast"
 RSS_URL = "https://news.google.com/rss?hl=ja&gl=JP&ceid=JP:ja"
 
-MAX_ITEMS = 8
+MAX_ITEMS = 5
 LINE_MAX_MESSAGE_OBJECTS = 5
 LINE_TEXT_SAFE_LIMIT = 4500
 
