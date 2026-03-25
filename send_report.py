@@ -1,4 +1,5 @@
 import os
+import re
 from datetime import datetime
 
 import feedparser
@@ -16,21 +17,22 @@ RSS_URL = "https://news.google.com/rss?hl=ja&gl=JP&ceid=JP:ja"
 EXCLUDE_KEYWORDS = [
     "芸能", "女優", "俳優", "タレント", "アイドル", "結婚", "離婚", "熱愛",
     "不倫", "炎上", "スキャンダル", "逮捕", "グラビア", "ドラマ", "映画",
-    "歌手", "YouTuber", "ユーチューバー", "インフルエンサー"
+    "歌手", "YouTuber", "インフルエンサー"
 ]
 
 INCLUDE_KEYWORDS = [
     "不動産", "建設", "工事", "改修", "塗装", "防水", "資材", "物流",
     "倉庫", "土地", "金利", "日銀", "為替", "円安", "原油", "AI",
-    "人工知能", "半導体", "中小企業", "経済", "投資"
+    "人工知能", "半導体", "中小企業", "経済", "投資",
+    "DX", "自動化", "省人化", "ロボット"
 ]
 
 
-def is_excluded(title: str) -> bool:
+def is_excluded(title):
     return any(word in title for word in EXCLUDE_KEYWORDS)
 
 
-def is_included(title: str) -> bool:
+def is_included(title):
     return any(word in title for word in INCLUDE_KEYWORDS)
 
 
@@ -48,10 +50,7 @@ def fetch_news(max_items=5):
         if not is_included(title):
             continue
 
-        picked.append({
-            "title": title,
-            "link": link
-        })
+        picked.append({"title": title, "link": link})
 
         if len(picked) >= max_items:
             break
@@ -61,23 +60,20 @@ def fetch_news(max_items=5):
 
 def summarize_news(news_items):
     if not news_items:
-        return "要約対象ニュースなし"
+        return "・該当なし"
 
-    headlines = "\n".join(
-        [f"{i+1}. {item['title']}" for i, item in enumerate(news_items)]
-    )
+    headlines = "\n".join([item["title"] for item in news_items])
 
     prompt = f"""
-以下は今日のニュース見出しです。
-ユーザーは、不動産・建設・資材価格・金利・AIに関心があります。
+以下のニュースを要約しろ。
 
-やること:
-1. 全体を3〜5行で日本語要約
-2. 最後に「実務インパクト」を1〜2行で書く
-3. 芸能・感情表現・大げさな煽りは不要
-4. 端的に書く
+条件:
+・必ず箇条書き
+・5行以内
+・1行1トピック
+・無駄な説明禁止
 
-ニュース見出し:
+ニュース:
 {headlines}
 """
 
@@ -86,28 +82,87 @@ def summarize_news(news_items):
         input=prompt
     )
 
-    return response.output_text.strip()
+    text = response.output_text.strip()
+    lines = text.split("\n")
+
+    return "\n".join([f"・{l.strip('・ ')}" for l in lines if l.strip()])
+
+
+def analyze_impact(news_items):
+    if not news_items:
+        return "・影響なし"
+
+    headlines = "\n".join([item["title"] for item in news_items])
+
+    prompt = f"""
+以下のニュースから実務的な影響を抽出しろ。
+
+対象:
+・建設、改修、塗装、防水
+・建材、資材、物流
+・不動産投資
+
+観点:
+・建材価格、原油、物流
+・金利、為替、景気
+・AI、DX、自動化
+
+条件:
+・箇条書き
+・最大5行
+・行頭に★1〜3
+・具体的に書け
+
+ニュース:
+{headlines}
+"""
+
+    response = client.responses.create(
+        model="gpt-5.4",
+        input=prompt
+    )
+
+    text = response.output_text.strip()
+    lines = text.split("\n")
+
+    result = []
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+
+        line = re.sub(r"★1", "★", line)
+        line = re.sub(r"★2", "★★", line)
+        line = re.sub(r"★3", "★★★", line)
+
+        if not line.startswith("★"):
+            line = "★ " + line
+
+        result.append(line)
+
+    return "\n".join(result)
 
 
 def build_message(news_items):
-    now = datetime.now().strftime("%Y-%m-%d %H:%M")
-
     if not news_items:
         raw_news = "該当ニュースなし"
-        summary = "要約なし"
     else:
-        raw_news = "\n".join(
-            [f"{i+1}. {item['title']}\nURL: {item['link']}" for i, item in enumerate(news_items)]
-        )
-        summary = summarize_news(news_items)
+        raw_news = "\n\n".join([
+            f"{i+1}. {item['title']}\n{item['link']}"
+            for i, item in enumerate(news_items)
+        ])
 
-    return f"""ニュースレポ {now}
+    summary = summarize_news(news_items)
+    impact = analyze_impact(news_items)
 
-■抽出結果
+    return f"""【ニュース要約】
+{summary}
+
+--- 詳細 ---
 {raw_news}
 
-■AI要約
-{summary}
+--- 事業・投資への影響 ---
+{impact}
 """
 
 
