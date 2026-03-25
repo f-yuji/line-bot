@@ -4,7 +4,7 @@ on:
   schedule:
     - cron: '0 21 * * *'  # 日本時間6時
     - cron: '0 11 * * *'  # 日本時間20時
-    - cron: '*/10 * * * *'
+    - cron: '*/5 * * * *'
   workflow_dispatch:
 
 jobs:
