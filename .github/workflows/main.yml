@@ -23,6 +23,6 @@ jobs:
         run: pip install requests
 
       - name: 実行
-        run: python test_line.py
+        run: python send_report.py
         env:
          LINE_TOKEN: ${{ secrets.LINE_TOKEN }}
