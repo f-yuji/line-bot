@@ -69,14 +69,45 @@ def is_included(text: str) -> bool:
 
 
 def dedupe_news(items: List[Dict[str, str]]) -> List[Dict[str, str]]:
-    seen = set()
     result = []
+
     for item in items:
-        key = (item.get("title", ""), item.get("link", ""))
-        if key in seen:
-            continue
-        seen.add(key)
-        result.append(item)
+        title = item.get("title", "")
+        link = item.get("link", "")
+        source = item.get("source", "")
+
+        duplicated = False
+
+        for kept in result:
+            kept_title = kept.get("title", "")
+
+            # 完全一致
+            if title == kept_title or link == kept.get("link", ""):
+                duplicated = True
+                break
+
+            # 同一テーマっぽいなら重複扱い
+            if is_same_topic(title, kept_title):
+                duplicated = True
+
+                # より信頼したい媒体を残したいならここで置換
+                preferred_sources = [
+                    "Reuters", "Bloomberg", "日本経済新聞", "NHK",
+                    "共同通信", "時事通信"
+                ]
+
+                kept_rank = preferred_sources.index(kept.get("source")) if kept.get("source") in preferred_sources else 999
+                new_rank = preferred_sources.index(source) if source in preferred_sources else 999
+
+                # 新しい方が優先媒体なら差し替え
+                if new_rank < kept_rank:
+                    kept.update(item)
+
+                break
+
+        if not duplicated:
+            result.append(item)
+
     return result
 
 
