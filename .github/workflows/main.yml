@@ -1,10 +1,11 @@
 name: LINE Bot Auto
 
 on:
+  push:
+    branches:
+      - main
   schedule:
-    - cron: '0 21 * * *'  # 日本時間6時
-    - cron: '0 11 * * *'  # 日本時間20時
-    - cron: '*/5 * * * *'
+    - cron: '2,7,12,17,22,27,32,37,42,47,52,57 * * * *'
   workflow_dispatch:
 
 jobs:
@@ -26,5 +27,5 @@ jobs:
       - name: 実行
         run: python send_report.py
         env:
-         LINE_TOKEN: ${{ secrets.LINE_TOKEN }}
-         OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          LINE_TOKEN: ${{ secrets.LINE_TOKEN }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
