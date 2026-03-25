@@ -21,7 +21,7 @@ LINE_URL = "https://api.line.me/v2/bot/message/broadcast"
 RSS_URL = "https://news.google.com/rss?hl=ja&gl=JP&ceid=JP:ja"
 
 # ========= 設定 =========
-MAX_ITEMS = 5
+MAX_ITEMS = 8
 LINE_MAX_MESSAGE_OBJECTS = 5
 LINE_TEXT_SAFE_LIMIT = 4500
 CACHE_DIR = Path("./cache")
@@ -35,9 +35,10 @@ EXCLUDE_KEYWORDS = [
 
 INCLUDE_KEYWORDS = [
     "不動産", "建設", "工事", "改修", "塗装", "防水", "資材", "建材", "物流",
-    "倉庫", "土地", "金利", "日銀", "為替", "円安", "原油", "AI",
-    "人工知能", "半導体", "中小企業", "経済", "投資",
-    "DX", "自動化", "省人化", "ロボット"
+    "倉庫", "土地", "金利", "日銀", "利上げ", "利下げ", "為替", "円安", "円高",
+    "原油", "エネルギー", "AI", "人工知能", "半導体", "中小企業", "経済", "投資",
+    "DX", "自動化", "省人化", "ロボット", "住宅", "マンション", "オフィス",
+    "再開発", "インフレ", "物価", "サプライチェーン", "輸送", "運賃"
 ]
 
 
@@ -48,19 +49,30 @@ def clean_text(text: str) -> str:
     return re.sub(r"\s+", " ", (text or "")).strip()
 
 
-def is_excluded(title: str) -> bool:
-    return any(word in title for word in EXCLUDE_KEYWORDS)
+def strip_html(text: str) -> str:
+    text = text or ""
+    text = re.sub(r"<script.*?>.*?</script>", " ", text, flags=re.S | re.I)
+    text = re.sub(r"<style.*?>.*?</style>", " ", text, flags=re.S | re.I)
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = re.sub(r"&nbsp;", " ", text)
+    text = re.sub(r"&amp;", "&", text)
+    text = re.sub(r"\s+", " ", text)
+    return text.strip()
 
 
-def is_included(title: str) -> bool:
-    return any(word in title for word in INCLUDE_KEYWORDS)
+def is_excluded(text: str) -> bool:
+    return any(word in text for word in EXCLUDE_KEYWORDS)
+
+
+def is_included(text: str) -> bool:
+    return any(word in text for word in INCLUDE_KEYWORDS)
 
 
 def dedupe_news(items: List[Dict[str, str]]) -> List[Dict[str, str]]:
     seen = set()
     result = []
     for item in items:
-        key = (item["title"], item["link"])
+        key = (item.get("title", ""), item.get("link", ""))
         if key in seen:
             continue
         seen.add(key)
@@ -137,7 +149,7 @@ def chunk_text(text: str, limit: int = LINE_TEXT_SAFE_LIMIT) -> List[str]:
     return final_chunks
 
 
-def extract_source_name_from_google_news_link(url: str) -> str:
+def extract_source_name(url: str) -> str:
     try:
         parsed = urlparse(url)
         host = (parsed.netloc or "").lower()
@@ -176,9 +188,6 @@ def extract_source_name_from_google_news_link(url: str) -> str:
 
 
 def shorten_url(url: str, timeout: int = 10) -> str:
-    """
-    is.gd で短縮。失敗したら元URL返す。
-    """
     try:
         res = requests.get(
             "https://is.gd/create.php",
@@ -194,6 +203,22 @@ def shorten_url(url: str, timeout: int = 10) -> str:
     return url
 
 
+def fetch_article_text(url: str, timeout: int = 5) -> str:
+    try:
+        res = requests.get(
+            url,
+            timeout=timeout,
+            headers={"User-Agent": "Mozilla/5.0"}
+        )
+        if res.status_code != 200:
+            return ""
+
+        text = strip_html(res.text)
+        return text[:2000]
+    except Exception:
+        return ""
+
+
 # =========================
 # ニュース取得
 # =========================
@@ -204,25 +229,40 @@ def fetch_news(max_items: int = MAX_ITEMS) -> List[Dict[str, str]]:
     for entry in getattr(feed, "entries", []):
         title = clean_text(getattr(entry, "title", ""))
         link = clean_text(getattr(entry, "link", ""))
+        summary = strip_html(getattr(entry, "summary", ""))
 
         if not title or not link:
             continue
-        if is_excluded(title):
-            continue
-        if not is_included(title):
+
+        source = extract_source_name(link)
+        base_text = f"{title} {summary} {source}"
+
+        if is_excluded(base_text):
             continue
 
-        source = extract_source_name_from_google_news_link(link)
+        article_text = ""
+        if not is_included(base_text):
+            article_text = fetch_article_text(link)
+            if not article_text:
+                continue
+            if is_excluded(article_text):
+                continue
+            if not is_included(article_text):
+                continue
+
         short_link = shorten_url(link)
 
         picked.append({
             "title": title,
             "link": link,
             "short_link": short_link,
-            "source": source
+            "source": source,
+            "summary": summary,
+            "article_text": article_text
         })
 
-        if len(picked) >= max_items * 2:
+        # 多めに見てから最後に切る
+        if len(picked) >= max_items * 3:
             break
 
     picked = dedupe_news(picked)
@@ -236,10 +276,17 @@ def build_analysis_input(news_items: List[Dict[str, str]]) -> str:
     if not news_items:
         return "該当ニュースなし"
 
-    return "\n".join([
-        f"{i+1}. {item['title']}\nソース: {item.get('source', '不明')}\nURL: {item['link']}"
-        for i, item in enumerate(news_items)
-    ])
+    rows = []
+    for i, item in enumerate(news_items):
+        body = item.get("summary") or item.get("article_text") or ""
+        body = clean_text(body)[:300]
+        rows.append(
+            f"{i+1}. {item['title']}\n"
+            f"ソース: {item.get('source', '不明')}\n"
+            f"補足: {body}\n"
+            f"URL: {item['link']}"
+        )
+    return "\n\n".join(rows)
 
 
 def get_cache_path(headlines_blob: str) -> Path:
@@ -285,11 +332,10 @@ def analyze_news_once(news_items: List[Dict[str, str]]) -> Dict[str, List[str]]:
 【出力仕様】
 - JSONのみ
 - キーは "summary" と "impact"
-- "summary": 配列、最大5件
+- "summary": 配列、最大8件
 - "impact": 配列、最大5件
 - summary は1行で簡潔に
 - impact は各要素の先頭を ★ / ★★ / ★★★ のいずれかにする
-- 見出しとソース情報から合理的に言える範囲だけ
 - 誇張禁止
 - 不明なことは断定しない
 - 日本語で返す
@@ -314,7 +360,7 @@ def analyze_news_once(news_items: List[Dict[str, str]]) -> Dict[str, List[str]]:
                         "summary": {
                             "type": "array",
                             "items": {"type": "string"},
-                            "maxItems": 5
+                            "maxItems": 8
                         },
                         "impact": {
                             "type": "array",
@@ -356,7 +402,7 @@ def analyze_news_once(news_items: List[Dict[str, str]]) -> Dict[str, List[str]]:
         impact = ["★ 影響なし"]
 
     result = {
-        "summary": summary[:5],
+        "summary": summary[:8],
         "impact": impact[:5]
     }
     save_cached_analysis(headlines_blob, result)
@@ -378,9 +424,19 @@ def build_messages(news_items: List[Dict[str, str]]) -> List[str]:
         for i, item in enumerate(news_items):
             source = item.get("source", "不明")
             url = item.get("short_link") or item.get("link")
-            detail_lines.append(
-                f"{i+1}. {item['title']}\n[{source}]\n{url}"
-            )
+            body = item.get("summary") or item.get("article_text") or ""
+            body = clean_text(body)
+
+            if body:
+                body = body[:120] + ("..." if len(body) > 120 else "")
+                detail_lines.append(
+                    f"{i+1}. {item['title']}\n[{source}]\n{body}\n{url}"
+                )
+            else:
+                detail_lines.append(
+                    f"{i+1}. {item['title']}\n[{source}]\n{url}"
+                )
+
         detail_text = "\n\n".join(detail_lines)
 
     impact_text = "\n".join(analysis["impact"])
@@ -416,10 +472,7 @@ def send_line(messages: List[str]) -> None:
 
     payload = {
         "messages": [
-            {
-                "type": "text",
-                "text": msg
-            }
+            {"type": "text", "text": msg}
             for msg in messages
         ]
     }
