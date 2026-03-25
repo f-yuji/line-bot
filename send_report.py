@@ -394,7 +394,7 @@ def build_messages(news: List[Dict[str, str]]) -> List[str]:
 
     msg2 = f"""
 
---- お前にとってはこんな影響 ---
+--- こんな影響 ---
 
 {impact_text}
 """
