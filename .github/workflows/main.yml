@@ -3,7 +3,7 @@ name: LINE Bot Auto
 on:
   schedule:
     - cron: '0 21 * * *'  # 日本時間6時
-    - cron: '0 11 * * *'  # 日本時間19時
+    - cron: '0 11 * * *'  # 日本時間20時
   workflow_dispatch:
 
 jobs:
