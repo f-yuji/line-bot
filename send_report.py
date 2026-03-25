@@ -380,7 +380,7 @@ def build_messages(news: List[Dict[str, str]]) -> List[str]:
             for i, n in enumerate(news)
         ])
 
-    impact_text = "\n".join(a["impact"])
+    impact_text = "\n\n".join(a["impact"])
 
     msg1 = f"""【ニュース要約】
 {summary_text}
