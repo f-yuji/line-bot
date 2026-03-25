@@ -20,7 +20,7 @@ jobs:
           python-version: '3.12'
 
       - name: ライブラリ入れる
-        run: pip install requests
+        run: pip install -r requirements.txt
 
       - name: 実行
         run: python send_report.py
