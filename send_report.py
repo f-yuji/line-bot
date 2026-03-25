@@ -1,16 +1,13 @@
 import json
 import os
 import re
-import hashlib
-from pathlib import Path
-from typing import List, Dict, Any
+from typing import List, Dict
 from urllib.parse import urlparse
 
 import feedparser
 import requests
 from openai import OpenAI
 
-# ========= 環境変数 =========
 LINE_TOKEN = os.environ["LINE_TOKEN"]
 OPENAI_API_KEY = os.environ["OPENAI_API_KEY"]
 
@@ -19,12 +16,9 @@ client = OpenAI(api_key=OPENAI_API_KEY)
 LINE_URL = "https://api.line.me/v2/bot/message/broadcast"
 RSS_URL = "https://news.google.com/rss?hl=ja&gl=JP&ceid=JP:ja"
 
-# ========= 設定 =========
 MAX_ITEMS = 8
 LINE_MAX_MESSAGE_OBJECTS = 5
 LINE_TEXT_SAFE_LIMIT = 4500
-CACHE_DIR = Path("./cache")
-CACHE_DIR.mkdir(exist_ok=True)
 
 EXCLUDE_KEYWORDS = [
     "芸能", "女優", "俳優", "タレント", "アイドル", "結婚", "離婚", "熱愛",
@@ -41,23 +35,18 @@ INCLUDE_KEYWORDS = [
     "ホルムズ", "海運"
 ]
 
-PREFERRED_SOURCES = [
-    "Reuters", "Bloomberg", "日本経済新聞", "NHK", "共同通信", "時事通信"
-]
 
-
-# =========================
-# ユーティリティ
-# =========================
 def clean_text(text: str) -> str:
-    return re.sub(r"\s+", " ", (text or "")).strip()
+    return re.sub(r"\s+", " ", str(text or "")).strip()
 
 
 def strip_html(text: str) -> str:
-    text = text or ""
-    text = re.sub(r"<script.*?>.*?</script>", " ", text, flags=re.S)
-    text = re.sub(r"<style.*?>.*?</style>", " ", text, flags=re.S)
+    text = str(text or "")
+    text = re.sub(r"<script.*?>.*?</script>", " ", text, flags=re.S | re.I)
+    text = re.sub(r"<style.*?>.*?</style>", " ", text, flags=re.S | re.I)
     text = re.sub(r"<[^>]+>", " ", text)
+    text = re.sub(r"&nbsp;", " ", text)
+    text = re.sub(r"&amp;", "&", text)
     text = re.sub(r"\s+", " ", text)
     return text.strip()
 
@@ -72,12 +61,18 @@ def is_included(text: str) -> bool:
 
 def normalize_star_line(line: str) -> str:
     s = clean_text(line)
-    s = re.sub(r"^★1", "★", s)
-    s = re.sub(r"^★2", "★★", s)
-    s = re.sub(r"^★3", "★★★", s)
-    if not s.startswith("★"):
-        s = "★ " + s
-    return s
+    s = re.sub(r"^★1\b", "★", s)
+    s = re.sub(r"^★2\b", "★★", s)
+    s = re.sub(r"^★3\b", "★★★", s)
+
+    if s.startswith("★★★"):
+        return s if s.startswith("★★★ ") else s.replace("★★★", "★★★ ", 1)
+    if s.startswith("★★"):
+        return s if s.startswith("★★ ") else s.replace("★★", "★★ ", 1)
+    if s.startswith("★"):
+        return s if s.startswith("★ ") else s.replace("★", "★ ", 1)
+
+    return "★ " + s
 
 
 def impact_priority(line: str) -> int:
@@ -88,19 +83,43 @@ def impact_priority(line: str) -> int:
     return 2
 
 
-def sort_impact_lines(lines):
+def sort_impact_lines(lines: List[str]) -> List[str]:
     return sorted(lines, key=impact_priority)
 
 
-def chunk_text(text: str, limit: int = LINE_TEXT_SAFE_LIMIT):
+def chunk_text(text: str, limit: int = LINE_TEXT_SAFE_LIMIT) -> List[str]:
+    text = clean_text(text).replace(" --- ", "\n--- ")
     if len(text) <= limit:
         return [text]
 
     chunks = []
-    while text:
-        chunks.append(text[:limit])
-        text = text[limit:]
-    return chunks
+    current = ""
+
+    for block in text.split("\n\n"):
+        block = block.strip()
+        if not block:
+            continue
+
+        candidate = block if not current else current + "\n\n" + block
+        if len(candidate) <= limit:
+            current = candidate
+        else:
+            if current:
+                chunks.append(current)
+            current = block
+
+    if current:
+        chunks.append(current)
+
+    final_chunks = []
+    for c in chunks:
+        while len(c) > limit:
+            final_chunks.append(c[:limit])
+            c = c[limit:]
+        if c:
+            final_chunks.append(c)
+
+    return final_chunks
 
 
 def extract_source_name(url: str) -> str:
@@ -114,63 +133,133 @@ def extract_source_name(url: str) -> str:
             return "Bloomberg"
         if "nhk" in host:
             return "NHK"
-        return host.replace("www.", "")
-    except:
+        if "jiji" in host:
+            return "時事通信"
+        if "kyodonews" in host:
+            return "共同通信"
+        if "asahi" in host:
+            return "朝日新聞"
+        if "yomiuri" in host:
+            return "読売新聞"
+        if "mainichi" in host:
+            return "毎日新聞"
+        if "sankei" in host:
+            return "産経新聞"
+        if "itmedia" in host:
+            return "ITmedia"
+        return host.replace("www.", "") or "不明"
+    except Exception:
         return "不明"
 
 
 def fetch_article_text(url: str) -> str:
     try:
-        res = requests.get(url, timeout=5, headers={"User-Agent": "Mozilla"})
+        res = requests.get(
+            url,
+            timeout=5,
+            headers={"User-Agent": "Mozilla/5.0"}
+        )
         if res.status_code != 200:
             return ""
         return strip_html(res.text)[:1500]
-    except:
+    except Exception:
         return ""
 
 
-# =========================
-# 重複排除
-# =========================
-def is_same_topic(t1: str, t2: str) -> bool:
-    t1 = clean_text(t1)
-    t2 = clean_text(t2)
-    return t1[:20] == t2[:20]
+def normalize_title_for_grouping(title: str) -> str:
+    t = clean_text(title).lower()
+    t = re.sub(r"[【】\[\]（）()「」『』〈〉<>]", " ", t)
+    t = re.sub(r"[!！?？:：/／|｜・,，。.．\-—]", " ", t)
+    t = re.sub(r"\d+", " ", t)
+    t = re.sub(r"\s+", " ", t).strip()
+
+    stopwords = [
+        "速報", "続報", "詳報", "解説", "最新", "映像", "動画",
+        "写真", "まとめ", "について", "に関する", "を受け", "受けて",
+        "発表", "表明"
+    ]
+    for w in stopwords:
+        t = t.replace(w, " ")
+
+    t = re.sub(r"\s+", " ", t).strip()
+    return t
 
 
-def dedupe_news(items):
-    result = []
+def title_token_set(title: str) -> set:
+    t = normalize_title_for_grouping(title)
+    return {x for x in re.split(r"\s+", t) if len(x) >= 2}
+
+
+def is_same_topic(title1: str, title2: str) -> bool:
+    n1 = normalize_title_for_grouping(title1)
+    n2 = normalize_title_for_grouping(title2)
+
+    if not n1 or not n2:
+        return False
+
+    if n1 == n2:
+        return True
+
+    if n1 in n2 or n2 in n1:
+        shorter = min(len(n1), len(n2))
+        longer = max(len(n1), len(n2))
+        if longer > 0 and shorter / longer >= 0.7:
+            return True
+
+    s1 = title_token_set(title1)
+    s2 = title_token_set(title2)
+
+    if not s1 or not s2:
+        return False
+
+    overlap = len(s1 & s2)
+    base = min(len(s1), len(s2))
+    return base >= 2 and overlap / base >= 0.7
+
+
+def dedupe_news(items: List[Dict[str, str]]) -> List[Dict[str, str]]:
+    result: List[Dict[str, str]] = []
+
     for item in items:
-        dup = False
-        for r in result:
-            if is_same_topic(item["title"], r["title"]):
-                dup = True
+        duplicated = False
+        for kept in result:
+            if item["link"] == kept["link"]:
+                duplicated = True
                 break
-        if not dup:
+            if is_same_topic(item["title"], kept["title"]):
+                duplicated = True
+                break
+
+        if not duplicated:
             result.append(item)
+
     return result
 
 
-# =========================
-# ニュース取得
-# =========================
-def fetch_news():
+def fetch_news() -> List[Dict[str, str]]:
     feed = feedparser.parse(RSS_URL)
-    picked = []
+    picked: List[Dict[str, str]] = []
 
-    for entry in feed.entries:
-        title = clean_text(entry.title)
-        link = clean_text(entry.link)
+    for entry in getattr(feed, "entries", []):
+        title = clean_text(getattr(entry, "title", ""))
+        link = clean_text(getattr(entry, "link", ""))
         summary = strip_html(getattr(entry, "summary", ""))
 
-        text = f"{title} {summary}"
-
-        if is_excluded(text):
+        if not title or not link:
             continue
 
-        if not is_included(text):
+        base_text = f"{title} {summary}"
+
+        if is_excluded(base_text):
+            continue
+
+        if not is_included(base_text):
             article = fetch_article_text(link)
-            if not article or not is_included(article):
+            if not article:
+                continue
+            if is_excluded(article):
+                continue
+            if not is_included(article):
                 continue
 
         picked.append({
@@ -179,99 +268,129 @@ def fetch_news():
             "source": extract_source_name(link)
         })
 
-        if len(picked) >= MAX_ITEMS * 3:
+        if len(picked) >= MAX_ITEMS * 4:
             break
 
     picked = dedupe_news(picked)
     return picked[:MAX_ITEMS]
 
 
-# =========================
-# OpenAI
-# =========================
-def analyze(news):
+def analyze(news: List[Dict[str, str]]) -> Dict[str, List[str]]:
     if not news:
         return {"summary": ["該当なし"], "impact": ["★ 影響なし"]}
 
-    text = "\n".join([n["title"] for n in news])
+    text = "\n".join([f"{i+1}. {n['title']}" for i, n in enumerate(news)])
 
-    res = client.responses.create(
-        model="gpt-5.4",
-        input=f"""
-ニュースを要約しろ
+    prompt = f"""
+以下のニュースを実務向けに整理しろ。
+必ずJSONのみで返すこと。
 
+条件:
+- summary は配列
+- impact は配列
+- summary はニュースごとの要点を簡潔に
+- impact は実務・投資への影響
+- impact の各要素は ★ / ★★ / ★★★ のいずれかで始める
+- 不明なことは断定しない
+
+ニュース:
 {text}
 
-JSONで:
-summary: 要約
-impact: 影響
+返却形式:
+{{
+  "summary": ["...", "..."],
+  "impact": ["★★ ...", "★ ..."]
+}}
 """
-    )
 
     try:
-        data = json.loads(res.output_text)
-    except:
-        return {"summary": ["失敗"], "impact": ["★ 失敗"]}
+        res = client.responses.create(
+            model="gpt-5.4",
+            input=prompt
+        )
+        raw = clean_text(res.output_text)
+        data = json.loads(raw)
+    except Exception:
+        return {"summary": ["要約取得失敗"], "impact": ["★ 影響分析取得失敗"]}
 
-    summary = [clean_text(x) for x in data.get("summary", [])]
-    impact = [normalize_star_line(x) for x in data.get("impact", [])]
+    summary = data.get("summary", [])
+    impact = data.get("impact", [])
+
+    if isinstance(summary, str):
+        summary = [summary]
+    if isinstance(impact, str):
+        impact = [impact]
+
+    if not isinstance(summary, list):
+        summary = [str(summary)]
+    if not isinstance(impact, list):
+        impact = [str(impact)]
+
+    summary = [clean_text(x) for x in summary if clean_text(x)]
+    impact = [normalize_star_line(x) for x in impact if clean_text(x)]
+    impact = sort_impact_lines(impact)
+
+    if not summary:
+        summary = ["該当なし"]
+    if not impact:
+        impact = ["★ 影響なし"]
 
     return {
-        "summary": summary,
-        "impact": sort_impact_lines(impact)
+        "summary": summary[:MAX_ITEMS],
+        "impact": impact[:5]
     }
 
 
-# =========================
-# メッセージ
-# =========================
-def build_messages(news):
+def build_messages(news: List[Dict[str, str]]) -> List[str]:
     a = analyze(news)
 
-    summary = "\n".join([f"{i+1}. {x}" for i, x in enumerate(a["summary"])])
-
-    detail = "\n\n".join([
-        f"{i+1}. {n['title']}\n[{n['source']}]\n{n['link']}"
-        for i, n in enumerate(news)
+    summary_text = "\n".join([
+        f"{i+1}. {x}" for i, x in enumerate(a["summary"])
     ])
 
-    impact = "\n".join(a["impact"])
+    if not news:
+        detail_text = "該当ニュースなし"
+    else:
+        detail_text = "\n\n".join([
+            f"{i+1}. {n['title']}\n[{n['source']}]\n{n['link']}"
+            for i, n in enumerate(news)
+        ])
+
+    impact_text = "\n".join(a["impact"])
 
     msg1 = f"""【ニュース要約】
-{summary}
+{summary_text}
 
 --- 詳細 ---
-{detail}
+{detail_text}
 """
 
     msg2 = f"""--- お前にとってはこんな影響がある ---
-{impact}
+{impact_text}
 """
 
-    messages = []
+    messages: List[str] = []
     for m in [msg1, msg2]:
-        messages += chunk_text(m)
+        messages.extend(chunk_text(m))
 
     return messages[:LINE_MAX_MESSAGE_OBJECTS]
 
 
-# =========================
-# LINE送信
-# =========================
-def send(messages):
-    requests.post(
+def send(messages: List[str]) -> None:
+    res = requests.post(
         LINE_URL,
         headers={
             "Authorization": f"Bearer {LINE_TOKEN}",
             "Content-Type": "application/json"
         },
-        json={"messages": [{"type": "text", "text": m} for m in messages]}
+        json={"messages": [{"type": "text", "text": m} for m in messages]},
+        timeout=30
     )
+    print("LINE status:", res.status_code)
+    print("LINE response:", res.text)
+    res.raise_for_status()
 
 
-# =========================
-# 実行
-# =========================
 if __name__ == "__main__":
     news = fetch_news()
     msgs = build_messages(news)
