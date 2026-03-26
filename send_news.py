@@ -1,276 +1,208 @@
 import json
 import os
-from pathlib import Path
+import re
+from typing import List, Dict, Any
+from urllib.parse import urlparse
 
+import feedparser
+import requests
 from dotenv import load_dotenv
-from flask import Flask, request, abort
-
-from linebot.v3 import WebhookHandler
-from linebot.v3.exceptions import InvalidSignatureError
-from linebot.v3.messaging import (
-    ApiClient,
-    Configuration,
-    MessagingApi,
-    ReplyMessageRequest,
-    TextMessage,
-)
-from linebot.v3.webhooks import FollowEvent, MessageEvent, TextMessageContent
+from openai import OpenAI
 
 load_dotenv()
 
 LINE_CHANNEL_ACCESS_TOKEN = os.environ["LINE_CHANNEL_ACCESS_TOKEN"]
-LINE_CHANNEL_SECRET = os.environ["LINE_CHANNEL_SECRET"]
+OPENAI_API_KEY = os.environ["OPENAI_API_KEY"]
 
-app = Flask(__name__)
+client = OpenAI(api_key=OPENAI_API_KEY)
 
-configuration = Configuration(access_token=LINE_CHANNEL_ACCESS_TOKEN)
-handler = WebhookHandler(LINE_CHANNEL_SECRET)
+LINE_URL = "https://api.line.me/v2/bot/message/push"
+RSS_URL = "https://news.google.com/rss?hl=ja&gl=JP&ceid=JP:ja"
 
-USER_SETTINGS_PATH = Path("user_settings.json")
+MAX_FETCH_ITEMS = 40
+DEFAULT_MAX_ITEMS = 5
+LINE_MAX_MESSAGE_OBJECTS = 5
+LINE_TEXT_SAFE_LIMIT = 4500
 
-ALLOWED_GENRES = {
-    "ai": "ai",
-    "人工知能": "ai",
-    "economy": "economy",
-    "経済": "economy",
-    "sports": "sports",
-    "スポーツ": "sports",
-    "construction": "construction",
-    "建設": "construction",
-    "real_estate": "real_estate",
-    "不動産": "real_estate",
-    "interest_rates": "interest_rates",
-    "金利": "interest_rates",
-    "energy": "energy",
-    "エネルギー": "energy",
-    "business": "business",
-    "ビジネス": "business",
-    "tech": "tech",
-    "テック": "tech",
+EXCLUDE_KEYWORDS = [
+    "芸能", "女優", "俳優", "アイドル", "不倫", "炎上"
+]
+
+GENRE_KEYWORDS = {
+    "real_estate": ["不動産", "土地", "賃貸", "地価"],
+    "construction": ["建設", "工事", "建材", "施工"],
+    "interest_rates": ["金利", "日銀", "利上げ", "利下げ"],
+    "energy": ["原油", "電力", "ガス"],
+    "ai": ["AI", "人工知能", "半導体", "生成AI"],
+    "sports": ["野球", "サッカー", "試合"],
+    "economy": ["経済", "株価", "インフレ"],
 }
 
+# =========================
+# ユーティリティ
+# =========================
 
-def load_settings() -> dict:
-    if not USER_SETTINGS_PATH.exists():
-        return {"users": {}}
-    with open(USER_SETTINGS_PATH, "r", encoding="utf-8") as f:
-        return json.load(f)
+def clean_text(text: str) -> str:
+    return re.sub(r"\s+", " ", str(text or "")).strip()
 
+def strip_html(text: str) -> str:
+    return re.sub(r"<[^>]+>", " ", str(text or "")).strip()
 
-def save_settings(data: dict) -> None:
-    with open(USER_SETTINGS_PATH, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+def extract_source_name(url: str) -> str:
+    try:
+        host = urlparse(url).netloc.lower()
+        if "nikkei" in host:
+            return "日経"
+        if "nhk" in host:
+            return "NHK"
+        return host
+    except:
+        return "不明"
 
-    print("saved file:", USER_SETTINGS_PATH.resolve())
-    print("saved users:", list(data.get("users", {}).keys()))
-
-
-def ensure_user_exists(user_id: str) -> dict:
-    data = load_settings()
-    users = data.setdefault("users", {})
-
-    if user_id not in users:
-        users[user_id] = {
-            "name": "user",
-            "plan": "free",
-            "active": True,
-            "genres": [],
-            "max_items": 3,
-        }
-        save_settings(data)
-        print("new user:", user_id)
-    else:
-        print("already exists:", user_id)
-
-    return users[user_id]
-
-
-def update_user(user_id: str, **kwargs) -> dict:
-    data = load_settings()
-    users = data.setdefault("users", {})
-
-    if user_id not in users:
-        users[user_id] = {
-            "name": "user",
-            "plan": "free",
-            "active": True,
-            "genres": [],
-            "max_items": 3,
-        }
-
-    users[user_id].update(kwargs)
-    save_settings(data)
-    print("updated user:", user_id, users[user_id])
-    return users[user_id]
-
-
-def get_user(user_id: str) -> dict:
-    data = load_settings()
-    return data.get("users", {}).get(user_id, {})
-
-
-def normalize_genres(raw_text: str) -> list[str]:
-    items = [x.strip().lower() for x in raw_text.split(",") if x.strip()]
-    result = []
-
-    for item in items:
-        if item in ALLOWED_GENRES:
-            result.append(ALLOWED_GENRES[item])
-
-    return list(dict.fromkeys(result))
-
-
-def plan_rules(plan: str) -> dict:
-    if plan == "free":
-        return {"max_items": 3, "max_genres": 0}
-    if plan == "light":
-        return {"max_items": 5, "max_genres": 2}
-    if plan == "premium":
-        return {"max_items": 8, "max_genres": 6}
-    return {"max_items": 3, "max_genres": 0}
-
-
-def reply_text(reply_token: str, text: str) -> None:
-    with ApiClient(configuration) as api_client:
-        api = MessagingApi(api_client)
-        api.reply_message(
-            ReplyMessageRequest(
-                reply_token=reply_token,
-                messages=[TextMessage(text=text)]
-            )
+def shorten_url(url: str) -> str:
+    try:
+        res = requests.get(
+            "https://is.gd/create.php",
+            params={"format": "simple", "url": url},
+            timeout=10
         )
+        return res.text.strip()
+    except:
+        return url
 
+def load_users():
+    with open("user_settings.json", "r", encoding="utf-8") as f:
+        return json.load(f).get("users", {})
 
-@app.route("/", methods=["GET"])
-def health():
-    return "OK", 200
+# =========================
+# ニュース取得
+# =========================
 
+def fetch_news():
+    feed = feedparser.parse(RSS_URL)
+    news = []
 
-@app.route("/callback", methods=["POST"])
-def callback():
-    signature = request.headers.get("X-Line-Signature")
-    body = request.get_data(as_text=True)
+    for entry in feed.entries[:MAX_FETCH_ITEMS]:
+        title = clean_text(entry.title)
+        link = entry.link
+        summary = strip_html(entry.summary)
 
-    print("callback hit")
-    print("body:", body[:500])
+        if any(word in title for word in EXCLUDE_KEYWORDS):
+            continue
+
+        news.append({
+            "title": title,
+            "link": link,
+            "summary": summary,
+            "source": extract_source_name(link),
+            "short_link": shorten_url(link)
+        })
+
+    return news
+
+# =========================
+# フィルタ
+# =========================
+
+def match_keywords(news, keywords):
+    text = news["title"] + news["summary"]
+    return any(k in text for k in keywords)
+
+def filter_news(news_list, user):
+    plan = user.get("plan", "free")
+    genres = user.get("genres", [])
+
+    if plan == "free":
+        return news_list[:3]
+
+    keywords = []
+    for g in genres:
+        keywords += GENRE_KEYWORDS.get(g, [])
+
+    if not keywords:
+        return news_list[:5]
+
+    matched = [n for n in news_list if match_keywords(n, keywords)]
+
+    return matched[:5] if matched else news_list[:3]
+
+# =========================
+# AI要約
+# =========================
+
+def summarize(news_list):
+    if not news_list:
+        return ["なし"], ["★ 影響なし"]
+
+    text = "\n".join([n["title"] for n in news_list])
+
+    prompt = f"""
+ニュース:
+{text}
+
+要約と影響をJSONで返せ
+"""
 
     try:
-        handler.handle(body, signature)
-    except InvalidSignatureError:
-        print("invalid signature")
-        abort(400)
-    except Exception as e:
-        print("callback error:", repr(e))
-        abort(500)
+        res = client.responses.create(
+            model="gpt-5",
+            input=prompt
+        )
+        data = json.loads(res.output_text)
+        return data["summary"], data["impact"]
+    except:
+        return ["要約失敗"], ["★ 影響不明"]
 
-    return "OK"
+# =========================
+# メッセージ作成
+# =========================
 
+def build_message(news, summary, impact, user):
+    lines = []
+    for i, n in enumerate(news):
+        s = summary[i] if i < len(summary) else n["title"]
+        lines.append(f"{i+1}. {s}\n{n['short_link']}")
 
-@handler.add(FollowEvent)
-def handle_follow(event):
-    user_id = event.source.user_id
-    print("follow event from:", user_id)
+    msg1 = "\n\n".join(lines)
+    msg2 = "\n\n".join(impact)
 
-    ensure_user_exists(user_id)
+    return [msg1, msg2]
 
-    reply_text(
-        event.reply_token,
-        "登録完了\n"
-        "現在は free プラン\n\n"
-        "使い方:\n"
-        "・プラン\n"
-        "・ジャンル\n"
-        "・ジャンル AI,経済\n"
-        "・停止\n"
-        "・再開"
+# =========================
+# LINE送信
+# =========================
+
+def send(user_id, messages):
+    requests.post(
+        LINE_URL,
+        headers={
+            "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}",
+            "Content-Type": "application/json"
+        },
+        json={
+            "to": user_id,
+            "messages": [{"type": "text", "text": m} for m in messages]
+        }
     )
 
+# =========================
+# 実行
+# =========================
 
-@handler.add(MessageEvent, message=TextMessageContent)
-def handle_message(event):
-    user_id = event.source.user_id
-    text = event.message.text.strip()
+def main():
+    users = load_users()
+    news = fetch_news()
 
-    print("message event from:", user_id, "text:", text)
+    for user_id, user in users.items():
+        if not user.get("active", True):
+            continue
 
-    user = ensure_user_exists(user_id)
-    plan = user.get("plan", "free")
-    rules = plan_rules(plan)
+        filtered = filter_news(news, user)
+        summary, impact = summarize(filtered)
+        messages = build_message(filtered, summary, impact, user)
 
-    if text == "登録":
-        ensure_user_exists(user_id)
-        reply_text(event.reply_token, "登録済み")
-        return
-
-    if text == "停止":
-        update_user(user_id, active=False)
-        reply_text(event.reply_token, "配信を停止した")
-        return
-
-    if text == "再開":
-        update_user(user_id, active=True)
-        reply_text(event.reply_token, "配信を再開した")
-        return
-
-    if text == "プラン":
-        current = get_user(user_id)
-        reply_text(
-            event.reply_token,
-            f"plan: {current.get('plan', 'free')}\n"
-            f"active: {current.get('active', True)}\n"
-            f"genres: {', '.join(current.get('genres', [])) or 'なし'}\n"
-            f"max_items: {current.get('max_items', 3)}"
-        )
-        return
-
-    if text == "ジャンル":
-        current = get_user(user_id)
-        current_genres = current.get("genres", [])
-        limit_text = "freeはジャンル指定不可" if rules["max_genres"] == 0 else f"最大{rules['max_genres']}個"
-        reply_text(
-            event.reply_token,
-            f"現在のジャンル: {', '.join(current_genres) or 'なし'}\n"
-            f"設定上限: {limit_text}\n\n"
-            f"例:\nジャンル AI,経済"
-        )
-        return
-
-    if text.startswith("ジャンル "):
-        raw = text.replace("ジャンル ", "", 1).strip()
-        genres = normalize_genres(raw)
-
-        if rules["max_genres"] == 0:
-            update_user(user_id, genres=[], max_items=rules["max_items"])
-            reply_text(
-                event.reply_token,
-                "freeプランはジャンル指定不可\n"
-                "有料化後に解放する設計でOK"
-            )
-            return
-
-        genres = genres[:rules["max_genres"]]
-        update_user(
-            user_id,
-            genres=genres,
-            max_items=rules["max_items"],
-        )
-        reply_text(
-            event.reply_token,
-            f"ジャンル更新: {', '.join(genres) or 'なし'}"
-        )
-        return
-
-    reply_text(
-        event.reply_token,
-        "使えるコマンド:\n"
-        "・プラン\n"
-        "・ジャンル\n"
-        "・ジャンル AI,経済\n"
-        "・停止\n"
-        "・再開"
-    )
-
+        send(user_id, messages)
+        print("sent:", user_id)
 
 if __name__ == "__main__":
-    port = int(os.getenv("PORT", "8000"))
-    app.run(host="0.0.0.0", port=port)
+    main()
