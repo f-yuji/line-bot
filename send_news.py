@@ -9,8 +9,19 @@ import feedparser
 import requests
 from dotenv import load_dotenv
 from openai import OpenAI
+from supabase import create_client
 
+# 環境変数読み込み（Renderなら無くてもOK）
 load_dotenv()
+
+# Supabase接続
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+
+supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+# OpenAIクライアント
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 # ─── ログ設定 ───
 logging.basicConfig(

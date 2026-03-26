@@ -5,6 +5,15 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 from flask import Flask, request, abort
+from supabase import create_client
+
+# ローカル用（RenderならなくてもOK）
+load_dotenv()
+
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+
+supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 from linebot.v3 import WebhookHandler
 from linebot.v3.exceptions import InvalidSignatureError
