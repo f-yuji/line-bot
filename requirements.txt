@@ -4,3 +4,4 @@ python-dotenv
 feedparser
 requests
 openai
+supabase
