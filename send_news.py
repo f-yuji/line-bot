@@ -277,32 +277,42 @@ def _fetch_single_rss(url: str, max_retries: int = 2) -> feedparser.FeedParserDi
 
 
 def fetch_news() -> List[Dict[str, str]]:
-    """複数RSSソースを順に試し、最初に成功したものを使う"""
-    feed = None
+    """複数RSSソースをすべて試し、成功したものをマージして返す"""
+    all_entries: List[Any] = []
 
     for rss_url in RSS_SOURCES:
         logger.info("RSSソース試行: %s", rss_url)
         result = _fetch_single_rss(rss_url)
         if result.entries:
-            logger.info("RSSソース成功: %s (%d件)", rss_url, len(result.entries))
-            feed = result
-            break
-        logger.warning("RSSソース失敗、次へ: %s", rss_url)
+            logger.info("RSSソース成功: url=%s entries=%d", rss_url, len(result.entries))
+            all_entries.extend(result.entries[:MAX_FETCH_ITEMS])
+        else:
+            logger.warning("RSSソース失敗: %s", rss_url)
 
-    if feed is None or not feed.entries:
+    if not all_entries:
         logger.error("全RSSソース失敗")
         return []
 
+    logger.info("マージ前記事数: %d件", len(all_entries))
+
     news = []
-    for entry in feed.entries[:MAX_FETCH_ITEMS]:
+    seen_links: set = set()
+    seen_titles: set = set()
+
+    for entry in all_entries:
         title = clean_text(entry.get("title", ""))
         link = entry.get("link", "")
         summary = strip_html(entry.get("summary", entry.get("description", "")))
 
         if not title or not link:
             continue
+        if link in seen_links or title in seen_titles:
+            continue
         if any(word in title for word in EXCLUDE_KEYWORDS):
             continue
+
+        seen_links.add(link)
+        seen_titles.add(title)
 
         article = {
             "title": title,
@@ -313,6 +323,7 @@ def fetch_news() -> List[Dict[str, str]]:
         article["category"] = classify_category(article)
         news.append(article)
 
+    logger.info("重複除外後記事数: %d件", len(news))
     logger.info("ニュース取得: %d件", len(news))
     return news
 

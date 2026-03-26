@@ -73,11 +73,8 @@ ALLOWED_GENRES = {
     "スポーツ": "sports",
     "sports": "sports",
 
-    "スキャンダル": "scandal",
-    "scandal": "scandal",
-
-    "芸能": "entertainment",
-    "entertainment": "entertainment",
+    "国際": "international",
+    "international": "international",
 }
 
 GENRE_LABELS = {
@@ -91,8 +88,7 @@ GENRE_LABELS = {
     "business": "ビジネス",
     "energy": "エネルギー",
     "sports": "スポーツ",
-    "scandal": "スキャンダル",
-    "entertainment": "芸能",
+    "international": "国際",
 }
 
 # テスト中はfreeでも選べるようにしておく
@@ -199,7 +195,7 @@ def handle_follow(event):
         "・ジャンル\n"
         "・ジャンル 不動産,建築,金利\n\n"
         "設定可能:\n"
-        "不動産, 建築, 金利, 資材, 経済, AI, テック, ビジネス, エネルギー, スポーツ, スキャンダル, 芸能"
+        "不動産, 建築, 金利, 資材, 経済, AI, テック, ビジネス, エネルギー, スポーツ, 国際"
     )
 
 
@@ -241,7 +237,7 @@ def handle_message(event):
         reply_text(
             event.reply_token,
             "設定可能ジャンル:\n"
-            "不動産, 建築, 金利, 資材, 経済, AI, テック, ビジネス, エネルギー, スポーツ, スキャンダル, 芸能\n\n"
+            "不動産, 建築, 金利, 資材, 経済, AI, テック, ビジネス, エネルギー, スポーツ, 国際\n\n"
             f"現在: {format_genres(genres)}\n\n"
             "例:\n"
             "ジャンル 不動産,建築,金利"
