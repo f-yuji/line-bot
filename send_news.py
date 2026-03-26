@@ -3,6 +3,7 @@ import logging
 import os
 import re
 import time
+from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Any
 from urllib.parse import urlparse
 
@@ -163,7 +164,8 @@ def filter_sent(news_list: List[Dict[str, str]]) -> List[Dict[str, str]]:
         return news_list
     links = [n["link"] for n in news_list]
     try:
-        res = supabase.table("sent_articles").select("link").in_("link", links).gte("sent_at", "now() - interval '12 hours'").execute()
+        twelve_hours_ago = (datetime.now(timezone.utc) - timedelta(hours=12)).isoformat()
+        res = supabase.table("sent_articles").select("link").in_("link", links).gte("sent_at", twelve_hours_ago).execute()
         sent_links = {row["link"] for row in res.data or []}
         filtered = [n for n in news_list if n["link"] not in sent_links]
         logger.info("送信済み除外: %d件 → %d件", len(news_list), len(filtered))
