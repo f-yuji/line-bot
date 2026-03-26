@@ -487,23 +487,17 @@ def build_message(
     summary: list,
     impact: list,
 ) -> List[str]:
+    # msg1: 本文
     lines = ["今日のニュース、ここだけ。", ""]
-
     for i, n in enumerate(news):
         num = CIRCLED[i] if i < len(CIRCLED) else f"{i + 1}."
         cat = CATEGORY_LABELS.get(n.get("category", "other"), "その他")
         s = summary[i] if i < len(summary) else n["title"]
         lines.append(f"{num}【{cat}】\n{s}")
         lines.append("")
+    msg1 = "\n".join(lines).rstrip()
 
-    lines.append("気になるやつだけ見ればOK。")
-    for i, n in enumerate(news):
-        num = CIRCLED[i] if i < len(CIRCLED) else f"{i + 1}."
-        short = shorten_url(n["link"])
-        lines.append(f"{num} {short}")
-
-    msg1 = "\n".join(lines)
-
+    # msg2: 総評
     valid_impacts = [imp for imp in impact if imp and "影響不明" not in imp]
     if valid_impacts:
         impact_lines = ["ここ押さえておけばOK。", ""]
@@ -514,12 +508,19 @@ def build_message(
     else:
         msg2 = ""
 
-    if len(msg1) > LINE_TEXT_SAFE_LIMIT:
-        msg1 = msg1[:LINE_TEXT_SAFE_LIMIT] + "\n…(省略)"
-    if len(msg2) > LINE_TEXT_SAFE_LIMIT:
-        msg2 = msg2[:LINE_TEXT_SAFE_LIMIT] + "\n…(省略)"
+    # msg3: リンク
+    link_lines = ["気になるやつだけ見ればOK。"]
+    for i, n in enumerate(news):
+        num = CIRCLED[i] if i < len(CIRCLED) else f"{i + 1}."
+        short = shorten_url(n["link"])
+        link_lines.append(f"{num} {short}")
+    msg3 = "\n".join(link_lines)
 
-    return [m for m in [msg1, msg2] if m]
+    for msg in [msg1, msg2, msg3]:
+        if len(msg) > LINE_TEXT_SAFE_LIMIT:
+            msg = msg[:LINE_TEXT_SAFE_LIMIT] + "\n…(省略)"
+
+    return [m for m in [msg1, msg2, msg3] if m]
 
 
 # =========================
@@ -569,10 +570,7 @@ def main():
     # summarize は全記事で1回だけ呼ぶ
     all_summaries, all_impacts = summarize(news)
     summary_cache = {
-        n["link"]: {
-            "summary": all_summaries[i] if i < len(all_summaries) else n["title"],
-            "impact":  all_impacts[i]   if i < len(all_impacts)   else "★ 影響不明",
-        }
+        n["link"]: all_summaries[i] if i < len(all_summaries) else n["title"]
         for i, n in enumerate(news)
     }
     logger.info("要約キャッシュ作成: %d件", len(summary_cache))
@@ -590,10 +588,9 @@ def main():
         filtered = filter_news(news, user)
         logger.info("送信件数: user=%s %d件", user_id, len(filtered))
 
-        summaries = [summary_cache.get(n["link"], {}).get("summary", n["title"]) for n in filtered]
-        impacts   = [summary_cache.get(n["link"], {}).get("impact", "★ 影響不明") for n in filtered]
+        summaries = [summary_cache.get(n["link"], n["title"]) for n in filtered]
 
-        messages = build_message(filtered, summaries, impacts)
+        messages = build_message(filtered, summaries, all_impacts)
         send(user_id, messages)
         sent_count += 1
 
@@ -629,7 +626,7 @@ def send_news_to_user(user_id: str) -> None:
         "user_id": user_id,
         "plan": "free",
         "genres": [],
-        "max_items": 3,
+        "max_items": 5,
     }
     filtered = filter_news(news, user)
     if not filtered:
