@@ -429,6 +429,18 @@ def summarize(news_list: List[Dict[str, str]]) -> tuple[list, list]:
     )
     count = len(news_list)
 
+    # 記事のカテゴリを重複排除して最大3つ抽出
+    seen = set()
+    unique_categories = []
+    for n in news_list:
+        cat = n.get("category", "other")
+        if cat != "other" and cat not in seen:
+            seen.add(cat)
+            unique_categories.append(CATEGORY_LABELS.get(cat, cat))
+        if len(unique_categories) == 3:
+            break
+    category_str = "、".join(unique_categories) if unique_categories else "経済、国際、その他"
+
     prompt = (
         f"以下の{count}件のニュース見出しについてまとめてください。\n\n"
         "【summary】各記事を2行形式で：\n"
@@ -436,9 +448,10 @@ def summarize(news_list: List[Dict[str, str]]) -> tuple[list, list]:
         "2行目：→ 補足（20〜40文字）\n"
         "・敬語不要、主語省略OK\n"
         "・例：「円安が加速、150円台突入\\n→ 輸入コスト上昇が続く見通し」\n\n"
-        "【impact】カテゴリ単位で2〜3項目：\n"
-        "テーマ（短く）\\n→ 判断に使える補足（短く）\n"
-        "・例：「不動産\\n→ 住宅ローン見直しのタイミング」\n\n"
+        f"【impact】以下のカテゴリについて各1項目（合計最大3項目）：{category_str}\n"
+        "形式：カテゴリ名（日本語）\\n→ 判断に使える補足（短く）\n"
+        "・情報が不十分な場合はその項目を省略する（「影響不明」は絶対に出力しない）\n"
+        "・例：「金利\\n→ 上昇傾向、借入コストに影響」\n\n"
         "JSON形式で返してください。キーは summary（配列）と impact（配列）です。\n"
         "他のテキストは含めず、JSONのみ出力してください。\n\n"
         f"{titles}"
@@ -457,15 +470,15 @@ def summarize(news_list: List[Dict[str, str]]) -> tuple[list, list]:
         data = json.loads(raw)
         return (
             data.get("summary", ["要約失敗"]),
-            data.get("impact", ["★ 影響不明"]),
+            data.get("impact", []),
         )
 
     except json.JSONDecodeError as e:
         logger.error("OpenAI応答のJSONパース失敗: %s", e)
-        return ["要約失敗"], ["★ 影響不明"]
+        return ["要約失敗"], []
     except Exception as e:
         logger.error("OpenAI API エラー: %s", e)
-        return ["要約失敗"], ["★ 影響不明"]
+        return ["要約失敗"], []
 
 
 # =========================
@@ -494,11 +507,15 @@ def build_message(
 
     msg1 = "\n".join(lines)
 
-    impact_lines = ["ここ押さえておけばOK。", ""]
-    for imp in impact:
-        impact_lines.append(f"・{imp}")
-        impact_lines.append("")
-    msg2 = "\n".join(impact_lines).rstrip()
+    valid_impacts = [imp for imp in impact if imp and "影響不明" not in imp]
+    if valid_impacts:
+        impact_lines = ["ここ押さえておけばOK。", ""]
+        for imp in valid_impacts:
+            impact_lines.append(f"・{imp}")
+            impact_lines.append("")
+        msg2 = "\n".join(impact_lines).rstrip()
+    else:
+        msg2 = ""
 
     if len(msg1) > LINE_TEXT_SAFE_LIMIT:
         msg1 = msg1[:LINE_TEXT_SAFE_LIMIT] + "\n…(省略)"
