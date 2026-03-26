@@ -156,6 +156,34 @@ def plan_max_items(plan: str) -> int:
     }.get(plan, DEFAULT_MAX_ITEMS)
 
 
+def filter_sent(news_list: List[Dict[str, str]]) -> List[Dict[str, str]]:
+    """送信済み記事を除外"""
+    if not news_list:
+        return news_list
+    links = [n["link"] for n in news_list]
+    try:
+        res = supabase.table("sent_articles").select("link").in_("link", links).execute()
+        sent_links = {row["link"] for row in res.data or []}
+        filtered = [n for n in news_list if n["link"] not in sent_links]
+        logger.info("送信済み除外: %d件 → %d件", len(news_list), len(filtered))
+        return filtered
+    except Exception as e:
+        logger.error("sent_articles取得失敗（除外スキップ）: %s", e)
+        return news_list
+
+
+def record_sent(news_list: List[Dict[str, str]]) -> None:
+    """送信済み記事を記録"""
+    if not news_list:
+        return
+    rows = [{"link": n["link"]} for n in news_list]
+    try:
+        supabase.table("sent_articles").upsert(rows, on_conflict="link").execute()
+        logger.info("送信済み記録: %d件", len(rows))
+    except Exception as e:
+        logger.error("sent_articles記録失敗: %s", e)
+
+
 def load_users() -> Dict[str, Any]:
     try:
         res = supabase.table("users").select("*").eq("active", True).execute()
@@ -513,6 +541,11 @@ def main():
         logger.warning("ニュースが0件のため配信スキップ")
         return
 
+    news = filter_sent(news)
+    if not news:
+        logger.warning("未送信ニュースが0件のため配信スキップ")
+        return
+
     sent_count = 0
     for user_id, user in users.items():
         if not user.get("active", True):
@@ -530,6 +563,7 @@ def main():
         send(user_id, messages)
         sent_count += 1
 
+    record_sent(news)
     logger.info("配信完了: %d/%d ユーザー", sent_count, len(users))
 
 
