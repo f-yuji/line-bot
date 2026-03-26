@@ -1,3 +1,6 @@
-requests
+flask
+line-bot-sdk
+python-dotenv
 feedparser
+requests
 openai
