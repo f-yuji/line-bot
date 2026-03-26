@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import re
+import time
 from typing import List, Dict, Any
 from urllib.parse import urlparse
 
@@ -137,12 +138,8 @@ def load_users() -> Dict[str, Any]:
 
 def _fetch_rss(url: str, max_retries: int = 3) -> feedparser.FeedParserDict:
     """RSSを取得。不正XMLをサニタイズしてからパースし、失敗時はリトライする"""
-    import time
-
     for attempt in range(1, max_retries + 1):
         try:
-            # feedparserの内部HTTPだとUser-Agentで弾かれることがあるので
-            # requestsで先に取得する
             res = requests.get(url, timeout=20, headers={
                 "User-Agent": "Mozilla/5.0 (compatible; NewsBot/1.0)"
             })
@@ -159,16 +156,14 @@ def _fetch_rss(url: str, max_retries: int = 3) -> feedparser.FeedParserDict:
                     logger.info("RSS bozo検出だがエントリあり(%d件)、続行", len(feed.entries))
                 return feed
 
-            # エントリ0件の場合はリトライ
             logger.warning("RSS取得 試行%d/%d: エントリ0件", attempt, max_retries)
 
         except Exception as e:
             logger.warning("RSS取得 試行%d/%d 失敗: %s", attempt, max_retries, e)
 
         if attempt < max_retries:
-            time.sleep(2 * attempt)  # 2秒、4秒と待つ
+            time.sleep(2 * attempt)
 
-    # 全リトライ失敗
     logger.error("RSS取得: %d回リトライ後も失敗", max_retries)
     return feedparser.FeedParserDict(entries=[])
 
