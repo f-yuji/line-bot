@@ -163,8 +163,8 @@ def _fetch_single_rss(url: str, max_retries: int = 2) -> feedparser.FeedParserDi
                 url, res.status_code, len(res.text),
             )
 
-            if res.status_code in (403, 429):
-                logger.warning("RSS %d blocked: %s", res.status_code, url)
+            if res.status_code == 403:
+                logger.warning("RSS 403 Forbidden: %s", url)
                 return feedparser.FeedParserDict(entries=[])
 
             res.raise_for_status()
