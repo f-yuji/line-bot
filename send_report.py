@@ -8,12 +8,16 @@ import feedparser
 import requests
 from openai import OpenAI
 
+from dotenv import load_dotenv
+load_dotenv()
+
 LINE_TOKEN = os.environ["LINE_TOKEN"]
 OPENAI_API_KEY = os.environ["OPENAI_API_KEY"]
+LINE_TARGET_USER_ID = os.environ["LINE_TARGET_USER_ID"]
 
 client = OpenAI(api_key=OPENAI_API_KEY)
 
-LINE_URL = "https://api.line.me/v2/bot/message/broadcast"
+LINE_URL = "https://api.line.me/v2/bot/message/push"
 RSS_URL = "https://news.google.com/rss?hl=ja&gl=JP&ceid=JP:ja"
 
 MAX_ITEMS = 5
@@ -413,13 +417,15 @@ def send(messages: List[str]) -> None:
             "Authorization": f"Bearer {LINE_TOKEN}",
             "Content-Type": "application/json"
         },
-        json={"messages": [{"type": "text", "text": m} for m in messages]},
+        json={
+            "to": LINE_TARGET_USER_ID,
+            "messages": [{"type": "text", "text": m} for m in messages]
+        },
         timeout=30
     )
     print("LINE status:", res.status_code)
     print("LINE response:", res.text)
     res.raise_for_status()
-
 
 if __name__ == "__main__":
     news = fetch_news()
