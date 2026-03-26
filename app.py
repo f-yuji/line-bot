@@ -135,11 +135,14 @@ def ensure_user(user_id: str):
 
 # ─── 補助 ───
 def normalize_genres(raw_text: str):
-    items = [x.strip() for x in raw_text.split(",") if x.strip()]
+    normalized_text = raw_text.replace("\u3000", " ")
+    items = [x.strip() for x in normalized_text.split(",") if x.strip()]
     result = []
 
+    lower_map = {k.lower(): v for k, v in ALLOWED_GENRES.items()}
+
     for item in items:
-        mapped = ALLOWED_GENRES.get(item)
+        mapped = lower_map.get(item.lower())
         if mapped and mapped not in result:
             result.append(mapped)
 
