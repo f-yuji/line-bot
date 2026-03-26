@@ -49,18 +49,40 @@ LINE_TEXT_SAFE_LIMIT = 4500
 
 EXCLUDE_KEYWORDS = [
     "芸能", "女優", "俳優", "アイドル", "不倫", "炎上",
+    "占い", "グラビア", "プレゼント", "ランキング", "キャンペーン",
+    "話題", "SNSで反響", "バズ", "トレンド",
 ]
 
-GENRE_KEYWORDS: Dict[str, List[str]] = {
-    "real_estate": ["不動産", "土地", "賃貸", "地価", "マンション", "住宅"],
-    "construction": ["建設", "工事", "建材", "施工", "塗装", "防水", "資材"],
-    "interest_rates": ["金利", "日銀", "利上げ", "利下げ", "長期金利", "政策金利"],
-    "energy": ["原油", "電力", "ガス", "燃料", "LNG"],
-    "ai": ["AI", "人工知能", "半導体", "生成AI", "LLM", "OpenAI"],
-    "sports": ["野球", "サッカー", "試合", "五輪", "W杯"],
-    "economy": ["経済", "株価", "インフレ", "景気", "為替", "円安", "円高"],
-    "business": ["企業", "決算", "業績", "M&A", "値上げ", "市場"],
-    "tech": ["テック", "IT", "ソフトウェア", "クラウド", "データセンター", "半導体"],
+SCORE_THRESHOLD = 3
+
+# 強キーワード: +3
+STRONG_KEYWORDS: Dict[str, List[str]] = {
+    "real_estate":    ["不動産価格", "地価上昇", "住宅ローン", "マンション価格"],
+    "construction":   ["建設受注", "工事費上昇", "建設コスト", "鋼材"],
+    "interest_rates": ["政策金利", "日銀", "利上げ", "利下げ", "長期金利"],
+    "energy":         ["原油急騰", "電力不足", "LNG"],
+    "ai":             ["生成AI", "LLM", "OpenAI", "ChatGPT", "GPU"],
+    "sports":         ["優勝", "W杯", "五輪", "金メダル"],
+    "economy":        ["株価急落", "景気後退", "GDP", "リセッション"],
+    "business":       ["大型M&A", "倒産", "上場廃止", "業績下方修正"],
+    "tech":           ["クラウド障害", "データ漏洩", "サイバー攻撃"],
+    "international":  ["停戦", "制裁", "外交交渉", "G7", "NATO"],
+    "materials":      ["資材高騰", "セメント", "鉄骨"],
+}
+
+# 弱キーワード: +1 (カテゴリ判定にも使用)
+CATEGORY_KEYWORDS: Dict[str, List[str]] = {
+    "real_estate":    ["不動産", "土地", "賃貸", "地価", "マンション", "住宅"],
+    "construction":   ["建設", "工事", "建材", "施工", "塗装", "防水", "資材", "ゼネコン"],
+    "interest_rates": ["金利", "金融政策", "中央銀行"],
+    "energy":         ["原油", "電力", "ガス", "燃料"],
+    "ai":             ["AI", "人工知能", "半導体", "機械学習"],
+    "sports":         ["野球", "サッカー", "試合", "五輪", "W杯", "ラグビー"],
+    "economy":        ["経済", "株価", "インフレ", "景気", "為替", "円安", "円高", "賃金"],
+    "business":       ["企業", "決算", "業績", "M&A", "値上げ", "市場"],
+    "tech":           ["テック", "IT", "ソフトウェア", "クラウド", "データセンター"],
+    "international":  ["米国", "中国", "欧州", "ロシア", "戦争", "制裁", "外交"],
+    "materials":      ["鋼材", "コンクリート", "セメント", "木材"],
 }
 
 
@@ -126,6 +148,7 @@ def load_users() -> Dict[str, Any]:
             user_id = row["user_id"]
             plan = row.get("plan", "free")
             users[user_id] = {
+                "user_id": user_id,
                 "plan": plan,
                 "active": row.get("active", True),
                 "genres": row.get("genres", []) or [],
@@ -138,6 +161,44 @@ def load_users() -> Dict[str, Any]:
     except Exception as e:
         logger.error("Supabase users 読み込み失敗: %s", e)
         return {}
+
+
+# =========================
+# カテゴリ判定・スコアリング
+# =========================
+
+def classify_category(article: Dict[str, str]) -> str:
+    text = f"{article['title']} {article.get('summary', '')}"
+    scores: Dict[str, int] = {}
+    for cat, keywords in CATEGORY_KEYWORDS.items():
+        count = sum(1 for k in keywords if k in text)
+        if count:
+            scores[cat] = count
+    return max(scores, key=scores.get) if scores else "other"
+
+
+def score_article(article: Dict[str, str], user_genres: List[str]) -> int:
+    text = f"{article['title']} {article.get('summary', '')}"
+    score = 0
+
+    for word in EXCLUDE_KEYWORDS:
+        if word in text:
+            score -= 3
+
+    for keywords in STRONG_KEYWORDS.values():
+        for k in keywords:
+            if k in text:
+                score += 3
+
+    for keywords in CATEGORY_KEYWORDS.values():
+        for k in keywords:
+            if k in text:
+                score += 1
+
+    if user_genres and article.get("category") in user_genres:
+        score += 2
+
+    return score
 
 
 # =========================
@@ -233,12 +294,14 @@ def fetch_news() -> List[Dict[str, str]]:
         if any(word in title for word in EXCLUDE_KEYWORDS):
             continue
 
-        news.append({
+        article = {
             "title": title,
             "link": link,
             "summary": summary,
             "source": extract_source_name(link),
-        })
+        }
+        article["category"] = classify_category(article)
+        news.append(article)
 
     logger.info("ニュース取得: %d件", len(news))
     return news
@@ -248,30 +311,42 @@ def fetch_news() -> List[Dict[str, str]]:
 # フィルタ
 # =========================
 
-def match_keywords(news: Dict[str, str], keywords: List[str]) -> bool:
-    text = f"{news['title']} {news.get('summary', '')}"
-    return any(k in text for k in keywords)
-
-
 def filter_news(
     news_list: List[Dict[str, str]], user: Dict[str, Any]
 ) -> List[Dict[str, str]]:
-    plan = user.get("plan", "free")
+    user_id = user.get("user_id", "?")
     genres = user.get("genres", []) or []
     max_items = user.get("max_items", DEFAULT_MAX_ITEMS)
 
-    if plan == "free" or not genres:
-        return news_list[:max_items]
+    scored = []
+    for n in news_list:
+        s = score_article(n, genres)
+        if s >= SCORE_THRESHOLD:
+            scored.append((s, n))
+    scored.sort(key=lambda x: x[0], reverse=True)
 
-    keywords: List[str] = []
-    for g in genres:
-        keywords += GENRE_KEYWORDS.get(g, [])
+    logger.info(
+        "スコアフィルタ: user=%s 全%d件→%d件(閾値%d)",
+        user_id, len(news_list), len(scored), SCORE_THRESHOLD,
+    )
+    for s, n in scored:
+        logger.info(
+            "  [%s] score=%d %s",
+            n.get("category", "other"), s, n["title"],
+        )
 
-    if not keywords:
-        return news_list[:max_items]
+    filtered = [n for _, n in scored]
 
-    matched = [n for n in news_list if match_keywords(n, keywords)]
-    return matched[:max_items] if matched else news_list[:3]
+    if genres:
+        genre_matched = [n for n in filtered if n.get("category") in genres]
+        if genre_matched:
+            logger.info(
+                "ジャンル絞り込み: user=%s genres=%s → %d件",
+                user_id, genres, len(genre_matched),
+            )
+            filtered = genre_matched
+
+    return filtered[:max_items] if filtered else news_list[:3]
 
 
 # =========================
@@ -391,7 +466,12 @@ def main():
             logger.info("非アクティブのためスキップ: %s", user_id)
             continue
 
+        logger.info(
+            "配信開始: user=%s plan=%s genres=%s",
+            user_id, user.get("plan"), user.get("genres"),
+        )
         filtered = filter_news(news, user)
+        logger.info("送信件数: user=%s %d件", user_id, len(filtered))
         summary, impact = summarize(filtered)
         messages = build_message(filtered, summary, impact)
         send(user_id, messages)
