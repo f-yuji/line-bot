@@ -544,6 +544,17 @@ def main():
         logger.warning("未送信ニュースが0件のため配信スキップ")
         return
 
+    # summarize は全記事で1回だけ呼ぶ
+    all_summaries, all_impacts = summarize(news)
+    summary_cache = {
+        n["link"]: {
+            "summary": all_summaries[i] if i < len(all_summaries) else n["title"],
+            "impact":  all_impacts[i]   if i < len(all_impacts)   else "★ 影響不明",
+        }
+        for i, n in enumerate(news)
+    }
+    logger.info("要約キャッシュ作成: %d件", len(summary_cache))
+
     sent_count = 0
     for user_id, user in users.items():
         if not user.get("active", True):
@@ -556,8 +567,11 @@ def main():
         )
         filtered = filter_news(news, user)
         logger.info("送信件数: user=%s %d件", user_id, len(filtered))
-        summary, impact = summarize(filtered)
-        messages = build_message(filtered, summary, impact)
+
+        summaries = [summary_cache.get(n["link"], {}).get("summary", n["title"]) for n in filtered]
+        impacts   = [summary_cache.get(n["link"], {}).get("impact", "★ 影響不明") for n in filtered]
+
+        messages = build_message(filtered, summaries, impacts)
         send(user_id, messages)
         sent_count += 1
 
