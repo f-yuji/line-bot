@@ -163,8 +163,8 @@ def _fetch_single_rss(url: str, max_retries: int = 2) -> feedparser.FeedParserDi
                 url, res.status_code, len(res.text),
             )
 
-            if res.status_code == 403:
-                logger.warning("RSS 403 Forbidden: %s", url)
+            if res.status_code in (403, 429):
+                logger.warning("RSS %d blocked: %s", res.status_code, url)
                 return feedparser.FeedParserDict(entries=[])
 
             res.raise_for_status()
@@ -238,7 +238,6 @@ def fetch_news() -> List[Dict[str, str]]:
             "link": link,
             "summary": summary,
             "source": extract_source_name(link),
-            "short_link": shorten_url(link),
         })
 
     logger.info("ニュース取得: %d件", len(news))
@@ -333,7 +332,8 @@ def build_message(
     lines = []
     for i, n in enumerate(news):
         s = summary[i] if i < len(summary) else n["title"]
-        lines.append(f"{i + 1}. {s}\n{n['short_link']}")
+        short = shorten_url(n["link"])
+        lines.append(f"{i + 1}. {s}\n{short}")
 
     msg1 = "\n\n".join(lines)
     msg2 = "\n\n".join(impact)
