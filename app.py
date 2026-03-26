@@ -60,6 +60,8 @@ def load_settings() -> dict:
 def save_settings(data: dict) -> None:
     with open(USER_SETTINGS_PATH, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
+    print("saved to:", USER_SETTINGS_PATH.resolve())
+    print("saved users:", list(data.get("users", {}).keys()))
 
 
 def ensure_user_exists(user_id: str) -> dict:
@@ -75,11 +77,11 @@ def ensure_user_exists(user_id: str) -> dict:
             "max_items": 3,
         }
         save_settings(data)
+        print("new user registered:", user_id)
+    else:
+        print("user already exists:", user_id)
 
     return users[user_id]
-print("saved users:", users)
-print("save path:", USER_SETTINGS_PATH.resolve())
-
 def update_user(user_id: str, **kwargs) -> dict:
     data = load_settings()
     users = data.setdefault("users", {})
@@ -169,7 +171,7 @@ def handle_follow(event):
 
 @handler.add(MessageEvent, message=TextMessageContent)
 def handle_message(event):
-    print("message from:", user_id, text)
+    print("message event from:", user_id, "text:", text)
     user_id = event.source.user_id
     text = event.message.text.strip()
 
