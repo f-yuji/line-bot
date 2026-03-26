@@ -27,6 +27,7 @@ LINE_CHANNEL_ACCESS_TOKEN = os.environ["LINE_CHANNEL_ACCESS_TOKEN"]
 OPENAI_API_KEY = os.environ["OPENAI_API_KEY"]
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+OWNER_LINE_USER_ID = os.getenv("OWNER_LINE_USER_ID")
 
 # ─── クライアント ───
 client = OpenAI(api_key=OPENAI_API_KEY)
@@ -231,15 +232,12 @@ def score_article(article: Dict[str, str], user_genres: List[str]) -> int:
         if word in text:
             score -= 3
 
-    for keywords in STRONG_KEYWORDS.values():
-        for k in keywords:
-            if k in text:
-                score += 3
-
-    for keywords in CATEGORY_KEYWORDS.values():
-        for k in keywords:
-            if k in text:
-                score += 1
+    # カテゴリごとにcap: 強キーワードmax+3、弱キーワードmax+3
+    for cat in set(list(STRONG_KEYWORDS.keys()) + list(CATEGORY_KEYWORDS.keys())):
+        strong_hits = sum(1 for k in STRONG_KEYWORDS.get(cat, []) if k in text)
+        weak_hits = sum(1 for k in CATEGORY_KEYWORDS.get(cat, []) if k in text)
+        score += min(strong_hits * 3, 3)
+        score += min(weak_hits, 3)
 
     if user_genres and article.get("category") in user_genres:
         score += 2
@@ -567,5 +565,26 @@ def main():
     logger.info("配信完了: %d/%d ユーザー", sent_count, len(users))
 
 
+def notify_owner(text: str) -> None:
+    if not OWNER_LINE_USER_ID:
+        return
+    try:
+        requests.post(
+            LINE_URL,
+            headers={
+                "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}",
+                "Content-Type": "application/json",
+            },
+            json={"to": OWNER_LINE_USER_ID, "messages": [{"type": "text", "text": text}]},
+            timeout=10,
+        )
+    except Exception as e:
+        logger.error("オーナー通知失敗: %s", e)
+
+
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as e:
+        logger.error("main()で予期しないエラー: %s", e)
+        notify_owner(f"[send_news] エラー発生\n{type(e).__name__}: {e}")
