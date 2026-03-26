@@ -85,6 +85,23 @@ CATEGORY_KEYWORDS: Dict[str, List[str]] = {
     "materials":      ["鋼材", "コンクリート", "セメント", "木材"],
 }
 
+CATEGORY_LABELS: Dict[str, str] = {
+    "real_estate":    "不動産",
+    "construction":   "建設",
+    "interest_rates": "金利",
+    "energy":         "エネルギー",
+    "ai":             "AI",
+    "sports":         "スポーツ",
+    "economy":        "経済",
+    "business":       "企業",
+    "tech":           "テック",
+    "international":  "国際",
+    "materials":      "資材",
+    "other":          "その他",
+}
+
+CIRCLED = "①②③④⑤⑥⑦⑧⑨⑩"
+
 
 # =========================
 # ユーティリティ
@@ -131,8 +148,9 @@ def shorten_url(url: str) -> str:
 
 
 def plan_max_items(plan: str) -> int:
+    # 暫定：全プラン5件。プラン制に戻す場合はここを修正
     return {
-        "free": 3,
+        "free": 5,
         "light": 5,
         "premium": 8,
     }.get(plan, DEFAULT_MAX_ITEMS)
@@ -384,10 +402,15 @@ def summarize(news_list: List[Dict[str, str]]) -> tuple[list, list]:
     count = len(news_list)
 
     prompt = (
-        f"以下の{count}件のニュース見出しについて、それぞれ1〜2文で要約し、"
-        "ビジネスへの影響を簡潔に分析してください。"
-        "JSON形式で返してください。"
-        "キーは summary（配列）と impact（配列）です。"
+        f"以下の{count}件のニュース見出しについて、それぞれ以下の形式でまとめてください。\n\n"
+        "【summary】\n"
+        "・1〜2文で要点を断定的に述べる\n"
+        "・主語は省略OK。敬語不要\n"
+        "・「〜しました」ではなく「〜した」「〜する見通し」など\n\n"
+        "【impact】\n"
+        "・「テーマ（短く）\\n→ ビジネス/生活への影響」の形式で1記事1項目\n"
+        "・例：「建設資材\\n→ 工事コスト上昇が続く見通し」\n\n"
+        "JSON形式で返してください。キーは summary（配列）と impact（配列）です。\n"
         "他のテキストは含めず、JSONのみ出力してください。\n\n"
         f"{titles}"
     )
@@ -425,14 +448,23 @@ def build_message(
     summary: list,
     impact: list,
 ) -> List[str]:
-    lines = []
-    for i, n in enumerate(news):
-        s = summary[i] if i < len(summary) else n["title"]
-        short = shorten_url(n["link"])
-        lines.append(f"{i + 1}. {s}\n{short}")
+    count = len(news)
+    lines = [f"今日の重要ニュース（{count}件）"]
 
-    msg1 = "\n\n".join(lines)
-    msg2 = "\n\n".join(impact)
+    for i, n in enumerate(news):
+        num = CIRCLED[i] if i < len(CIRCLED) else f"{i + 1}."
+        cat = CATEGORY_LABELS.get(n.get("category", "other"), "その他")
+        s = summary[i] if i < len(summary) else n["title"]
+        source = n.get("source", "")
+        short = shorten_url(n["link"])
+        lines.append(f"\n{num}【{cat}】\n{s}\n出典：{source}\n{short}")
+
+    msg1 = "\n".join(lines)
+
+    impact_lines = ["■ポイント"]
+    for imp in impact:
+        impact_lines.append(f"\n・{imp}")
+    msg2 = "\n".join(impact_lines)
 
     if len(msg1) > LINE_TEXT_SAFE_LIMIT:
         msg1 = msg1[:LINE_TEXT_SAFE_LIMIT] + "\n…(省略)"
