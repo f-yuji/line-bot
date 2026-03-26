@@ -16,6 +16,8 @@ from linebot.v3.messaging import (
 )
 from linebot.v3.webhooks import FollowEvent, MessageEvent, TextMessageContent
 
+from send_news import send_news_to_user
+
 # ─── 初期設定 ───
 load_dotenv()
 
@@ -197,6 +199,11 @@ def handle_follow(event):
         "設定可能:\n"
         "不動産, 建築, 金利, 資材, 経済, AI, テック, ビジネス, エネルギー, スポーツ, 国際"
     )
+
+    try:
+        send_news_to_user(user_id)
+    except Exception as e:
+        logger.error("初回配信失敗: user=%s %s", user_id, e)
 
 
 @handler.add(MessageEvent, message=TextMessageContent)

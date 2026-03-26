@@ -448,10 +448,14 @@ def summarize(news_list: List[Dict[str, str]]) -> tuple[list, list]:
         "2行目：→ 補足（20〜40文字）\n"
         "・敬語不要、主語省略OK\n"
         "・例：「円安が加速、150円台突入\\n→ 輸入コスト上昇が続く見通し」\n\n"
-        f"【impact】以下のカテゴリについて各1項目（合計最大3項目）：{category_str}\n"
-        "形式：カテゴリ名（日本語）\\n→ 判断に使える補足（短く）\n"
-        "・情報が不十分な場合はその項目を省略する（「影響不明」は絶対に出力しない）\n"
-        "・例：「金利\\n→ 上昇傾向、借入コストに影響」\n\n"
+        f"【impact】記事全体を踏まえてカテゴリ単位で流れをまとめる（最大3項目）：\n"
+        "形式：カテゴリ名（日本語）\\n→ 今の流れ・状況（短く、断定形）\n"
+        "・個別企業名や単発ニュースの言い換えにしない\n"
+        "・「今どういう流れか」が分かる抽象度にする\n"
+        "・必要なら最後に「全体\\n→ 全体の空気感」を1行追加してもよい\n"
+        "・「影響不明」は絶対に出力しない。書けない項目は省略する\n"
+        f"・対象カテゴリ：{category_str}\n"
+        "・例：「国際\\n→ 中東・ロシアまわりで不安定続く」\n\n"
         "JSON形式で返してください。キーは summary（配列）と impact（配列）です。\n"
         "他のテキストは含めず、JSONのみ出力してください。\n\n"
         f"{titles}"
@@ -499,7 +503,7 @@ def build_message(
         lines.append(f"{num}【{cat}】\n{s}")
         lines.append("")
 
-    lines.append("リンク")
+    lines.append("気になるやつだけ見ればOK。")
     for i, n in enumerate(news):
         num = CIRCLED[i] if i < len(CIRCLED) else f"{i + 1}."
         short = shorten_url(n["link"])
@@ -522,7 +526,7 @@ def build_message(
     if len(msg2) > LINE_TEXT_SAFE_LIMIT:
         msg2 = msg2[:LINE_TEXT_SAFE_LIMIT] + "\n…(省略)"
 
-    return [msg1, msg2]
+    return [m for m in [msg1, msg2] if m]
 
 
 # =========================
@@ -619,6 +623,30 @@ def notify_owner(text: str) -> None:
         )
     except Exception as e:
         logger.error("オーナー通知失敗: %s", e)
+
+
+def send_news_to_user(user_id: str) -> None:
+    """1ユーザーへの即時配信（初回登録時など）"""
+    news = fetch_news()
+    if not news:
+        logger.warning("初回配信: ニュース0件のためスキップ: %s", user_id)
+        return
+
+    user = {
+        "user_id": user_id,
+        "plan": "free",
+        "genres": [],
+        "max_items": 3,
+    }
+    filtered = filter_news(news, user)
+    if not filtered:
+        logger.warning("初回配信: フィルタ後0件のためスキップ: %s", user_id)
+        return
+
+    summaries, impacts = summarize(filtered)
+    messages = build_message(filtered, summaries, impacts)
+    send(user_id, messages)
+    logger.info("初回配信完了: %s", user_id)
 
 
 if __name__ == "__main__":
