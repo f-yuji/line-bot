@@ -35,39 +35,86 @@ supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 # ─── 定数 ───
 LINE_URL = "https://api.line.me/v2/bot/message/push"
 
-# Google Newsがブロックされた場合のフォールバック付きRSSソース
 RSS_SOURCES = [
     "https://news.google.com/rss?hl=ja&gl=JP&ceid=JP:ja",
-    "https://news.yahoo.co.jp/rss/topics/top-picks.xml",
-    "https://assets.wor.jp/rss/rdf/nikkei/news.rdf",
+    "https://news.google.com/rss/search?q=不動産+建設+金利+AI+スポーツ&hl=ja&gl=JP&ceid=JP:ja",
 ]
 
-MAX_FETCH_ITEMS = 40
+MAX_FETCH_ITEMS = 50
 DEFAULT_MAX_ITEMS = 5
 LINE_MAX_MESSAGE_OBJECTS = 5
 LINE_TEXT_SAFE_LIMIT = 4500
+RSS_RETRY = 2
+RSS_TIMEOUT = 20
 
-EXCLUDE_KEYWORDS = [
-    "芸能", "女優", "俳優", "アイドル", "不倫", "炎上",
+GOOD_SOURCES = [
+    "nikkei.com",
+    "nhk.or.jp",
+    "itmedia.co.jp",
+    "reuters.com",
+    "asahi.com",
+    "yomiuri.co.jp",
+    "mainichi.jp",
 ]
 
-GENRE_KEYWORDS: Dict[str, List[str]] = {
-    "real_estate": ["不動産", "土地", "賃貸", "地価", "マンション", "住宅"],
-    "construction": ["建設", "工事", "建材", "施工", "塗装", "防水", "資材"],
-    "interest_rates": ["金利", "日銀", "利上げ", "利下げ", "長期金利", "政策金利"],
-    "energy": ["原油", "電力", "ガス", "燃料", "LNG"],
-    "ai": ["AI", "人工知能", "半導体", "生成AI", "LLM", "OpenAI"],
-    "sports": ["野球", "サッカー", "試合", "五輪", "W杯"],
-    "economy": ["経済", "株価", "インフレ", "景気", "為替", "円安", "円高"],
-    "business": ["企業", "決算", "業績", "M&A", "値上げ", "市場"],
-    "tech": ["テック", "IT", "ソフトウェア", "クラウド", "データセンター", "半導体"],
+CATEGORY_RULES: Dict[str, Dict[str, List[str]]] = {
+    "real_estate": {
+        "include": ["不動産", "土地", "地価", "住宅", "マンション", "賃貸", "家賃", "空室", "再開発", "物件"],
+        "exclude": ["アイドル", "芸能", "ライブ", "試合"],
+    },
+    "construction": {
+        "include": ["建設", "建築", "工事", "施工", "改修", "修繕", "塗装", "防水", "現場", "職人"],
+        "exclude": ["野球", "サッカー", "アイドル"],
+    },
+    "interest_rates": {
+        "include": ["金利", "利上げ", "利下げ", "日銀", "政策金利", "長期金利", "短期金利", "国債"],
+        "exclude": ["熱愛", "芸能", "ドラマ"],
+    },
+    "materials": {
+        "include": ["資材", "建材", "鋼材", "木材", "セメント", "塗料", "シンナー", "原料", "アスファルト"],
+        "exclude": ["芸能", "映画", "ライブ"],
+    },
+    "economy": {
+        "include": ["経済", "景気", "インフレ", "物価", "消費", "円安", "円高", "為替", "景況感"],
+        "exclude": [],
+    },
+    "ai": {
+        "include": ["AI", "人工知能", "生成AI", "LLM", "OpenAI", "半導体", "推論", "学習モデル"],
+        "exclude": ["芸能", "熱愛"],
+    },
+    "tech": {
+        "include": ["IT", "テック", "ソフトウェア", "クラウド", "データセンター", "SaaS", "半導体"],
+        "exclude": ["芸能", "アイドル"],
+    },
+    "business": {
+        "include": ["決算", "業績", "M&A", "買収", "上場", "企業", "市場", "事業", "値上げ"],
+        "exclude": [],
+    },
+    "energy": {
+        "include": ["電力", "ガス", "原油", "LNG", "燃料", "再エネ", "太陽光", "発電"],
+        "exclude": [],
+    },
+    "sports": {
+        "include": ["野球", "サッカー", "バスケ", "テニス", "試合", "優勝", "五輪", "W杯", "リーグ"],
+        "exclude": ["不動産", "建設", "金利"],
+    },
+    "scandal": {
+        "include": ["不倫", "熱愛", "炎上", "謝罪", "流出", "不祥事", "スキャンダル", "離婚", "ゴシップ"],
+        "exclude": [],
+    },
+    "entertainment": {
+        "include": ["芸能", "俳優", "女優", "アイドル", "映画", "ドラマ", "ライブ", "番組", "タレント"],
+        "exclude": [],
+    },
 }
+
+# 強制除外ではなく、主に一般配信ノイズ抑制用
+HARD_EXCLUDE = []
 
 
 # =========================
 # ユーティリティ
 # =========================
-
 def clean_text(text: str) -> str:
     return re.sub(r"\s+", " ", str(text or "")).strip()
 
@@ -76,36 +123,33 @@ def strip_html(text: str) -> str:
     return re.sub(r"<[^>]+>", " ", str(text or "")).strip()
 
 
+def sanitize_xml(text: str) -> str:
+    if not text:
+        return ""
+    text = text.replace("\x00", "")
+    text = re.sub(r"[^\x09\x0A\x0D\x20-\x7E\u00A0-\uFFFF]", "", text)
+    return text
+
+
 def extract_source_name(url: str) -> str:
     try:
         host = urlparse(url).netloc.lower()
-        if "nikkei" in host:
-            return "日経"
-        if "nhk" in host:
-            return "NHK"
-        if "itmedia" in host:
-            return "ITmedia"
-        if "reuters" in host:
-            return "Reuters"
-        if "yahoo" in host:
-            return "Yahoo"
+        host = host.replace("www.", "")
         return host
     except Exception:
-        return "不明"
+        return "unknown"
+
+
+def source_bonus(source: str) -> int:
+    for good in GOOD_SOURCES:
+        if good in source:
+            return 2
+    return 0
 
 
 def shorten_url(url: str) -> str:
-    try:
-        res = requests.get(
-            "https://is.gd/create.php",
-            params={"format": "simple", "url": url},
-            timeout=10,
-        )
-        res.raise_for_status()
-        return res.text.strip()
-    except Exception as e:
-        logger.warning("URL短縮失敗 (%s): %s", url, e)
-        return url
+    # 安定優先。重いなら短縮しない。
+    return url
 
 
 def plan_max_items(plan: str) -> int:
@@ -141,167 +185,195 @@ def load_users() -> Dict[str, Any]:
 
 
 # =========================
-# ニュース取得
+# RSS取得
 # =========================
-
-def _fetch_single_rss(url: str, max_retries: int = 2) -> feedparser.FeedParserDict:
-    """単一RSSソースを取得。リトライ付き"""
-    for attempt in range(1, max_retries + 1):
+def _fetch_single_rss(url: str) -> List[Dict[str, str]]:
+    for attempt in range(1, RSS_RETRY + 1):
         try:
-            res = requests.get(url, timeout=20, headers={
-                "User-Agent": (
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/124.0.0.0 Safari/537.36"
-                ),
-                "Accept": "application/rss+xml, application/xml, text/xml, */*",
-                "Accept-Language": "ja,en;q=0.9",
-            })
-
-            logger.info(
-                "RSS HTTP応答: url=%s status=%d size=%d",
-                url, res.status_code, len(res.text),
+            res = requests.get(
+                url,
+                headers={"User-Agent": "Mozilla/5.0"},
+                timeout=RSS_TIMEOUT,
             )
-
-            if res.status_code == 403:
-                logger.warning("RSS 403 Forbidden: %s", url)
-                return feedparser.FeedParserDict(entries=[])
-
             res.raise_for_status()
-            raw_xml = res.text
 
-            # 不正な制御文字を除去
-            raw_xml = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", "", raw_xml)
+            content_type = res.headers.get("Content-Type", "")
+            logger.info("RSS取得 status=%s content-type=%s url=%s", res.status_code, content_type, url)
 
-            feed = feedparser.parse(raw_xml)
+            xml_text = sanitize_xml(res.text)
+            feed = feedparser.parse(xml_text)
 
-            if feed.entries:
-                if feed.bozo:
-                    logger.info(
-                        "RSS bozo検出だがエントリあり(%d件)、続行: %s",
-                        len(feed.entries), url,
-                    )
-                return feed
+            if feed.bozo:
+                logger.warning("RSSパースに問題あり: %s", feed.bozo_exception)
+                logger.warning("先頭200文字: %s", xml_text[:200])
+                if attempt < RSS_RETRY:
+                    time.sleep(1)
+                    continue
+                return []
 
-            logger.warning(
-                "RSS 試行%d/%d エントリ0件: %s",
-                attempt, max_retries, url,
-            )
+            news = []
+            for entry in feed.entries[:MAX_FETCH_ITEMS]:
+                title = clean_text(entry.get("title", ""))
+                link = entry.get("link", "")
+                summary = strip_html(entry.get("summary", ""))
 
-        except requests.RequestException as e:
-            logger.warning(
-                "RSS 試行%d/%d HTTPエラー: %s → %s",
-                attempt, max_retries, url, e,
-            )
+                if not title or not link:
+                    continue
+                if any(word in title for word in HARD_EXCLUDE):
+                    continue
+
+                news.append({
+                    "title": title,
+                    "link": link,
+                    "summary": summary,
+                    "source": extract_source_name(link),
+                    "short_link": shorten_url(link),
+                })
+
+            return news
+
         except Exception as e:
-            logger.warning(
-                "RSS 試行%d/%d 予期しないエラー: %s → %s",
-                attempt, max_retries, url, e,
-            )
+            logger.warning("RSS取得失敗 attempt=%s url=%s err=%s", attempt, url, e)
+            if attempt < RSS_RETRY:
+                time.sleep(1)
 
-        if attempt < max_retries:
-            time.sleep(3 * attempt)
+    return []
 
-    return feedparser.FeedParserDict(entries=[])
+
+def dedupe_news(news_list: List[Dict[str, str]]) -> List[Dict[str, str]]:
+    seen = set()
+    result = []
+
+    for item in news_list:
+        key = clean_text(item.get("title", "")).lower()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        result.append(item)
+
+    return result
 
 
 def fetch_news() -> List[Dict[str, str]]:
-    """複数RSSソースを順に試し、最初に成功したものを使う"""
-    feed = None
+    all_news = []
 
-    for rss_url in RSS_SOURCES:
-        logger.info("RSSソース試行: %s", rss_url)
-        result = _fetch_single_rss(rss_url)
-        if result.entries:
-            logger.info("RSSソース成功: %s (%d件)", rss_url, len(result.entries))
-            feed = result
-            break
-        logger.warning("RSSソース失敗、次へ: %s", rss_url)
+    for url in RSS_SOURCES:
+        part = _fetch_single_rss(url)
+        all_news.extend(part)
 
-    if feed is None or not feed.entries:
-        logger.error("全RSSソース失敗")
-        return []
-
-    news = []
-    for entry in feed.entries[:MAX_FETCH_ITEMS]:
-        title = clean_text(entry.get("title", ""))
-        link = entry.get("link", "")
-        summary = strip_html(entry.get("summary", entry.get("description", "")))
-
-        if not title or not link:
-            continue
-        if any(word in title for word in EXCLUDE_KEYWORDS):
-            continue
-
-        news.append({
-            "title": title,
-            "link": link,
-            "summary": summary,
-            "source": extract_source_name(link),
-            "short_link": shorten_url(link),
-        })
-
-    logger.info("ニュース取得: %d件", len(news))
-    return news
+    all_news = dedupe_news(all_news)
+    logger.info("ニュース取得: %d件", len(all_news))
+    return all_news
 
 
 # =========================
-# フィルタ
+# 抽出スコアリング
 # =========================
+def score_article_by_category(article: dict, category: str) -> int:
+    rules = CATEGORY_RULES.get(category, {})
+    include = rules.get("include", [])
+    exclude = rules.get("exclude", [])
 
-def match_keywords(news: Dict[str, str], keywords: List[str]) -> bool:
-    text = f"{news['title']} {news.get('summary', '')}"
-    return any(k in text for k in keywords)
+    title = str(article.get("title", ""))
+    summary = str(article.get("summary", ""))
+    source = str(article.get("source", ""))
+    text = f"{title} {summary}"
+
+    score = 0
+
+    for kw in include:
+        if kw in title:
+            score += 3
+        elif kw in summary:
+            score += 1
+
+    for kw in exclude:
+        if kw in text:
+            score -= 3
+
+    score += source_bonus(source)
+    return score
 
 
-def filter_news(
-    news_list: List[Dict[str, str]], user: Dict[str, Any]
-) -> List[Dict[str, str]]:
-    plan = user.get("plan", "free")
-    genres = user.get("genres", []) or []
+def detect_categories(article: dict, min_score: int = 2) -> Dict[str, int]:
+    matched = {}
+    for category in CATEGORY_RULES.keys():
+        score = score_article_by_category(article, category)
+        if score >= min_score:
+            matched[category] = score
+    return matched
+
+
+def filter_news_for_user(news_list: List[Dict[str, str]], user: Dict[str, Any]) -> List[Dict[str, str]]:
+    selected = user.get("genres", []) or []
     max_items = user.get("max_items", DEFAULT_MAX_ITEMS)
 
-    if plan == "free" or not genres:
+    # freeでジャンル未指定なら上から返す
+    if not selected:
         return news_list[:max_items]
 
-    keywords: List[str] = []
-    for g in genres:
-        keywords += GENRE_KEYWORDS.get(g, [])
+    scored_articles = []
 
-    if not keywords:
-        return news_list[:max_items]
+    for article in news_list:
+        matched = detect_categories(article)
+        total_score = sum(matched.get(cat, 0) for cat in selected)
 
-    matched = [n for n in news_list if match_keywords(n, keywords)]
-    return matched[:max_items] if matched else news_list[:3]
+        if total_score > 0:
+            scored_articles.append((article, total_score, matched))
+
+    scored_articles.sort(key=lambda x: x[1], reverse=True)
+
+    result = [x[0] for x in scored_articles[:max_items]]
+
+    # 何も当たらないなら最低限返す
+    if not result:
+        return news_list[:min(3, len(news_list))]
+
+    return result
 
 
 # =========================
 # AI要約
 # =========================
-
-def summarize(news_list: List[Dict[str, str]]) -> tuple[list, list]:
+def summarize(news_list: List[Dict[str, str]], user: Dict[str, Any]) -> tuple[list, list]:
     if not news_list:
         return ["ニュースなし"], ["★ 影響なし"]
 
-    titles = "\n".join(
-        f"{i + 1}. {n['title']}" for i, n in enumerate(news_list)
-    )
-    count = len(news_list)
+    genres = user.get("genres", []) or []
+    genre_text = ", ".join(genres) if genres else "general"
 
-    prompt = (
-        f"以下の{count}件のニュース見出しについて、それぞれ1〜2文で要約し、"
-        "ビジネスへの影響を簡潔に分析してください。"
-        "JSON形式で返してください。"
-        "キーは summary（配列）と impact（配列）です。"
-        "他のテキストは含めず、JSONのみ出力してください。\n\n"
-        f"{titles}"
-    )
+    lines = []
+    for i, n in enumerate(news_list):
+        lines.append(f"{i + 1}. {n['title']} / {n.get('summary', '')}")
+
+    prompt = f"""
+以下のニュースを、選択ジャンル {genre_text} に合う視点で要約してください。
+
+条件:
+- 1記事につき1〜2文
+- 無駄な前置き禁止
+- 事実ベース
+- 日本語
+- JSONのみ出力
+
+出力形式:
+{{
+  "summary": ["...","..."],
+  "impact": ["★ ...","★ ..."]
+}}
+
+impact は「そのジャンルを追う人にとっての影響」を短く書くこと。
+たとえば不動産・建築・金利・資材・スポーツ・スキャンダルなど、選択ジャンルに合わせて書くこと。
+
+対象ニュース:
+{chr(10).join(lines)}
+"""
 
     try:
         res = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[{"role": "user", "content": prompt}],
-            temperature=0.3,
+            temperature=0.2,
         )
         raw = res.choices[0].message.content.strip()
         raw = re.sub(r"^```json\s*", "", raw)
@@ -324,12 +396,7 @@ def summarize(news_list: List[Dict[str, str]]) -> tuple[list, list]:
 # =========================
 # メッセージ作成
 # =========================
-
-def build_message(
-    news: List[Dict[str, str]],
-    summary: list,
-    impact: list,
-) -> List[str]:
+def build_message(news: List[Dict[str, str]], summary: list, impact: list) -> List[str]:
     lines = []
     for i, n in enumerate(news):
         s = summary[i] if i < len(summary) else n["title"]
@@ -349,7 +416,6 @@ def build_message(
 # =========================
 # LINE送信
 # =========================
-
 def send(user_id: str, messages: List[str]) -> None:
     message_objects = [{"type": "text", "text": m} for m in messages]
     message_objects = message_objects[:LINE_MAX_MESSAGE_OBJECTS]
@@ -373,7 +439,6 @@ def send(user_id: str, messages: List[str]) -> None:
 # =========================
 # 実行
 # =========================
-
 def main():
     users = load_users()
     if not users:
@@ -391,8 +456,8 @@ def main():
             logger.info("非アクティブのためスキップ: %s", user_id)
             continue
 
-        filtered = filter_news(news, user)
-        summary, impact = summarize(filtered)
+        filtered = filter_news_for_user(news, user)
+        summary, impact = summarize(filtered, user)
         messages = build_message(filtered, summary, impact)
         send(user_id, messages)
         sent_count += 1
