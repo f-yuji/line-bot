@@ -207,17 +207,22 @@ def score_article(article: Dict[str, str], user_genres: List[str]) -> int:
 
 def _fetch_single_rss(url: str, max_retries: int = 2) -> feedparser.FeedParserDict:
     """単一RSSソースを取得。リトライ付き"""
+    session = requests.Session()
+    session.headers.update({
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/124.0.0.0 Safari/537.36"
+        ),
+        "Accept": "application/rss+xml, application/xml, text/xml, */*",
+        "Accept-Language": "ja-JP,ja;q=0.9,en;q=0.8",
+        "Referer": "https://news.google.com/",
+        "Cache-Control": "no-cache",
+    })
+
     for attempt in range(1, max_retries + 1):
         try:
-            res = requests.get(url, timeout=20, headers={
-                "User-Agent": (
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/124.0.0.0 Safari/537.36"
-                ),
-                "Accept": "application/rss+xml, application/xml, text/xml, */*",
-                "Accept-Language": "ja,en;q=0.9",
-            })
+            res = session.get(url, timeout=20)
 
             logger.info(
                 "RSS HTTP応答: url=%s status=%d size=%d",
@@ -225,7 +230,10 @@ def _fetch_single_rss(url: str, max_retries: int = 2) -> feedparser.FeedParserDi
             )
 
             if res.status_code == 403:
-                logger.warning("RSS 403 Forbidden: %s", url)
+                logger.warning(
+                    "RSS 403 Forbidden: %s | body=%s",
+                    url, res.text[:200],
+                )
                 return feedparser.FeedParserDict(entries=[])
 
             res.raise_for_status()
@@ -242,11 +250,12 @@ def _fetch_single_rss(url: str, max_retries: int = 2) -> feedparser.FeedParserDi
                         "RSS bozo検出だがエントリあり(%d件)、続行: %s",
                         len(feed.entries), url,
                     )
+                logger.info("RSS取得成功: url=%s entries=%d", url, len(feed.entries))
                 return feed
 
             logger.warning(
-                "RSS 試行%d/%d エントリ0件: %s",
-                attempt, max_retries, url,
+                "RSS 試行%d/%d エントリ0件: %s | body=%s",
+                attempt, max_retries, url, res.text[:200],
             )
 
         except requests.RequestException as e:
@@ -263,6 +272,7 @@ def _fetch_single_rss(url: str, max_retries: int = 2) -> feedparser.FeedParserDi
         if attempt < max_retries:
             time.sleep(3 * attempt)
 
+    logger.error("RSS全試行失敗: %s", url)
     return feedparser.FeedParserDict(entries=[])
 
 
