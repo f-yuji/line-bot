@@ -50,7 +50,6 @@ LINE_MAX_MESSAGE_OBJECTS = 5
 LINE_TEXT_SAFE_LIMIT = 4500
 
 EXCLUDE_KEYWORDS = [
-    "芸能", "女優", "俳優", "アイドル", "不倫", "炎上",
     "占い", "グラビア", "プレゼント", "ランキング", "キャンペーン",
     "話題", "SNSで反響", "バズ", "トレンド",
 ]
@@ -70,6 +69,8 @@ STRONG_KEYWORDS: Dict[str, List[str]] = {
     "tech":           ["クラウド障害", "データ漏洩", "サイバー攻撃"],
     "international":  ["停戦", "制裁", "外交交渉", "G7", "NATO"],
     "materials":      ["資材高騰", "セメント", "鉄骨"],
+    "scandal":        ["不倫", "逮捕", "スキャンダル", "疑惑", "辞任", "失言"],
+    "entertainment":  ["芸能", "女優", "俳優", "アイドル", "映画", "ドラマ"],
 }
 
 # 弱キーワード: +1 (カテゴリ判定にも使用)
@@ -85,6 +86,8 @@ CATEGORY_KEYWORDS: Dict[str, List[str]] = {
     "tech":           ["テック", "IT", "ソフトウェア", "クラウド", "データセンター"],
     "international":  ["米国", "中国", "欧州", "ロシア", "戦争", "制裁", "外交"],
     "materials":      ["鋼材", "コンクリート", "セメント", "木材"],
+    "scandal":        ["不倫", "逮捕", "スキャンダル", "疑惑", "辞任", "失言", "炎上"],
+    "entertainment":  ["芸能", "女優", "俳優", "アイドル", "映画", "ドラマ"],
 }
 
 CATEGORY_LABELS: Dict[str, str] = {
@@ -99,6 +102,8 @@ CATEGORY_LABELS: Dict[str, str] = {
     "tech":           "テック",
     "international":  "国際",
     "materials":      "資材",
+    "scandal":        "スキャンダル",
+    "entertainment":  "芸能",
     "other":          "その他",
 }
 
@@ -429,18 +434,6 @@ def summarize(news_list: List[Dict[str, str]]) -> tuple[list, list]:
     )
     count = len(news_list)
 
-    # 記事のカテゴリを重複排除して最大3つ抽出
-    seen = set()
-    unique_categories = []
-    for n in news_list:
-        cat = n.get("category", "other")
-        if cat != "other" and cat not in seen:
-            seen.add(cat)
-            unique_categories.append(CATEGORY_LABELS.get(cat, cat))
-        if len(unique_categories) == 3:
-            break
-    category_str = "、".join(unique_categories) if unique_categories else "経済、国際、その他"
-
     prompt = (
         f"以下の{count}件のニュース見出しについてまとめてください。\n\n"
         "【summary】各記事を2行形式で：\n"
@@ -448,13 +441,13 @@ def summarize(news_list: List[Dict[str, str]]) -> tuple[list, list]:
         "2行目：→ 補足（20〜40文字）\n"
         "・敬語不要、主語省略OK\n"
         "・例：「円安が加速、150円台突入\\n→ 輸入コスト上昇が続く見通し」\n\n"
-        f"【impact】記事全体を踏まえてカテゴリ単位で流れをまとめる（最大3項目）：\n"
+        "【impact】記事全体を踏まえて、必ず2〜3項目でまとめる：\n"
         "形式：カテゴリ名（日本語）\\n→ 今の流れ・状況（短く、断定形）\n"
+        "・カテゴリは記事の内容から自由に決めてよい\n"
         "・個別企業名や単発ニュースの言い換えにしない\n"
         "・「今どういう流れか」が分かる抽象度にする\n"
-        "・必要なら最後に「全体\\n→ 全体の空気感」を1行追加してもよい\n"
-        "・「影響不明」は絶対に出力しない。書けない項目は省略する\n"
-        f"・対象カテゴリ：{category_str}\n"
+        "・最後の1項目は「全体\\n→ 全体の空気感」にする\n"
+        "・「影響不明」は絶対に出力しない\n"
         "・例：「国際\\n→ 中東・ロシアまわりで不安定続く」\n\n"
         "JSON形式で返してください。キーは summary（配列）と impact（配列）です。\n"
         "他のテキストは含めず、JSONのみ出力してください。\n\n"
