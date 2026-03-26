@@ -34,7 +34,13 @@ supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # ─── 定数 ───
 LINE_URL = "https://api.line.me/v2/bot/message/push"
-RSS_URL = "https://news.google.com/rss?hl=ja&gl=JP&ceid=JP:ja"
+
+# Google Newsがブロックされた場合のフォールバック付きRSSソース
+RSS_SOURCES = [
+    "https://news.google.com/rss?hl=ja&gl=JP&ceid=JP:ja",
+    "https://news.yahoo.co.jp/rss/topics/top-picks.xml",
+    "https://assets.wor.jp/rss/rdf/nikkei/news.rdf",
+]
 
 MAX_FETCH_ITEMS = 40
 DEFAULT_MAX_ITEMS = 5
@@ -81,6 +87,8 @@ def extract_source_name(url: str) -> str:
             return "ITmedia"
         if "reuters" in host:
             return "Reuters"
+        if "yahoo" in host:
+            return "Yahoo"
         return host
     except Exception:
         return "不明"
@@ -136,46 +144,89 @@ def load_users() -> Dict[str, Any]:
 # ニュース取得
 # =========================
 
-def _fetch_rss(url: str, max_retries: int = 3) -> feedparser.FeedParserDict:
-    """RSSを取得。不正XMLをサニタイズしてからパースし、失敗時はリトライする"""
+def _fetch_single_rss(url: str, max_retries: int = 2) -> feedparser.FeedParserDict:
+    """単一RSSソースを取得。リトライ付き"""
     for attempt in range(1, max_retries + 1):
         try:
             res = requests.get(url, timeout=20, headers={
-                "User-Agent": "Mozilla/5.0 (compatible; NewsBot/1.0)"
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/124.0.0.0 Safari/537.36"
+                ),
+                "Accept": "application/rss+xml, application/xml, text/xml, */*",
+                "Accept-Language": "ja,en;q=0.9",
             })
+
+            logger.info(
+                "RSS HTTP応答: url=%s status=%d size=%d",
+                url, res.status_code, len(res.text),
+            )
+
+            if res.status_code == 403:
+                logger.warning("RSS 403 Forbidden: %s", url)
+                return feedparser.FeedParserDict(entries=[])
+
             res.raise_for_status()
             raw_xml = res.text
 
-            # Google News RSSに混入する不正な制御文字を除去
+            # 不正な制御文字を除去
             raw_xml = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", "", raw_xml)
 
             feed = feedparser.parse(raw_xml)
 
             if feed.entries:
                 if feed.bozo:
-                    logger.info("RSS bozo検出だがエントリあり(%d件)、続行", len(feed.entries))
+                    logger.info(
+                        "RSS bozo検出だがエントリあり(%d件)、続行: %s",
+                        len(feed.entries), url,
+                    )
                 return feed
 
-            logger.warning("RSS取得 試行%d/%d: エントリ0件", attempt, max_retries)
+            logger.warning(
+                "RSS 試行%d/%d エントリ0件: %s",
+                attempt, max_retries, url,
+            )
 
+        except requests.RequestException as e:
+            logger.warning(
+                "RSS 試行%d/%d HTTPエラー: %s → %s",
+                attempt, max_retries, url, e,
+            )
         except Exception as e:
-            logger.warning("RSS取得 試行%d/%d 失敗: %s", attempt, max_retries, e)
+            logger.warning(
+                "RSS 試行%d/%d 予期しないエラー: %s → %s",
+                attempt, max_retries, url, e,
+            )
 
         if attempt < max_retries:
-            time.sleep(2 * attempt)
+            time.sleep(3 * attempt)
 
-    logger.error("RSS取得: %d回リトライ後も失敗", max_retries)
     return feedparser.FeedParserDict(entries=[])
 
 
 def fetch_news() -> List[Dict[str, str]]:
-    feed = _fetch_rss(RSS_URL)
+    """複数RSSソースを順に試し、最初に成功したものを使う"""
+    feed = None
+
+    for rss_url in RSS_SOURCES:
+        logger.info("RSSソース試行: %s", rss_url)
+        result = _fetch_single_rss(rss_url)
+        if result.entries:
+            logger.info("RSSソース成功: %s (%d件)", rss_url, len(result.entries))
+            feed = result
+            break
+        logger.warning("RSSソース失敗、次へ: %s", rss_url)
+
+    if feed is None or not feed.entries:
+        logger.error("全RSSソース失敗")
+        return []
 
     news = []
     for entry in feed.entries[:MAX_FETCH_ITEMS]:
         title = clean_text(entry.get("title", ""))
         link = entry.get("link", "")
-        summary = strip_html(entry.get("summary", ""))
+        summary = strip_html(entry.get("summary", entry.get("description", "")))
 
         if not title or not link:
             continue
