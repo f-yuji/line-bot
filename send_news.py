@@ -11,17 +11,8 @@ from dotenv import load_dotenv
 from openai import OpenAI
 from supabase import create_client
 
-# 環境変数読み込み（Renderなら無くてもOK）
+# 環境変数読み込み
 load_dotenv()
-
-# Supabase接続
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY")
-
-supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
-
-# OpenAIクライアント
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 # ─── ログ設定 ───
 logging.basicConfig(
@@ -30,11 +21,17 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# ─── 環境変数 ───
 LINE_CHANNEL_ACCESS_TOKEN = os.environ["LINE_CHANNEL_ACCESS_TOKEN"]
 OPENAI_API_KEY = os.environ["OPENAI_API_KEY"]
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
+# ─── クライアント ───
 client = OpenAI(api_key=OPENAI_API_KEY)
+supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
+# ─── 定数 ───
 LINE_URL = "https://api.line.me/v2/bot/message/push"
 RSS_URL = "https://news.google.com/rss?hl=ja&gl=JP&ceid=JP:ja"
 
@@ -48,13 +45,15 @@ EXCLUDE_KEYWORDS = [
 ]
 
 GENRE_KEYWORDS: Dict[str, List[str]] = {
-    "real_estate": ["不動産", "土地", "賃貸", "地価"],
-    "construction": ["建設", "工事", "建材", "施工"],
-    "interest_rates": ["金利", "日銀", "利上げ", "利下げ"],
-    "energy": ["原油", "電力", "ガス"],
-    "ai": ["AI", "人工知能", "半導体", "生成AI"],
-    "sports": ["野球", "サッカー", "試合"],
-    "economy": ["経済", "株価", "インフレ"],
+    "real_estate": ["不動産", "土地", "賃貸", "地価", "マンション", "住宅"],
+    "construction": ["建設", "工事", "建材", "施工", "塗装", "防水", "資材"],
+    "interest_rates": ["金利", "日銀", "利上げ", "利下げ", "長期金利", "政策金利"],
+    "energy": ["原油", "電力", "ガス", "燃料", "LNG"],
+    "ai": ["AI", "人工知能", "半導体", "生成AI", "LLM", "OpenAI"],
+    "sports": ["野球", "サッカー", "試合", "五輪", "W杯"],
+    "economy": ["経済", "株価", "インフレ", "景気", "為替", "円安", "円高"],
+    "business": ["企業", "決算", "業績", "M&A", "値上げ", "市場"],
+    "tech": ["テック", "IT", "ソフトウェア", "クラウド", "データセンター", "半導体"],
 }
 
 
@@ -77,6 +76,10 @@ def extract_source_name(url: str) -> str:
             return "日経"
         if "nhk" in host:
             return "NHK"
+        if "itmedia" in host:
+            return "ITmedia"
+        if "reuters" in host:
+            return "Reuters"
         return host
     except Exception:
         return "不明"
@@ -96,12 +99,35 @@ def shorten_url(url: str) -> str:
         return url
 
 
+def plan_max_items(plan: str) -> int:
+    return {
+        "free": 3,
+        "light": 5,
+        "premium": 8,
+    }.get(plan, DEFAULT_MAX_ITEMS)
+
+
 def load_users() -> Dict[str, Any]:
     try:
-        with open("user_settings.json", "r", encoding="utf-8") as f:
-            return json.load(f).get("users", {})
-    except (FileNotFoundError, json.JSONDecodeError) as e:
-        logger.error("user_settings.json 読み込み失敗: %s", e)
+        res = supabase.table("users").select("*").eq("active", True).execute()
+        rows = res.data or []
+
+        users: Dict[str, Any] = {}
+        for row in rows:
+            user_id = row["user_id"]
+            plan = row.get("plan", "free")
+            users[user_id] = {
+                "plan": plan,
+                "active": row.get("active", True),
+                "genres": row.get("genres", []) or [],
+                "max_items": plan_max_items(plan),
+            }
+
+        logger.info("Supabaseユーザー読込: %d件", len(users))
+        return users
+
+    except Exception as e:
+        logger.error("Supabase users 読み込み失敗: %s", e)
         return {}
 
 
@@ -134,7 +160,7 @@ def fetch_news() -> List[Dict[str, str]]:
             "short_link": shorten_url(link),
         })
 
-    logger.info("ニュース取得: %d 件", len(news))
+    logger.info("ニュース取得: %d件", len(news))
     return news
 
 
@@ -143,7 +169,7 @@ def fetch_news() -> List[Dict[str, str]]:
 # =========================
 
 def match_keywords(news: Dict[str, str], keywords: List[str]) -> bool:
-    text = news["title"] + " " + news.get("summary", "")
+    text = f"{news['title']} {news.get('summary', '')}"
     return any(k in text for k in keywords)
 
 
@@ -151,7 +177,7 @@ def filter_news(
     news_list: List[Dict[str, str]], user: Dict[str, Any]
 ) -> List[Dict[str, str]]:
     plan = user.get("plan", "free")
-    genres = user.get("genres", [])
+    genres = user.get("genres", []) or []
     max_items = user.get("max_items", DEFAULT_MAX_ITEMS)
 
     if plan == "free" or not genres:
@@ -177,14 +203,15 @@ def summarize(news_list: List[Dict[str, str]]) -> tuple[list, list]:
         return ["ニュースなし"], ["★ 影響なし"]
 
     titles = "\n".join(
-        f"{i+1}. {n['title']}" for i, n in enumerate(news_list)
+        f"{i + 1}. {n['title']}" for i, n in enumerate(news_list)
     )
     count = len(news_list)
 
     prompt = (
         f"以下の{count}件のニュース見出しについて、それぞれ1〜2文で要約し、"
-        "ビジネスへの影響を簡潔に分析してください。\n"
-        "JSON形式で返してください。キーは summary（配列）と impact（配列）です。\n"
+        "ビジネスへの影響を簡潔に分析してください。"
+        "JSON形式で返してください。"
+        "キーは summary（配列）と impact（配列）です。"
         "他のテキストは含めず、JSONのみ出力してください。\n\n"
         f"{titles}"
     )
@@ -196,11 +223,15 @@ def summarize(news_list: List[Dict[str, str]]) -> tuple[list, list]:
             temperature=0.3,
         )
         raw = res.choices[0].message.content.strip()
-        # ```json ... ``` のフェンスを除去
         raw = re.sub(r"^```json\s*", "", raw)
         raw = re.sub(r"\s*```$", "", raw)
+
         data = json.loads(raw)
-        return data.get("summary", ["要約失敗"]), data.get("impact", ["★ 影響不明"])
+        return (
+            data.get("summary", ["要約失敗"]),
+            data.get("impact", ["★ 影響不明"]),
+        )
+
     except json.JSONDecodeError as e:
         logger.error("OpenAI応答のJSONパース失敗: %s", e)
         return ["要約失敗"], ["★ 影響不明"]
@@ -217,17 +248,15 @@ def build_message(
     news: List[Dict[str, str]],
     summary: list,
     impact: list,
-    user: Dict[str, Any],
 ) -> List[str]:
     lines = []
     for i, n in enumerate(news):
         s = summary[i] if i < len(summary) else n["title"]
-        lines.append(f"{i+1}. {s}\n{n['short_link']}")
+        lines.append(f"{i + 1}. {s}\n{n['short_link']}")
 
     msg1 = "\n\n".join(lines)
     msg2 = "\n\n".join(impact)
 
-    # LINE の文字数制限を考慮
     if len(msg1) > LINE_TEXT_SAFE_LIMIT:
         msg1 = msg1[:LINE_TEXT_SAFE_LIMIT] + "\n…(省略)"
     if len(msg2) > LINE_TEXT_SAFE_LIMIT:
@@ -241,7 +270,6 @@ def build_message(
 # =========================
 
 def send(user_id: str, messages: List[str]) -> None:
-    # LINE は1回のpushで最大5メッセージオブジェクト
     message_objects = [{"type": "text", "text": m} for m in messages]
     message_objects = message_objects[:LINE_MAX_MESSAGE_OBJECTS]
 
@@ -284,7 +312,7 @@ def main():
 
         filtered = filter_news(news, user)
         summary, impact = summarize(filtered)
-        messages = build_message(filtered, summary, impact, user)
+        messages = build_message(filtered, summary, impact)
         send(user_id, messages)
         sent_count += 1
 
