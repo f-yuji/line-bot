@@ -77,7 +77,8 @@ def ensure_user_exists(user_id: str) -> dict:
         save_settings(data)
 
     return users[user_id]
-
+print("saved users:", users)
+print("save path:", USER_SETTINGS_PATH.resolve())
 
 def update_user(user_id: str, **kwargs) -> dict:
     data = load_settings()
@@ -168,6 +169,7 @@ def handle_follow(event):
 
 @handler.add(MessageEvent, message=TextMessageContent)
 def handle_message(event):
+    print("message from:", user_id, text)
     user_id = event.source.user_id
     text = event.message.text.strip()
 
