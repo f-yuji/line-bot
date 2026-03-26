@@ -8,9 +8,6 @@ import feedparser
 import requests
 from openai import OpenAI
 
-from dotenv import load_dotenv
-load_dotenv()
-
 LINE_TOKEN = os.environ["LINE_TOKEN"]
 OPENAI_API_KEY = os.environ["OPENAI_API_KEY"]
 LINE_TARGET_USER_ID = os.environ["LINE_TARGET_USER_ID"]
