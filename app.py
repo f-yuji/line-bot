@@ -52,68 +52,25 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ─── ジャンル定義 ───
-ALLOWED_GENRES = {
-    "不動産": "real_estate",
-    "real_estate": "real_estate",
-
-    "建築": "construction",
-    "建設": "construction",
-    "construction": "construction",
-
-    "金利": "interest_rates",
-    "interest_rates": "interest_rates",
-
-    "資材": "materials",
-    "建材": "materials",
-    "materials": "materials",
-
-    "経済": "economy",
-    "economy": "economy",
-
-    "ai": "ai",
-    "AI": "ai",
-    "人工知能": "ai",
-
-    "テック": "tech",
-    "tech": "tech",
-    "IT": "tech",
-
-    "ビジネス": "business",
-    "business": "business",
-
-    "エネルギー": "energy",
-    "energy": "energy",
-
-    "スポーツ": "sports",
-    "sports": "sports",
-
-    "国際": "international",
-    "international": "international",
-
-    "スキャンダル": "scandal",
-    "scandal": "scandal",
-
-    "芸能": "entertainment",
-    "entertainment": "entertainment",
+# 表示ジャンル → 内部カテゴリ配列
+DISPLAY_GENRE_MAP = {
+    "お金":     ["economy", "interest_rates", "real_estate"],
+    "仕事":     ["business", "construction"],
+    "世界":     ["international"],
+    "AI":       ["ai", "tech"],
+    "暮らし":   ["energy", "materials"],
+    "話題":     ["entertainment", "scandal", "other"],
+    "スポーツ": ["sports"],
 }
 
-GENRE_LABELS = {
-    "real_estate": "不動産",
-    "construction": "建築",
-    "interest_rates": "金利",
-    "materials": "資材",
-    "economy": "経済",
-    "ai": "AI",
-    "tech": "テック",
-    "business": "ビジネス",
-    "energy": "エネルギー",
-    "sports": "スポーツ",
-    "international": "国際",
-    "scandal": "スキャンダル",
-    "entertainment": "芸能",
+# 内部カテゴリ → 表示ジャンル（逆引き）
+INTERNAL_TO_DISPLAY = {
+    cat: display
+    for display, cats in DISPLAY_GENRE_MAP.items()
+    for cat in cats
 }
 
-GENRE_ORDER = list(GENRE_LABELS.keys())  # 表示順固定
+DISPLAY_GENRE_ORDER = list(DISPLAY_GENRE_MAP.keys())  # 表示順固定
 
 
 # テスト中はfreeでも選べるようにしておく
@@ -156,24 +113,30 @@ def ensure_user(user_id: str):
 
 # ─── 補助 ───
 def normalize_genres(raw_text: str):
-    normalized_text = raw_text.replace("\u3000", " ")
-    items = [x.strip() for x in normalized_text.split(",") if x.strip()]
+    """表示ジャンル名 → 内部カテゴリ配列に展開する"""
+    text = raw_text.replace("\u3000", " ")
+    items = [x.strip() for x in text.split(",") if x.strip()]
     result = []
-
-    lower_map = {k.lower(): v for k, v in ALLOWED_GENRES.items()}
-
+    lower_map = {k.lower(): k for k in DISPLAY_GENRE_MAP}
     for item in items:
-        mapped = lower_map.get(item.lower())
-        if mapped and mapped not in result:
-            result.append(mapped)
-
+        display = lower_map.get(item.lower())
+        if display:
+            for cat in DISPLAY_GENRE_MAP[display]:
+                if cat not in result:
+                    result.append(cat)
     return result
 
 
 def format_genres(genres):
+    """内部カテゴリ配列 → 重複のない表示ジャンル名に変換する"""
     if not genres:
         return "なし"
-    return ", ".join(GENRE_LABELS.get(g, g) for g in genres)
+    seen = []
+    for cat in genres:
+        d = INTERNAL_TO_DISPLAY.get(cat)
+        if d and d not in seen:
+            seen.append(d)
+    return ", ".join(seen) if seen else "なし"
 
 
 # ─── LINE UI ヘルパー ───
@@ -213,19 +176,19 @@ def reply_flex(reply_token: str, flex_msg: FlexMessage) -> None:
 
 
 def build_genre_flex(current_genres: list) -> FlexMessage:
-    """ジャンルトグルパネル。タップで選択/解除、再送信で状態反映。"""
+    """表示ジャンル単位のトグルパネル。タップで選択/解除、再送信で状態反映。"""
     rows = []
-    for i in range(0, len(GENRE_ORDER), 3):
-        chunk = GENRE_ORDER[i:i + 3]
+    for i in range(0, len(DISPLAY_GENRE_ORDER), 3):
+        chunk = DISPLAY_GENRE_ORDER[i:i + 3]
         buttons = []
-        for key in chunk:
-            label = GENRE_LABELS[key]
-            selected = key in current_genres
+        for display in chunk:
+            internals = DISPLAY_GENRE_MAP[display]
+            selected = any(c in current_genres for c in internals)
             buttons.append(FlexButton(
                 action=PostbackAction(
-                    label=f"✓{label}" if selected else label,
-                    data=f"toggle_genre:{key}",
-                    display_text=label,
+                    label=f"✓{display}" if selected else display,
+                    data=f"toggle_display_genre:{display}",
+                    display_text=display,
                 ),
                 style="primary" if selected else "secondary",
                 height="sm",
@@ -236,7 +199,7 @@ def build_genre_flex(current_genres: list) -> FlexMessage:
             buttons.append(FlexBox(layout="vertical", contents=[], flex=1))
         rows.append(FlexBox(layout="horizontal", contents=buttons, spacing="xs"))
 
-    header_note = f"現在: {format_genres(current_genres)}" if current_genres else "未選択（全カテゴリ配信）"
+    header_note = f"現在: {format_genres(current_genres)}" if current_genres else "未選択（全ジャンル配信）"
 
     bubble = FlexBubble(
         header=FlexBox(
@@ -365,14 +328,13 @@ def handle_follow(event):
     reply_text(
         event.reply_token,
         "登録完了\n\n"
+        "朝6時・夜8時にニュースを届けます。\n\n"
         "使い方:\n"
-        "・開始\n"
-        "・停止\n"
-        "・プラン\n"
-        "・ジャンル\n"
-        "・ジャンル 不動産,建築,金利\n\n"
-        "設定可能:\n"
-        "不動産, 建築, 金利, 資材, 経済, AI, テック, ビジネス, エネルギー, スポーツ, 国際, スキャンダル, 芸能",
+        "・開始 / 停止\n"
+        "・ジャンル → ボタンで選べる\n"
+        "・プラン → 現在の設定を確認\n\n"
+        "選べるジャンル:\n"
+        "お金 / 仕事 / 世界 / AI / 暮らし / 話題 / スポーツ",
         quick_reply=main_quick_reply(),
     )
 
@@ -430,12 +392,11 @@ def handle_message(event):
                 event.reply_token,
                 "ジャンル認識できなかった\n"
                 "例:\n"
-                "ジャンル 不動産,建築,金利",
+                "ジャンル お金,AI,スポーツ",
                 quick_reply=qr,
             )
             return
 
-        new_genres = new_genres[:rules["max_genres"]]
         save_user(user_id, active=True, plan=plan, genres=new_genres)
         reply_text(
             event.reply_token,
@@ -460,13 +421,17 @@ def handle_postback(event):
     active = user.get("active", True)
     genres = list(user.get("genres", []) or [])
 
-    if data.startswith("toggle_genre:"):
-        key = data.split(":", 1)[1]
-        if key in genres:
-            genres.remove(key)
+    if data.startswith("toggle_display_genre:"):
+        display = data.split(":", 1)[1]
+        internals = DISPLAY_GENRE_MAP.get(display, [])
+        if any(c in genres for c in internals):
+            # 選択中 → 全解除
+            genres = [c for c in genres if c not in internals]
         else:
-            if len(genres) < plan_rules(plan)["max_genres"]:
-                genres.append(key)
+            # 未選択 → 全追加
+            for cat in internals:
+                if cat not in genres:
+                    genres.append(cat)
         save_user(user_id, active=active, plan=plan, genres=genres)
         reply_flex(event.reply_token, build_genre_flex(genres))
 
