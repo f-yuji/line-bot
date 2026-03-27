@@ -632,7 +632,7 @@ def build_message(
             t_lines.append(f"・{theme}")
             t_lines.append(f"「{line}」")
             t_lines.append("")
-    t_lines.append("気になるニュース、このLINEで聞いてもらえれば👌")
+    t_lines.append("気になるニュース、このLINEで聞いてもらえれば👌\nURLほしいときもそのまま聞いて")
     msg2 = "\n".join(t_lines)
 
     results = []
