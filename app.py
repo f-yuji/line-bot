@@ -325,6 +325,29 @@ def _normalize_text(text: str) -> str:
     return re.sub(r"\s+", "", (text or "").lower())
 
 
+def _normalize_query_for_match(text: str) -> str:
+    t = _normalize_text(text)
+
+    suffixes = [
+        "ってなんなの", "ってなんだ", "ってなに", "って何",
+        "とはなんなの", "とはなんだ", "とはなに", "とは何",
+        "ってだれ", "って誰", "とはだれ", "とは誰",
+        "ってどこ", "とはどこ", "って何者",
+        "って", "とは", "とは？", "とは?", "？", "?", "ー", "～",
+    ]
+
+    changed = True
+    while changed:
+        changed = False
+        for s in suffixes:
+            ns = _normalize_text(s)
+            if ns and t.endswith(ns):
+                t = t[: -len(ns)]
+                changed = True
+
+    return t.strip()
+
+
 def _is_context_alive(ctx: dict, ttl_hours: int = _CONTEXT_TTL_HOURS) -> bool:
     if not ctx:
         return False
@@ -429,6 +452,7 @@ def is_related_to_news_context(user_id: str, text: str) -> bool:
 
     payload = ctx.get("payload", {}) or {}
     norm_text = _normalize_text(text)
+    match_text = _normalize_query_for_match(text)
 
     if not norm_text:
         return False
@@ -436,12 +460,18 @@ def is_related_to_news_context(user_id: str, text: str) -> bool:
     if _looks_like_article_reference(text):
         return True
 
+    if not match_text:
+        return False
+
     for token in _collect_context_tokens(payload):
         norm_token = _normalize_text(token)
         if not norm_token:
             continue
 
         if norm_token in norm_text or norm_text in norm_token:
+            return True
+
+        if norm_token in match_text or match_text in norm_token:
             return True
 
     return False
