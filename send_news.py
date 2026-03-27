@@ -425,32 +425,47 @@ def filter_news(
 # AI要約
 # =========================
 
-def summarize(news_list: List[Dict[str, str]]) -> tuple[list, list]:
+def summarize(news_list: List[Dict[str, str]]) -> Dict[str, Any]:
+    """
+    各記事の reason / interpretation と、全体の summary / impact / topics を返す。
+    戻り値: {
+        "articles": [{"reason": str, "interpretation": str}, ...],
+        "summary":  [str, str, str],
+        "impact":   [str, str, str],
+        "topics":   [{"theme": str, "line": str}, ...],
+    }
+    """
     if not news_list:
-        return ["ニュースなし"], ["★ 影響なし"]
+        return {"articles": [], "summary": [], "impact": [], "topics": []}
 
-    titles = "\n".join(
-        f"{i + 1}. {n['title']}" for i, n in enumerate(news_list)
-    )
     count = len(news_list)
+    titles = "\n".join(f"{i + 1}. {n['title']}" for i, n in enumerate(news_list))
 
     prompt = (
-        f"以下の{count}件のニュース見出しについてまとめてください。\n\n"
-        "【summary】各記事を2行形式で：\n"
-        "1行目：要点（20〜40文字、断定形）\n"
-        "2行目：→ 補足（20〜40文字）\n"
-        "・敬語不要、主語省略OK\n"
-        "・例：「円安が加速、150円台突入\\n→ 輸入コスト上昇が続く見通し」\n\n"
-        "【impact】記事全体を踏まえて、必ず2〜3項目でまとめる：\n"
-        "形式：カテゴリ名（日本語）\\n→ 今の流れ・状況（短く、断定形）\n"
-        "・カテゴリは記事の内容から自由に決めてよい\n"
-        "・個別企業名や単発ニュースの言い換えにしない\n"
-        "・「今どういう流れか」が分かる抽象度にする\n"
-        "・最後の1項目は「全体\\n→ 全体の空気感」にする\n"
-        "・「影響不明」は絶対に出力しない\n"
-        "・例：「国際\\n→ 中東・ロシアまわりで不安定続く」\n\n"
-        "JSON形式で返してください。キーは summary（配列）と impact（配列）です。\n"
-        "他のテキストは含めず、JSONのみ出力してください。\n\n"
+        f"以下の{count}件のニュース見出しを、会話に使いやすい形でまとめてください。\n\n"
+        "【文体ルール（必須）】\n"
+        "・短く、会話調にする\n"
+        "・「〜です」「〜ます」を避ける\n"
+        "・「〜そう」「〜かも」「〜っぽい」を適度に使う\n"
+        "・説明調・専門家コメント調にしない\n"
+        "・長い文は禁止\n\n"
+        "【articles】各記事ごとに：\n"
+        "・reason: 背景や理由（10〜20文字、体言止めか短い名詞句）\n"
+        "  例：「金利差の拡大が影響」「軍事衝突への懸念」\n"
+        "・interpretation: 読者への解釈（15〜25文字、〜そう/〜っぽい調）\n"
+        "  例：「原油価格に影響出そう」「家計にじわっと効いてきそう」\n"
+        "  ※ 👉 は含めない\n\n"
+        "【summary】全体を3行：\n"
+        "・各20文字以内、会話調の一言\n"
+        "  例：「中東ちょっと荒れてる」\n\n"
+        "【impact】生活・仕事への影響を3行：\n"
+        "・各40文字以内、具体的でカジュアルに\n"
+        "  例：「電気代また上がりそうだから、少し余裕見といた方がいいかも」\n\n"
+        "【topics】会話ネタを3つ（summary/impactと重複しすぎない話題で）：\n"
+        "・theme: テーマ（10文字以内）\n"
+        "・line: そのまま使える一言（です・ます調OK、30〜50文字）\n"
+        "  例：「最近ちょっと荒れてるらしいですね」\n\n"
+        "JSONのみ返してください。キー: articles, summary, impact, topics\n\n"
         f"{titles}"
     )
 
@@ -465,17 +480,19 @@ def summarize(news_list: List[Dict[str, str]]) -> tuple[list, list]:
         raw = re.sub(r"\s*```$", "", raw)
 
         data = json.loads(raw)
-        return (
-            data.get("summary", ["要約失敗"]),
-            data.get("impact", []),
-        )
+        return {
+            "articles": data.get("articles", []),
+            "summary":  data.get("summary", []),
+            "impact":   data.get("impact", []),
+            "topics":   data.get("topics", []),
+        }
 
     except json.JSONDecodeError as e:
         logger.error("OpenAI応答のJSONパース失敗: %s", e)
-        return ["要約失敗"], []
+        return {"articles": [], "summary": [], "impact": [], "topics": []}
     except Exception as e:
         logger.error("OpenAI API エラー: %s", e)
-        return ["要約失敗"], []
+        return {"articles": [], "summary": [], "impact": [], "topics": []}
 
 
 # =========================
@@ -484,43 +501,65 @@ def summarize(news_list: List[Dict[str, str]]) -> tuple[list, list]:
 
 def build_message(
     news: List[Dict[str, str]],
-    summary: list,
-    impact: list,
+    ai: Dict[str, Any],
 ) -> List[str]:
-    # msg1: 本文
+    articles_ai = ai.get("articles", [])
+    summary    = ai.get("summary", [])
+    impact     = ai.get("impact", [])
+    topics     = ai.get("topics", [])
+
+    # ── 1通目 ──
     lines = ["今日のニュース、ここだけ。", ""]
     for i, n in enumerate(news):
         num = CIRCLED[i] if i < len(CIRCLED) else f"{i + 1}."
         cat = CATEGORY_LABELS.get(n.get("category", "other"), "その他")
-        s = summary[i] if i < len(summary) else n["title"]
-        lines.append(f"{num}【{cat}】\n{s}")
+        a = articles_ai[i] if i < len(articles_ai) else {}
+        reason = a.get("reason", "") if isinstance(a, dict) else ""
+        interp = a.get("interpretation", "") if isinstance(a, dict) else ""
+
+        lines.append(f"{num}【{cat}】")
+        lines.append(n["title"])
+        if reason:
+            lines.append(f"→ {reason}")
+        if interp:
+            lines.append(f"👉 {interp}")
         lines.append("")
-    msg1 = "\n".join(lines).rstrip()
 
-    # msg2: 総評
-    valid_impacts = [imp for imp in impact if imp and "影響不明" not in imp]
-    if valid_impacts:
-        impact_lines = ["ここ押さえておけばOK。", ""]
-        for imp in valid_impacts:
-            impact_lines.append(f"・{imp}")
-            impact_lines.append("")
-        msg2 = "\n".join(impact_lines).rstrip()
-    else:
-        msg2 = ""
+    lines.append("---")
+    lines.append("")
+    lines.append("要するにこんな感じ")
+    lines.append("")
+    for s in summary[:3]:
+        lines.append(f"・{s}")
+    lines.append("")
+    lines.append("影響あるとしたら")
+    lines.append("")
+    for imp in impact[:3]:
+        lines.append(f"・{imp}")
 
-    # msg3: リンク
-    link_lines = ["気になるやつだけ見ればOK。"]
-    for i, n in enumerate(news):
-        num = CIRCLED[i] if i < len(CIRCLED) else f"{i + 1}."
-        short = shorten_url(n["link"])
-        link_lines.append(f"{num} {short}")
-    msg3 = "\n".join(link_lines)
+    msg1 = "\n".join(lines)
 
-    for msg in [msg1, msg2, msg3]:
+    # ── 2通目 ──
+    t_lines = ["⬇️話題に困ったらこれで乗り切ろう⬇️", ""]
+    for t in topics[:3]:
+        if not isinstance(t, dict):
+            continue
+        theme = t.get("theme", "")
+        line  = t.get("line", "")
+        if theme and line:
+            t_lines.append(f"・{theme}")
+            t_lines.append(f"「{line}」")
+            t_lines.append("")
+    t_lines.append("気になるニュース、このLINEで聞いてもらえれば👌")
+    msg2 = "\n".join(t_lines)
+
+    results = []
+    for msg in [msg1, msg2]:
         if len(msg) > LINE_TEXT_SAFE_LIMIT:
             msg = msg[:LINE_TEXT_SAFE_LIMIT] + "\n…(省略)"
+        results.append(msg)
 
-    return [m for m in [msg1, msg2, msg3] if m]
+    return results
 
 
 # =========================
@@ -547,6 +586,16 @@ def send(user_id: str, messages: List[str]) -> None:
         logger.error("LINE送信失敗 (user=%s): %s", user_id, e)
 
 
+def _send_two(user_id: str, messages: List[str]) -> None:
+    """1通目→3秒→2通目 の順に送信する"""
+    if not messages:
+        return
+    send(user_id, [messages[0]])
+    if len(messages) >= 2:
+        time.sleep(3)
+        send(user_id, [messages[1]])
+
+
 # =========================
 # 実行
 # =========================
@@ -568,12 +617,12 @@ def main():
         return
 
     # summarize は全記事で1回だけ呼ぶ
-    all_summaries, all_impacts = summarize(news)
-    summary_cache = {
-        n["link"]: all_summaries[i] if i < len(all_summaries) else n["title"]
+    ai_result = summarize(news)
+    article_cache = {
+        n["link"]: ai_result["articles"][i] if i < len(ai_result["articles"]) else {}
         for i, n in enumerate(news)
     }
-    logger.info("要約キャッシュ作成: %d件", len(summary_cache))
+    logger.info("要約キャッシュ作成: %d件", len(article_cache))
 
     sent_count = 0
     for user_id, user in users.items():
@@ -588,10 +637,11 @@ def main():
         filtered = filter_news(news, user)
         logger.info("送信件数: user=%s %d件", user_id, len(filtered))
 
-        summaries = [summary_cache.get(n["link"], n["title"]) for n in filtered]
+        articles_ai = [article_cache.get(n["link"], {}) for n in filtered]
+        user_ai = {**ai_result, "articles": articles_ai}
 
-        messages = build_message(filtered, summaries, all_impacts)
-        send(user_id, messages)
+        messages = build_message(filtered, user_ai)
+        _send_two(user_id, messages)
         sent_count += 1
 
     record_sent(news)
@@ -633,9 +683,9 @@ def send_news_to_user(user_id: str) -> None:
         logger.warning("初回配信: フィルタ後0件のためスキップ: %s", user_id)
         return
 
-    summaries, impacts = summarize(filtered)
-    messages = build_message(filtered, summaries, impacts)
-    send(user_id, messages)
+    ai_result = summarize(filtered)
+    messages = build_message(filtered, ai_result)
+    _send_two(user_id, messages)
     logger.info("初回配信完了: %s", user_id)
 
 

@@ -13,8 +13,17 @@ from linebot.v3.messaging import (
     MessagingApi,
     ReplyMessageRequest,
     TextMessage,
+    QuickReply,
+    QuickReplyItem,
+    MessageAction,
+    PostbackAction,
+    FlexMessage,
+    FlexBubble,
+    FlexBox,
+    FlexButton,
+    FlexText,
 )
-from linebot.v3.webhooks import FollowEvent, MessageEvent, TextMessageContent
+from linebot.v3.webhooks import FollowEvent, MessageEvent, PostbackEvent, TextMessageContent
 
 from send_news import send_news_to_user
 
@@ -101,6 +110,9 @@ GENRE_LABELS = {
     "entertainment": "芸能",
 }
 
+GENRE_ORDER = list(GENRE_LABELS.keys())  # 表示順固定
+
+
 # テスト中はfreeでも選べるようにしておく
 def plan_rules(plan: str):
     return {
@@ -161,18 +173,100 @@ def format_genres(genres):
     return ", ".join(GENRE_LABELS.get(g, g) for g in genres)
 
 
-def reply_text(reply_token, text):
+# ─── LINE UI ヘルパー ───
+
+def main_quick_reply() -> QuickReply:
+    return QuickReply(items=[
+        QuickReplyItem(action=MessageAction(label="開始", text="開始")),
+        QuickReplyItem(action=MessageAction(label="停止", text="停止")),
+        QuickReplyItem(action=MessageAction(label="ジャンル", text="ジャンル")),
+        QuickReplyItem(action=MessageAction(label="プラン", text="プラン")),
+    ])
+
+
+def reply_text(reply_token: str, text: str, quick_reply: QuickReply = None) -> None:
+    try:
+        with ApiClient(configuration) as api_client:
+            api = MessagingApi(api_client)
+            msg = TextMessage(text=text)
+            if quick_reply:
+                msg.quick_reply = quick_reply
+            api.reply_message(
+                ReplyMessageRequest(reply_token=reply_token, messages=[msg])
+            )
+    except Exception as e:
+        logger.error("LINE返信エラー: %s", e)
+
+
+def reply_flex(reply_token: str, flex_msg: FlexMessage) -> None:
     try:
         with ApiClient(configuration) as api_client:
             api = MessagingApi(api_client)
             api.reply_message(
-                ReplyMessageRequest(
-                    reply_token=reply_token,
-                    messages=[TextMessage(text=text)],
-                )
+                ReplyMessageRequest(reply_token=reply_token, messages=[flex_msg])
             )
     except Exception as e:
         logger.error("LINE返信エラー: %s", e)
+
+
+def build_genre_flex(current_genres: list) -> FlexMessage:
+    """ジャンルトグルパネル。タップで選択/解除、再送信で状態反映。"""
+    rows = []
+    for i in range(0, len(GENRE_ORDER), 3):
+        chunk = GENRE_ORDER[i:i + 3]
+        buttons = []
+        for key in chunk:
+            label = GENRE_LABELS[key]
+            selected = key in current_genres
+            buttons.append(FlexButton(
+                action=PostbackAction(
+                    label=f"✓{label}" if selected else label,
+                    data=f"toggle_genre:{key}",
+                    display_text=label,
+                ),
+                style="primary" if selected else "secondary",
+                height="sm",
+                flex=1,
+            ))
+        # 最終行が3未満の場合は空Boxでパディング
+        while len(buttons) < 3:
+            buttons.append(FlexBox(layout="vertical", contents=[], flex=1))
+        rows.append(FlexBox(layout="horizontal", contents=buttons, spacing="xs"))
+
+    header_note = f"現在: {format_genres(current_genres)}" if current_genres else "未選択（全カテゴリ配信）"
+
+    bubble = FlexBubble(
+        header=FlexBox(
+            layout="vertical",
+            contents=[
+                FlexText(text="ジャンル選択", weight="bold", size="md"),
+                FlexText(text=header_note, size="xs", color="#888888", wrap=True),
+            ],
+        ),
+        body=FlexBox(
+            layout="vertical",
+            contents=rows,
+            spacing="xs",
+        ),
+        footer=FlexBox(
+            layout="vertical",
+            contents=[
+                FlexButton(
+                    action=PostbackAction(
+                        label="クリア（全解除）",
+                        data="clear_genres",
+                        display_text="クリア",
+                    ),
+                    style="link",
+                    height="sm",
+                    color="#aaaaaa",
+                )
+            ],
+        ),
+    )
+    flex_msg = FlexMessage(alt_text="ジャンル選択", contents=bubble)
+    flex_msg.quick_reply = main_quick_reply()
+    return flex_msg
 
 
 # ─── Webhook ───
@@ -205,7 +299,8 @@ def handle_follow(event):
         "・ジャンル\n"
         "・ジャンル 不動産,建築,金利\n\n"
         "設定可能:\n"
-        "不動産, 建築, 金利, 資材, 経済, AI, テック, ビジネス, エネルギー, スポーツ, 国際, スキャンダル, 芸能"
+        "不動産, 建築, 金利, 資材, 経済, AI, テック, ビジネス, エネルギー, スポーツ, 国際, スキャンダル, 芸能",
+        quick_reply=main_quick_reply(),
     )
 
     try:
@@ -226,37 +321,31 @@ def handle_message(event):
     active = user.get("active", True)
     genres = user.get("genres", [])
     rules = plan_rules(plan)
+    qr = main_quick_reply()
 
     if text in ["開始", "スタート", "再開"]:
         save_user(user_id, active=True, plan=plan, genres=genres)
-        reply_text(event.reply_token, "配信を開始した")
+        reply_text(event.reply_token, "配信を開始した", quick_reply=qr)
         return
 
     if text == "停止":
         save_user(user_id, active=False, plan=plan, genres=genres)
-        reply_text(event.reply_token, "配信を停止した")
+        reply_text(event.reply_token, "配信を停止した", quick_reply=qr)
         return
 
     if text == "プラン":
         reply_text(
             event.reply_token,
             f"plan: {plan}\n"
-            f"active: {active}\n"
+            f"active: {'ON' if active else 'OFF'}\n"
             f"genres: {format_genres(genres)}\n"
-            f"max_items: {rules['max_items']}\n"
-            f"max_genres: {rules['max_genres']}"
+            f"max_items: {rules['max_items']}件",
+            quick_reply=qr,
         )
         return
 
     if text == "ジャンル":
-        reply_text(
-            event.reply_token,
-            "設定可能ジャンル:\n"
-            "不動産, 建築, 金利, 資材, 経済, AI, テック, ビジネス, エネルギー, スポーツ, 国際, スキャンダル, 芸能\n\n"
-            f"現在: {format_genres(genres)}\n\n"
-            "例:\n"
-            "ジャンル 不動産,建築,金利"
-        )
+        reply_flex(event.reply_token, build_genre_flex(genres))
         return
 
     if text.startswith("ジャンル "):
@@ -268,17 +357,17 @@ def handle_message(event):
                 event.reply_token,
                 "ジャンル認識できなかった\n"
                 "例:\n"
-                "ジャンル 不動産,建築,金利"
+                "ジャンル 不動産,建築,金利",
+                quick_reply=qr,
             )
             return
 
         new_genres = new_genres[:rules["max_genres"]]
-
         save_user(user_id, active=True, plan=plan, genres=new_genres)
-
         reply_text(
             event.reply_token,
-            f"ジャンル更新: {format_genres(new_genres)}"
+            f"ジャンル更新: {format_genres(new_genres)}",
+            quick_reply=qr,
         )
         return
 
@@ -289,8 +378,36 @@ def handle_message(event):
         "・停止\n"
         "・プラン\n"
         "・ジャンル\n"
-        "・ジャンル 不動産,建築,金利"
+        "・ジャンル 不動産,建築,金利",
+        quick_reply=qr,
     )
+
+
+@handler.add(PostbackEvent)
+def handle_postback(event):
+    user_id = event.source.user_id
+    data = event.postback.data
+
+    logger.info("Postback受信: user=%s data=%s", user_id, data)
+
+    user = ensure_user(user_id)
+    plan = user.get("plan", "free")
+    active = user.get("active", True)
+    genres = list(user.get("genres", []) or [])
+
+    if data.startswith("toggle_genre:"):
+        key = data.split(":", 1)[1]
+        if key in genres:
+            genres.remove(key)
+        else:
+            if len(genres) < plan_rules(plan)["max_genres"]:
+                genres.append(key)
+        save_user(user_id, active=active, plan=plan, genres=genres)
+        reply_flex(event.reply_token, build_genre_flex(genres))
+
+    elif data == "clear_genres":
+        save_user(user_id, active=active, plan=plan, genres=[])
+        reply_flex(event.reply_token, build_genre_flex([]))
 
 
 if __name__ == "__main__":
