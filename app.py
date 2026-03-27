@@ -383,6 +383,9 @@ def answer_news_question(user_id: str, question: str) -> str:
         "・AIっぽい文章禁止\n"
         "・最後に誘導しない（公式サイト見て等は禁止）\n"
         "・断定しすぎない（〜っぽい、〜かも）\n\n"
+        "【単語・用語質問】「金利とは」「半導体って？」みたいな単語系は\n"
+        "  一般的な簡単な説明（1文）＋直近ニュースとの関連（1〜2文）で答えろ。\n"
+        "  辞書説明だけで終わるな。「分かりません」「ニュースにありません」で終わるな。\n\n"
         "【通常モード】1〜3文。短く一発で理解できる形。\n"
         "【詳細モード】3〜6文。結論→理由→もう一歩の構造。難しい言葉禁止。\n\n"
         "【禁止】です/ます口調、長文（6文以上）、教科書みたいな説明"
@@ -467,39 +470,11 @@ _GENRE_WORDS  = {"ジャンル", "ジャンル変えたい", "ジャンル変え
 _STATUS_WORDS = {"状態", "今どんな感じ", "設定どうなってる", "今の設定"}
 _HELP_WORDS   = {"使い方", "何できる", "どう使うの", "何聞ける"}
 
-_SMALL_TALK_BLOCKLIST = [
-    "彼氏", "彼女", "恋人", "好き", "結婚",
-    "お前誰", "君誰", "何者", "自己紹介",
-    "眠い", "おはよう", "こんにちは", "こんばんは",
-    "雑談", "話そう", "暇", "ありがと", "すごい",
-    "今日どう", "何してる",
+_BLOCKLIST = [
+    "彼氏", "彼女", "恋人",
+    "付き合", "好き",
+    "お前誰", "何者",
 ]
-
-_NEWS_REF_WORDS = [
-    "ニュース", "記事", "リンク", "URL", "url", "元記事",
-    "この話", "この件", "このニュース", "そのニュース",
-]
-_NEWS_QUESTION_WORDS = [
-    "詳しく", "どういうこと", "なんで", "なぜ", "理由",
-    "影響", "何が起きた", "どうなる", "もっと",
-    "他にニュース", "追加ニュース", "ほかに",
-]
-_NEWS_NUM_PATTERNS = [
-    "1", "2", "3", "4", "5",
-    "①", "②", "③", "④", "⑤",
-    "最初", "最後", "番目",
-]
-
-
-def is_news_question(text: str) -> bool:
-    """ニュースに関する質問かどうかを判定する"""
-    if any(p in text for p in _NEWS_NUM_PATTERNS):
-        return True
-    if any(w in text for w in _NEWS_REF_WORDS):
-        return True
-    if any(w in text for w in _NEWS_QUESTION_WORDS):
-        return True
-    return False
 
 
 def _plan_status_text(plan: str, active: bool, genres: list) -> str:
@@ -582,16 +557,13 @@ def handle_message(event):
         return
 
     # 9. 雑談ブロック
-    if any(w in text for w in _SMALL_TALK_BLOCKLIST):
-        reply_text(event.reply_token, "ニュースのことなら答えられる\n気になるやつを番号か内容で聞いて", quick_reply=qr)
+    if any(w in text for w in _BLOCKLIST):
+        reply_text(event.reply_token, "それは答えられない\nニュースなら答えられる", quick_reply=qr)
         return
 
-    # 10-12. ニュース質問判定 → Q&A / 固定文
-    if is_news_question(text):
-        answer = answer_news_question(user_id, text)
-        reply_text(event.reply_token, answer, quick_reply=qr)
-    else:
-        reply_text(event.reply_token, "ニュースのことなら答えられる\n気になるやつを番号か内容で聞いて", quick_reply=qr)
+    # 10. Q&A（それ以外は全部通す）
+    answer = answer_news_question(user_id, text)
+    reply_text(event.reply_token, answer, quick_reply=qr)
 
 
 @handler.add(PostbackEvent)
