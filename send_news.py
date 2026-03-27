@@ -1,7 +1,6 @@
 import json
 import logging
 import os
-import random
 import re
 import time
 from datetime import datetime, timedelta, timezone
@@ -901,8 +900,7 @@ def send(user_id: str, messages: List[str], with_quick_reply: bool = False) -> b
                 timeout=30,
             )
             if res.status_code == 429:
-                retry_after = res.headers.get("Retry-After")
-                wait = int(retry_after) if retry_after and retry_after.isdigit() else 30 * (2 ** (attempt - 1))
+                wait = 2 ** (attempt - 1)  # 1s → 2s → 4s
                 logger.warning(
                     "429 Too Many Requests: user=%s attempt=%d/%d wait=%ds body=%s",
                     user_id, attempt, LINE_RETRY_MAX, wait, res.text[:200],
@@ -922,7 +920,7 @@ def send(user_id: str, messages: List[str], with_quick_reply: bool = False) -> b
 
 
 def _send_two(user_id: str, messages: List[str]) -> bool:
-    """1通目→10〜20秒→2通目 の順に送信する。最後のメッセージにQuickReplyを付与。"""
+    """1通目→3秒→2通目 の順に送信する。最後のメッセージにQuickReplyを付与。"""
     if not messages:
         return True
     if len(messages) == 1:
@@ -930,7 +928,7 @@ def _send_two(user_id: str, messages: List[str]) -> bool:
     ok1 = send(user_id, [messages[0]])
     if not ok1:
         return False
-    time.sleep(random.randint(10, 20))
+    time.sleep(3)
     return send(user_id, [messages[1]], with_quick_reply=True)
 
 
@@ -984,7 +982,7 @@ def main():
         else:
             logger.warning("送信失敗のためsent_articles記録スキップ: user=%s", user_id)
 
-        time.sleep(random.randint(2, 3))
+        time.sleep(2)
 
     sent_news = [n for n in news if n["link"] in successfully_sent]
     record_sent(sent_news)
