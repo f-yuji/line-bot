@@ -498,22 +498,24 @@ def summarize(news_list: List[Dict[str, str]]) -> Dict[str, Any]:
         f"以下の{count}件のニュース見出しを、会話に使いやすい形でまとめてください。\n\n"
         "【文体ルール（必須）】\n"
         "・短く、会話調にする\n"
-        "・「〜です」「〜ます」を避ける\n"
+        "・敬語禁止、1文短く、主語省略OK\n"
         "・「〜そう」「〜かも」「〜っぽい」を適度に使う\n"
         "・説明調・専門家コメント調にしない\n"
         "・長い文は禁止\n\n"
         "【articles】各記事ごとに：\n"
-        "・reason: 背景や理由（10〜20文字、体言止めか短い名詞句）\n"
-        "  例：「金利差の拡大が影響」「軍事衝突への懸念」\n"
-        "・interpretation: 読者への解釈（15〜25文字、〜そう/〜っぽい調）\n"
-        "  例：「原油価格に影響出そう」「家計にじわっと効いてきそう」\n"
+        "・headline: 元の見出しを12〜25文字に再構成（「何が起きたか」含む、専門用語削る、体言止めOK）\n"
+        "  例：「日銀、追加利上げを決定」「円安が150円台に再突入」\n"
+        "・reason: 背景（10〜15文字、体言止め）\n"
+        "  例：「金利差の拡大が影響」\n"
+        "・interpretation: 読者視点（15〜25文字、〜そう/〜っぽい調）\n"
+        "  例：「輸入コスト上がりやすい」\n"
         "  ※ 👉 は含めない\n\n"
-        "【summary】全体を3行：\n"
-        "・各20文字以内、会話調の一言\n"
-        "  例：「中東ちょっと荒れてる」\n\n"
-        "【impact】生活・仕事への影響を3行：\n"
-        "・各40文字以内、具体的でカジュアルに\n"
-        "  例：「電気代また上がりそうだから、少し余裕見といた方がいいかも」\n\n"
+        "【summary】全体を2〜3行：\n"
+        "・各20文字以内、全体の流れを抽象的に一言\n"
+        "  例：「生活コストじわ上げ」「金利と物価が同時に効いてる」\n\n"
+        "【impact】3行：\n"
+        "・各20文字以内、短く具体的に\n"
+        "  例：「電気代じわ上げ」「ローンは慎重」「生活コスト全体に効く」\n\n"
         "【topics】会話ネタを3つ（summary/impactと重複しすぎない話題で）：\n"
         "・theme: テーマ（10文字以内）\n"
         "・line: そのまま使える一言（です・ます調OK、30〜50文字）\n"
@@ -603,8 +605,9 @@ def build_message(
         if not interp:
             interp = "気になる動きかも"
 
+        headline = trim_text((a.get("headline") or "") if isinstance(a, dict) else "", 25) or trim_text(n["title"], 25)
         lines.append(f"{num}【{cat}】")
-        lines.append(trim_text(n["title"], 24))
+        lines.append(headline)
         if reason:
             lines.append(f"→ {reason}")
         lines.append(f"👉 {interp}")
@@ -620,7 +623,7 @@ def build_message(
     lines.append("影響あるとしたら")
     lines.append("")
     for imp in impact[:3]:
-        imp = normalize_tone(trim_text(imp, 44))
+        imp = normalize_tone(trim_text(imp, 22))
         if imp:
             lines.append(f"・{imp}")
 

@@ -262,6 +262,18 @@ _NUM_MAP = {"1": 1, "2": 2, "3": 3, "4": 4, "5": 5,
 _CIRCLED = "①②③④⑤⑥⑦⑧⑨⑩"
 
 
+def _parse_article_num(question: str, max_n: int = 5) -> int | None:
+    """「3番目」「最初」「2のやつ」などから番号を抽出する"""
+    if any(w in question for w in ["最初", "1番目", "一番目", "1つ目", "①"]):
+        return 1
+    if any(w in question for w in ["最後", f"{max_n}番目"]):
+        return max_n
+    for ch, n in _NUM_MAP.items():
+        if ch in question and n <= max_n:
+            return n
+    return None
+
+
 def _answer_more_news(news_items: list, extra_items: list) -> str:
     sent_links = {n.get("link") for n in news_items}
     candidates = [n for n in extra_items if n.get("link") not in sent_links][:3]
@@ -281,8 +293,7 @@ def _answer_more_news(news_items: list, extra_items: list) -> str:
 
 def _answer_url(question: str, news_items: list) -> str:
     """URL系の質問に対してリンクを返す"""
-    # 番号指定チェック
-    num = next((n for ch, n in _NUM_MAP.items() if ch in question), None)
+    num = _parse_article_num(question, max_n=len(news_items))
 
     if num is not None:
         item = next((n for n in news_items if n.get("index") == num), None)
