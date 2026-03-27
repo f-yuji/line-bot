@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import random
 import re
 import time
 from datetime import datetime, timedelta, timezone
@@ -48,6 +49,7 @@ MAX_FETCH_ITEMS = 40
 DEFAULT_MAX_ITEMS = 5
 LINE_MAX_MESSAGE_OBJECTS = 5
 LINE_TEXT_SAFE_LIMIT = 4500
+LINE_RETRY_MAX = 3
 
 _NEWS_QUICK_REPLY = {
     "items": [
@@ -709,38 +711,54 @@ def build_message(
 # LINE送信
 # =========================
 
-def send(user_id: str, messages: List[str], with_quick_reply: bool = False) -> None:
+def send(user_id: str, messages: List[str], with_quick_reply: bool = False) -> bool:
     message_objects = [{"type": "text", "text": m} for m in messages]
     message_objects = message_objects[:LINE_MAX_MESSAGE_OBJECTS]
     if with_quick_reply and message_objects:
         message_objects[-1]["quickReply"] = _NEWS_QUICK_REPLY
 
-    try:
-        res = requests.post(
-            LINE_URL,
-            headers={
-                "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}",
-                "Content-Type": "application/json",
-            },
-            json={"to": user_id, "messages": message_objects},
-            timeout=30,
-        )
-        res.raise_for_status()
-        logger.info("送信成功: %s", user_id)
-    except requests.RequestException as e:
-        logger.error("LINE送信失敗 (user=%s): %s", user_id, e)
+    for attempt in range(1, LINE_RETRY_MAX + 1):
+        try:
+            res = requests.post(
+                LINE_URL,
+                headers={
+                    "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}",
+                    "Content-Type": "application/json",
+                },
+                json={"to": user_id, "messages": message_objects},
+                timeout=30,
+            )
+            if res.status_code == 429:
+                wait = 15 * attempt
+                logger.warning(
+                    "429 Too Many Requests: user=%s attempt=%d/%d wait=%ds",
+                    user_id, attempt, LINE_RETRY_MAX, wait,
+                )
+                if attempt < LINE_RETRY_MAX:
+                    time.sleep(wait)
+                continue
+            res.raise_for_status()
+            logger.info("送信成功: %s", user_id)
+            return True
+        except requests.RequestException as e:
+            logger.error("LINE送信失敗 (user=%s): %s", user_id, e)
+            return False
+
+    logger.error("LINE送信失敗: 429リトライ上限超過 user=%s", user_id)
+    return False
 
 
-def _send_two(user_id: str, messages: List[str]) -> None:
-    """1通目→3秒→2通目 の順に送信する。最後のメッセージにQuickReplyを付与。"""
+def _send_two(user_id: str, messages: List[str]) -> bool:
+    """1通目→10〜20秒→2通目 の順に送信する。最後のメッセージにQuickReplyを付与。"""
     if not messages:
-        return
+        return True
     if len(messages) == 1:
-        send(user_id, [messages[0]], with_quick_reply=True)
-        return
-    send(user_id, [messages[0]])
-    time.sleep(3)
-    send(user_id, [messages[1]], with_quick_reply=True)
+        return send(user_id, [messages[0]], with_quick_reply=True)
+    ok1 = send(user_id, [messages[0]])
+    if not ok1:
+        return False
+    time.sleep(random.randint(10, 20))
+    return send(user_id, [messages[1]], with_quick_reply=True)
 
 
 # =========================
@@ -767,6 +785,8 @@ def main():
         return
 
     sent_count = 0
+    successfully_sent: set = set()
+
     for user_id, user in users.items():
         if not user.get("active", True):
             logger.info("非アクティブのためスキップ: %s", user_id)
@@ -779,14 +799,22 @@ def main():
 
         ai_result = summarize(filtered)
         messages = build_message(filtered, ai_result)
-        _send_two(user_id, messages)
+        ok = _send_two(user_id, messages)
 
         sent_links = {n["link"] for n in filtered}
         extra_news = [n for n in news if n["link"] not in sent_links][:5]
         save_news_context(user_id, filtered, ai_result, messages, extra_news)
-        sent_count += 1
 
-    record_sent(news)
+        if ok:
+            successfully_sent.update(sent_links)
+            sent_count += 1
+        else:
+            logger.warning("送信失敗のためsent_articles記録スキップ: user=%s", user_id)
+
+        time.sleep(random.randint(2, 3))
+
+    sent_news = [n for n in news if n["link"] in successfully_sent]
+    record_sent(sent_news)
     logger.info("配信完了: %d/%d ユーザー", sent_count, len(users))
 
 
