@@ -162,8 +162,10 @@ def format_genres(genres):
 
 def main_quick_reply() -> QuickReply:
     return QuickReply(items=[
-        QuickReplyItem(action=MessageAction(label="聞く", text="聞く")),
-        QuickReplyItem(action=MessageAction(label="設定", text="設定")),
+        QuickReplyItem(action=MessageAction(label="開始", text="開始")),
+        QuickReplyItem(action=MessageAction(label="停止", text="停止")),
+        QuickReplyItem(action=MessageAction(label="ジャンル", text="ジャンル")),
+        QuickReplyItem(action=MessageAction(label="プラン", text="プラン")),
     ])
 
 
@@ -462,8 +464,49 @@ def handle_follow(event):
 _STOP_WORDS   = {"停止", "止めて", "停止して", "配信止めて", "もういい", "オフ"}
 _START_WORDS  = {"開始", "スタート", "再開", "もう一回", "配信して", "オン", "はじめて", "始めて"}
 _GENRE_WORDS  = {"ジャンル", "ジャンル変えたい", "ジャンル変える", "ジャンル設定", "ジャンル選びたい", "設定したい"}
-_STATUS_WORDS = {"プラン", "状態", "今どんな感じ", "設定どうなってる", "今の設定"}
-_HELP_WORDS   = {"聞く", "使い方", "何できる", "どう使うの", "何聞ける"}
+_STATUS_WORDS = {"状態", "今どんな感じ", "設定どうなってる", "今の設定"}
+_HELP_WORDS   = {"使い方", "何できる", "どう使うの", "何聞ける"}
+
+_SMALL_TALK_BLOCKLIST = [
+    "彼氏", "彼女", "恋人", "好き", "結婚",
+    "お前誰", "君誰", "何者", "自己紹介",
+    "眠い", "おはよう", "こんにちは", "こんばんは",
+    "雑談", "話そう", "暇", "ありがと", "すごい",
+    "今日どう", "何してる",
+]
+
+_NEWS_REF_WORDS = [
+    "ニュース", "記事", "リンク", "URL", "url", "元記事",
+    "この話", "この件", "このニュース", "そのニュース",
+]
+_NEWS_QUESTION_WORDS = [
+    "詳しく", "どういうこと", "なんで", "なぜ", "理由",
+    "影響", "何が起きた", "どうなる", "もっと",
+    "他にニュース", "追加ニュース", "ほかに",
+]
+_NEWS_NUM_PATTERNS = [
+    "1", "2", "3", "4", "5",
+    "①", "②", "③", "④", "⑤",
+    "最初", "最後", "番目",
+]
+
+
+def is_news_question(text: str) -> bool:
+    """ニュースに関する質問かどうかを判定する"""
+    if any(p in text for p in _NEWS_NUM_PATTERNS):
+        return True
+    if any(w in text for w in _NEWS_REF_WORDS):
+        return True
+    if any(w in text for w in _NEWS_QUESTION_WORDS):
+        return True
+    return False
+
+
+def _plan_status_text(plan: str, active: bool, genres: list) -> str:
+    plan_label = {"free": "無料プラン", "light": "ライトプラン", "premium": "プレミアムプラン"}.get(plan, "無料プラン")
+    active_label = "配信オン" if active else "配信オフ"
+    genre_label = f"ジャンル: {format_genres(genres)}" if genres else "ジャンル: 未設定（全部配信）"
+    return f"今こんな感じ\n\n{plan_label}\n{active_label}\n{genre_label}"
 
 
 @handler.add(MessageEvent, message=TextMessageContent)
@@ -479,19 +522,19 @@ def handle_message(event):
     genres = user.get("genres", [])
     qr = main_quick_reply()
 
-    # ── 停止 ──
+    # 1. 停止
     if text in _STOP_WORDS:
         save_user(user_id, active=False, plan=plan, genres=genres)
         reply_text(event.reply_token, "配信止めた\n再開したい時は言って", quick_reply=qr)
         return
 
-    # ── 開始 ──
+    # 2. 開始
     if text in _START_WORDS:
         save_user(user_id, active=True, plan=plan, genres=genres)
         reply_text(event.reply_token, "配信再開した", quick_reply=qr)
         return
 
-    # ── ヘルプ ──
+    # 3. ヘルプ
     if text in _HELP_WORDS:
         reply_text(
             event.reply_token,
@@ -503,21 +546,22 @@ def handle_message(event):
         )
         return
 
-    # ── 設定ボタン ──
-    if text == "設定":
-        reply_text(
-            event.reply_token,
-            "どうする？\nそのまま言ってもOK",
-            quick_reply=qr,
-        )
+    # 4. プラン
+    if text == "プラン":
+        reply_text(event.reply_token, _plan_status_text(plan, active, genres), quick_reply=qr)
         return
 
-    # ── ジャンル導線 ──
+    # 5. 設定
+    if text == "設定":
+        reply_text(event.reply_token, "どうする？\nそのまま言ってもOK", quick_reply=qr)
+        return
+
+    # 6. ジャンル導線
     if text in _GENRE_WORDS:
         reply_flex(event.reply_token, build_genre_flex(genres))
         return
 
-    # ── ジャンルテキスト直接設定 ──
+    # 7. ジャンルテキスト直接設定
     if text.startswith("ジャンル "):
         raw = text.replace("ジャンル ", "", 1).strip()
         new_genres = normalize_genres(raw)
@@ -532,21 +576,22 @@ def handle_message(event):
         reply_text(event.reply_token, f"ジャンル変えた: {format_genres(new_genres)}", quick_reply=qr)
         return
 
-    # ── 状態確認 ──
+    # 8. 状態確認
     if text in _STATUS_WORDS:
-        plan_label = {"free": "無料で動いてる", "light": "ライトで動いてる", "premium": "プレミアムで動いてる"}.get(plan, "無料で動いてる")
-        active_label = "配信オン" if active else "配信オフ"
-        genre_label = f"ジャンルは {format_genres(genres)}" if genres else "ジャンルは未設定（全部配信）"
-        reply_text(
-            event.reply_token,
-            f"今こんな感じ\n\n{plan_label}\n{active_label}\n\n{genre_label}\n\n変えたければそのまま言って",
-            quick_reply=qr,
-        )
+        reply_text(event.reply_token, _plan_status_text(plan, active, genres), quick_reply=qr)
         return
 
-    # ── Q&A（最後に処理） ──
-    answer = answer_news_question(user_id, text)
-    reply_text(event.reply_token, answer, quick_reply=qr)
+    # 9. 雑談ブロック
+    if any(w in text for w in _SMALL_TALK_BLOCKLIST):
+        reply_text(event.reply_token, "ニュースのことなら答えられる\n気になるやつを番号か内容で聞いて", quick_reply=qr)
+        return
+
+    # 10-12. ニュース質問判定 → Q&A / 固定文
+    if is_news_question(text):
+        answer = answer_news_question(user_id, text)
+        reply_text(event.reply_token, answer, quick_reply=qr)
+    else:
+        reply_text(event.reply_token, "ニュースのことなら答えられる\n気になるやつを番号か内容で聞いて", quick_reply=qr)
 
 
 @handler.add(PostbackEvent)
