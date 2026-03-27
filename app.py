@@ -253,7 +253,8 @@ def get_latest_news_context(user_id: str):
         return None
 
 
-_URL_KEYWORDS = ["URL", "url", "リンク", "記事"]
+_URL_KEYWORDS    = ["URL", "url", "リンク", "記事"]
+_DETAIL_KEYWORDS = ["詳しく", "もう少し", "なんで", "なぜ", "具体的に", "仕組み"]
 _NUM_MAP = {"1": 1, "2": 2, "3": 3, "4": 4, "5": 5,
             "１": 1, "２": 2, "３": 3, "４": 4, "５": 5}
 _CIRCLED = "①②③④⑤⑥⑦⑧⑨⑩"
@@ -299,6 +300,8 @@ def answer_news_question(user_id: str, question: str) -> str:
     if any(kw in question for kw in _URL_KEYWORDS):
         return _answer_url(question, news_items)
 
+    is_detail = any(k in question for k in _DETAIL_KEYWORDS)
+
     news_text    = "\n".join(
         f"{n['index']}. 【{n['category']}】{n['title']}"
         f"（{n.get('reason', '')} / {n.get('interpretation', '')}）"
@@ -308,18 +311,27 @@ def answer_news_question(user_id: str, question: str) -> str:
     impact_text  = "\n".join(f"・{i}" for i in impact)
 
     system_prompt = (
-        "あなたはLINEニュース配信の補足AIです。\n"
-        "ユーザーに配信済みのニュースだけを前提に答えてください。\n"
-        "短く、自然な会話調で返してください。\n"
-        "不明なことは不明と言ってください。\n"
-        "ニュースと無関係な質問には、このLINEで答えられる範囲を短く案内してください。\n"
-        "返答は400文字以内に収めてください。"
+        "お前はLINEでニュースを補足する相手。\n\n"
+        "【共通ルール】\n"
+        "・敬語禁止\n"
+        "・会話調\n"
+        "・結論から\n"
+        "・1文短く\n"
+        "・説明しすぎない\n"
+        "・AIっぽい文章禁止\n"
+        "・最後に誘導しない（公式サイト見て等は禁止）\n"
+        "・断定しすぎない（〜っぽい、〜かも）\n\n"
+        "【通常モード】1〜3文。短く一発で理解できる形。\n"
+        "【詳細モード】3〜6文。結論→理由→もう一歩の構造。難しい言葉禁止。\n\n"
+        "【禁止】です/ます口調、長文（6文以上）、教科書みたいな説明"
     )
+    mode = "詳細モードで答えろ。" if is_detail else "通常モードで答えろ。"
     user_prompt = (
-        f"直近配信ニュース:\n{news_text}\n\n"
-        f"全体まとめ:\n{summary_text}\n\n"
+        f"直近ニュース:\n{news_text}\n\n"
+        f"まとめ:\n{summary_text}\n\n"
         f"影響:\n{impact_text}\n\n"
-        f"ユーザーの質問:\n{question}"
+        f"質問:\n{question}\n\n"
+        f"{mode}短く答えろ。"
     )
 
     try:
