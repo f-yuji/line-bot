@@ -197,7 +197,7 @@ def save_news_context(
     ai: Dict[str, Any],
     messages: List[str],
 ) -> None:
-    """配信内容をユーザーごとに保存（Q&A用コンテキスト）"""
+    """配信内容を履歴として保存（Q&A用コンテキスト）"""
     articles_ai = ai.get("articles", [])
     news_items = []
     for i, n in enumerate(news):
@@ -212,19 +212,20 @@ def save_news_context(
 
     payload = {
         "news_items": news_items,
-        "summary": ai.get("summary", []),
-        "impact":  ai.get("impact", []),
-        "topics":  ai.get("topics", []),
+        "summary":   ai.get("summary", []),
+        "impact":    ai.get("impact", []),
+        "topics":    ai.get("topics", []),
         "message_1": messages[0] if len(messages) > 0 else "",
         "message_2": messages[1] if len(messages) > 1 else "",
     }
 
     try:
-        supabase.table("news_contexts").upsert(
-            {"user_id": user_id, "sent_at": datetime.now(timezone.utc).isoformat(), "payload": payload},
-            on_conflict="user_id",
-        ).execute()
-        logger.info("ニュースコンテキスト保存: %s", user_id)
+        supabase.table("news_contexts").insert({
+            "user_id": user_id,
+            "sent_at": datetime.now(timezone.utc).isoformat(),
+            "payload": payload,
+        }).execute()
+        logger.info("ニュースコンテキスト保存成功: user=%s 件数=%d", user_id, len(news))
     except Exception as e:
         logger.error("ニュースコンテキスト保存失敗: %s", e)
 
