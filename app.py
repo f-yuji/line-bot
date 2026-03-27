@@ -253,6 +253,35 @@ def get_latest_news_context(user_id: str):
         return None
 
 
+_URL_KEYWORDS = ["URL", "url", "リンク", "記事"]
+_NUM_MAP = {"1": 1, "2": 2, "3": 3, "4": 4, "5": 5,
+            "１": 1, "２": 2, "３": 3, "４": 4, "５": 5}
+_CIRCLED = "①②③④⑤⑥⑦⑧⑨⑩"
+
+
+def _answer_url(question: str, news_items: list) -> str:
+    """URL系の質問に対してリンクを返す"""
+    # 番号指定チェック
+    num = next((n for ch, n in _NUM_MAP.items() if ch in question), None)
+
+    if num is not None:
+        item = next((n for n in news_items if n.get("index") == num), None)
+        if not item:
+            return f"{num}番目のニュースが見つからなかった"
+        link = item.get("link", "")
+        circle = _CIRCLED[num - 1] if num <= len(_CIRCLED) else str(num)
+        return f"{circle}の元記事\n{link}" if link else "この記事は元リンクが取れなかった"
+
+    # 全体
+    lines = ["元記事リンク", ""]
+    for item in news_items:
+        idx  = item.get("index", 0)
+        link = item.get("link", "")
+        circle = _CIRCLED[idx - 1] if 0 < idx <= len(_CIRCLED) else str(idx)
+        lines.append(f"{circle} {link}" if link else f"{circle} (リンクなし)")
+    return "\n".join(lines)
+
+
 def answer_news_question(user_id: str, question: str) -> str:
     ctx = get_latest_news_context(user_id)
     if not ctx:
@@ -261,12 +290,16 @@ def answer_news_question(user_id: str, question: str) -> str:
             "一度配信を受けてから聞いてみて"
         )
 
-    payload = ctx.get("payload", {})
+    payload    = ctx.get("payload", {})
     news_items = payload.get("news_items", [])
     summary    = payload.get("summary", [])
     impact     = payload.get("impact", [])
 
-    news_text = "\n".join(
+    # URL系の質問はGPTを通さず直接返す
+    if any(kw in question for kw in _URL_KEYWORDS):
+        return _answer_url(question, news_items)
+
+    news_text    = "\n".join(
         f"{n['index']}. 【{n['category']}】{n['title']}"
         f"（{n.get('reason', '')} / {n.get('interpretation', '')}）"
         for n in news_items

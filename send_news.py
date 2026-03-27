@@ -206,6 +206,7 @@ def save_news_context(
             "index": i + 1,
             "category": CATEGORY_LABELS.get(n.get("category", "other"), "その他"),
             "title": n["title"],
+            "link": n.get("link", ""),
             "reason": a.get("reason", "") if isinstance(a, dict) else "",
             "interpretation": a.get("interpretation", "") if isinstance(a, dict) else "",
         })
