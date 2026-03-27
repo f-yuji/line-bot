@@ -1,5 +1,6 @@
 import logging
 import os
+from typing import Optional
 
 from dotenv import load_dotenv
 from flask import Flask, request, abort
@@ -262,12 +263,16 @@ _NUM_MAP = {"1": 1, "2": 2, "3": 3, "4": 4, "5": 5,
 _CIRCLED = "①②③④⑤⑥⑦⑧⑨⑩"
 
 
-def _parse_article_num(question: str, max_n: int = 5) -> int | None:
-    """「3番目」「最初」「2のやつ」などから番号を抽出する"""
+def _parse_article_num(question: str, max_n: int = 5) -> Optional[int]:
+    """「3番目」「最初」「②のやつ」などから番号を抽出する"""
     if any(w in question for w in ["最初", "1番目", "一番目", "1つ目", "①"]):
         return 1
     if any(w in question for w in ["最後", f"{max_n}番目"]):
         return max_n
+    # ②③④⑤... の丸数字（①は上で処理済み）
+    for i, ch in enumerate(_CIRCLED[1:max_n], 2):
+        if ch in question:
+            return i
     for ch, n in _NUM_MAP.items():
         if ch in question and n <= max_n:
             return n
@@ -401,7 +406,15 @@ def callback():
     try:
         handler.handle(body, signature)
     except InvalidSignatureError:
-        logger.warning("署名検証失敗")
+        sig_head = (signature or "")[:10]
+        logger.warning(
+            "署名検証失敗 ip=%s method=%s path=%s ua=%s sig=%s",
+            request.remote_addr,
+            request.method,
+            request.path,
+            request.headers.get("User-Agent", ""),
+            sig_head,
+        )
         abort(400)
 
     return "OK"

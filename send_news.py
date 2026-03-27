@@ -231,7 +231,7 @@ def save_news_context(
             "sent_at": datetime.now(timezone.utc).isoformat(),
             "payload": payload,
         }).execute()
-        logger.info("ニュースコンテキスト保存成功: user=%s 件数=%d 余剰=%d", user_id, len(news), len(extra_items))
+        logger.info("ニュース保存成功 user=%s 件数=%d", user_id, len(news))
     except Exception as e:
         logger.error("ニュースコンテキスト保存失敗: %s", e)
 
@@ -385,7 +385,7 @@ def fetch_news() -> List[Dict[str, str]]:
             logger.warning("RSSソース失敗: %s", rss_url)
 
     if not all_entries:
-        logger.error("全RSSソース失敗")
+        logger.error("RSS取得失敗: 全ソースからエントリ0件")
         return []
 
     logger.info("マージ前記事数: %d件", len(all_entries))
@@ -478,6 +478,19 @@ def _to_list(val) -> list:
     return []
 
 
+def fallback_summary(news_list: List[Dict[str, str]]) -> Dict[str, Any]:
+    """AI要約失敗時のタイトルベースフォールバック"""
+    articles = [
+        {
+            "headline": n["title"][:25] if n.get("title") else "",
+            "reason": "要約取得失敗",
+            "interpretation": "詳細不明だが動きありそう",
+        }
+        for n in news_list
+    ]
+    return {"articles": articles, "summary": [], "impact": [], "topics": []}
+
+
 def summarize(news_list: List[Dict[str, str]]) -> Dict[str, Any]:
     """
     各記事の reason / interpretation と、全体の summary / impact / topics を返す。
@@ -535,19 +548,20 @@ def summarize(news_list: List[Dict[str, str]]) -> Dict[str, Any]:
         raw = re.sub(r"\s*```$", "", raw)
 
         data = json.loads(raw)
+        articles_raw = data.get("articles", [])
         return {
-            "articles": _to_list(data.get("articles", [])),
+            "articles": articles_raw if isinstance(articles_raw, list) else [],
             "summary":  _to_list(data.get("summary", [])),
             "impact":   _to_list(data.get("impact", [])),
             "topics":   _to_list(data.get("topics", [])),
         }
 
     except json.JSONDecodeError as e:
-        logger.error("OpenAI応答のJSONパース失敗: %s", e)
-        return {"articles": [], "summary": [], "impact": [], "topics": []}
+        logger.error("AI要約失敗 fallback使用: JSONパース失敗 %s", e)
+        return fallback_summary(news_list)
     except Exception as e:
-        logger.error("OpenAI API エラー: %s", e)
-        return {"articles": [], "summary": [], "impact": [], "topics": []}
+        logger.error("AI要約失敗 fallback使用: %s", e)
+        return fallback_summary(news_list)
 
 
 # =========================
@@ -585,6 +599,43 @@ def normalize_tone(text: str) -> str:
 # メッセージ作成
 # =========================
 
+def _build_msg1(news_lines: list, summary_lines: list, impact_lines: list) -> str:
+    """msg1をLINE文字数制限内に収める（優先度順削除: impact→summary→ニュースのみ）"""
+    def _assemble(summ: list, imp: list) -> str:
+        parts = list(news_lines)
+        if summ:
+            parts += ["要するにこんな感じ", ""] + summ
+        if imp:
+            parts += ["", "影響あるとしたら", ""] + imp
+        return "\n".join(parts)
+
+    text = _assemble(summary_lines, impact_lines)
+    if len(text) <= LINE_TEXT_SAFE_LIMIT:
+        return text
+
+    # impact を1行ずつ削る
+    imp = list(impact_lines)
+    while imp:
+        imp.pop()
+        text = _assemble(summary_lines, imp)
+        if len(text) <= LINE_TEXT_SAFE_LIMIT:
+            return text
+
+    # summary を1行ずつ削る
+    summ = list(summary_lines)
+    while summ:
+        summ.pop()
+        text = _assemble(summ, [])
+        if len(text) <= LINE_TEXT_SAFE_LIMIT:
+            return text
+
+    # 最終手段：ニュースのみ（末尾カット）
+    text = _assemble([], [])
+    if len(text) > LINE_TEXT_SAFE_LIMIT:
+        text = text[:LINE_TEXT_SAFE_LIMIT] + "\n…(省略)"
+    return text
+
+
 def build_message(
     news: List[Dict[str, str]],
     ai: Dict[str, Any],
@@ -595,7 +646,7 @@ def build_message(
     topics      = _to_list(ai.get("topics", []))
 
     # ── 1通目 ──
-    lines = ["今日のニュース、ここだけ。", ""]
+    news_lines = ["今日のニュース、ここだけ。", ""]
     for i, n in enumerate(news):
         num = CIRCLED[i] if i < len(CIRCLED) else f"{i + 1}."
         cat = CATEGORY_LABELS.get(n.get("category", "other"), "その他")
@@ -606,31 +657,28 @@ def build_message(
             interp = "気になる動きかも"
 
         headline = trim_text((a.get("headline") or "") if isinstance(a, dict) else "", 25) or trim_text(n["title"], 25)
-        lines.append(f"{num}【{cat}】")
-        lines.append(headline)
+        news_lines.append(f"{num}【{cat}】")
+        news_lines.append(headline)
         if reason:
-            lines.append(f"→ {reason}")
-        lines.append(f"👉 {interp}")
-        lines.append("")
+            news_lines.append(f"→ {reason}")
+        news_lines.append(f"👉 {interp}")
+        news_lines.append("")
 
-    lines.append("要するにこんな感じ")
-    lines.append("")
-    for s in summary[:3]:
-        s = normalize_tone(trim_text(s, 24))
-        if s:
-            lines.append(f"・{s}")
-    lines.append("")
-    lines.append("影響あるとしたら")
-    lines.append("")
-    for imp in impact[:3]:
-        imp = normalize_tone(trim_text(imp, 22))
-        if imp:
-            lines.append(f"・{imp}")
+    summary_lines = [
+        f"・{normalize_tone(trim_text(s, 24))}"
+        for s in summary[:3]
+        if normalize_tone(trim_text(s, 24))
+    ]
+    impact_lines = [
+        f"・{normalize_tone(trim_text(imp, 22))}"
+        for imp in impact[:3]
+        if normalize_tone(trim_text(imp, 22))
+    ]
 
-    msg1 = "\n".join(lines)
+    msg1 = _build_msg1(news_lines, summary_lines, impact_lines)
 
     # ── 2通目 ──
-    t_lines = ["⬇️話題に困ったらこれで乗り切ろう⬇️", ""]
+    t_lines = ["話題に困ったらこれで乗り切ろう⬇️", ""]
     for t in topics[:3]:
         if not isinstance(t, dict):
             continue
@@ -640,16 +688,12 @@ def build_message(
             t_lines.append(f"・{theme}")
             t_lines.append(f"「{line}」")
             t_lines.append("")
-    t_lines.append("気になるニュース、このLINEで聞いてもらえれば👌\n記事のリンクほしいときもそのまま聞いて")
+    t_lines.append("気になるニュース、このLINEで聞いてもらえれば👌\n記事のリンクほしいときも言って")
     msg2 = "\n".join(t_lines)
+    if len(msg2) > LINE_TEXT_SAFE_LIMIT:
+        msg2 = msg2[:LINE_TEXT_SAFE_LIMIT] + "\n…(省略)"
 
-    results = []
-    for msg in [msg1, msg2]:
-        if len(msg) > LINE_TEXT_SAFE_LIMIT:
-            msg = msg[:LINE_TEXT_SAFE_LIMIT] + "\n…(省略)"
-        results.append(msg)
-
-    return results
+    return [msg1, msg2]
 
 
 # =========================
@@ -698,7 +742,10 @@ def main():
 
     news = fetch_news()
     if not news:
-        logger.warning("ニュースが0件のため配信スキップ")
+        logger.warning("RSS取得失敗: 全ユーザーへフォールバック通知")
+        for uid, u in users.items():
+            if u.get("active", True):
+                send(uid, ["今日はニュース取得不安定っぽい\n少し時間置いてまた見て"])
         return
 
     news = filter_sent(news)
@@ -706,37 +753,24 @@ def main():
         logger.warning("未送信ニュースが0件のため配信スキップ")
         return
 
-    # summarize は全記事で1回だけ呼ぶ
-    ai_result = summarize(news)
-    article_cache = {
-        n["link"]: ai_result["articles"][i] if i < len(ai_result["articles"]) else {}
-        for i, n in enumerate(news)
-    }
-    logger.info("要約キャッシュ作成: %d件", len(article_cache))
-
     sent_count = 0
     for user_id, user in users.items():
         if not user.get("active", True):
             logger.info("非アクティブのためスキップ: %s", user_id)
             continue
 
-        logger.info(
-            "配信開始: user=%s plan=%s genres=%s",
-            user_id, user.get("plan"), user.get("genres"),
-        )
+        logger.info("ニュース配信開始 user=%s plan=%s genres=%s",
+                    user_id, user.get("plan"), user.get("genres"))
         filtered = filter_news(news, user)
         logger.info("送信件数: user=%s %d件", user_id, len(filtered))
 
-        articles_ai = [article_cache.get(n["link"], {}) for n in filtered]
-        user_ai = {**ai_result, "articles": articles_ai}
-
-        messages = build_message(filtered, user_ai)
+        ai_result = summarize(filtered)
+        messages = build_message(filtered, ai_result)
         _send_two(user_id, messages)
 
-        sent_links  = {n["link"] for n in filtered}
-        extra_news  = [n for n in news if n["link"] not in sent_links][:5]
-        extra_ai    = [article_cache.get(n["link"], {}) for n in extra_news]
-        save_news_context(user_id, filtered, user_ai, messages, extra_news, extra_ai)
+        sent_links = {n["link"] for n in filtered}
+        extra_news = [n for n in news if n["link"] not in sent_links][:5]
+        save_news_context(user_id, filtered, ai_result, messages, extra_news)
         sent_count += 1
 
     record_sent(news)
@@ -784,7 +818,7 @@ def send_news_to_user(user_id: str) -> None:
 
     sent_links = {n["link"] for n in filtered}
     extra_news = [n for n in news if n["link"] not in sent_links][:5]
-    save_news_context(user_id, filtered, ai_result, messages, extra_news, [])
+    save_news_context(user_id, filtered, ai_result, messages, extra_news)
     logger.info("初回配信完了: %s", user_id)
 
 
