@@ -194,26 +194,50 @@ def reply_flex(reply_token: str, flex_msg: FlexMessage) -> None:
         logger.error("LINE返信エラー: %s", e)
 
 
+GENRE_DESC = {
+    "経済":     "金利・為替・不動産",
+    "仕事":     "業界・法改正・労働",
+    "国際":     "海外情勢・外交",
+    "AI・テック": "AI・IT・科学",
+    "暮らし":   "医療・教育・生活",
+    "話題":     "芸能・SNS・流行",
+    "スポーツ": "主要競技",
+}
+
+
 def build_genre_flex(current_genres: list) -> FlexMessage:
-    """2列レイアウトのジャンルトグルパネル"""
+    """2列レイアウトのジャンルトグルパネル（ボタン＋説明の縦セット）"""
     rows = []
     for i in range(0, len(DISPLAY_GENRE_ORDER), 2):
         chunk = DISPLAY_GENRE_ORDER[i:i + 2]
-        buttons = []
+        cells = []
         for display in chunk:
             internals = DISPLAY_GENRE_MAP[display]
             selected = any(c in current_genres for c in internals)
-            buttons.append(FlexButton(
-                action=PostbackAction(
-                    label=f"✓{display}" if selected else display,
-                    data=f"toggle_display_genre:{display}",
-                    display_text=display,
-                ),
-                style="primary" if selected else "secondary",
-                height="sm",
+            cell = FlexBox(
+                layout="vertical",
+                contents=[
+                    FlexButton(
+                        action=PostbackAction(
+                            label=f"✓{display}" if selected else display,
+                            data=f"toggle_display_genre:{display}",
+                            display_text=display,
+                        ),
+                        style="primary" if selected else "secondary",
+                        height="sm",
+                    ),
+                    FlexText(
+                        text=GENRE_DESC.get(display, ""),
+                        size="xs",
+                        color="#999999",
+                        wrap=True,
+                    ),
+                ],
+                spacing="xs",
                 flex=1,
-            ))
-        rows.append(FlexBox(layout="horizontal", contents=buttons, spacing="sm"))
+            )
+            cells.append(cell)
+        rows.append(FlexBox(layout="horizontal", contents=cells, spacing="sm"))
 
     header_note = f"現在: {format_genres(current_genres)}" if current_genres else "未選択なら全部届く"
 
