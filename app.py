@@ -253,11 +253,30 @@ def get_latest_news_context(user_id: str):
         return None
 
 
-_URL_KEYWORDS    = ["URL", "url", "リンク", "記事"]
-_DETAIL_KEYWORDS = ["詳しく", "もう少し", "なんで", "なぜ", "具体的に", "仕組み"]
+_URL_KEYWORDS      = ["URL", "url", "リンク", "記事"]
+_DETAIL_KEYWORDS   = ["詳しく", "もう少し", "なんで", "なぜ", "具体的に", "仕組み"]
+_MAIN_MORE_KW      = ["ほかに", "他にニュース", "もっとニュース", "追加ニュース"]
+_SUB_MORE_KW       = ["ほか", "他に", "もっと", "追加", "それ以外", "他にも"]
 _NUM_MAP = {"1": 1, "2": 2, "3": 3, "4": 4, "5": 5,
             "１": 1, "２": 2, "３": 3, "４": 4, "５": 5}
 _CIRCLED = "①②③④⑤⑥⑦⑧⑨⑩"
+
+
+def _answer_more_news(news_items: list, extra_items: list) -> str:
+    sent_links = {n.get("link") for n in news_items}
+    candidates = [n for n in extra_items if n.get("link") not in sent_links][:3]
+    if not candidates:
+        return "今日はこれ以上ストックないかも"
+    lines = ["あとこれも出てる", ""]
+    for i, n in enumerate(candidates):
+        circle = _CIRCLED[i] if i < len(_CIRCLED) else f"{i + 1}."
+        lines.append(f"{circle} {n.get('title', '')}")
+        reason = n.get("reason", "")
+        if reason:
+            lines.append(f"→ {reason}")
+        lines.append("")
+    lines.append("気になるのあれば言って")
+    return "\n".join(lines).rstrip()
 
 
 def _answer_url(question: str, news_items: list) -> str:
@@ -299,6 +318,18 @@ def answer_news_question(user_id: str, question: str) -> str:
     # URL系の質問はGPTを通さず直接返す
     if any(kw in question for kw in _URL_KEYWORDS):
         return _answer_url(question, news_items)
+
+    # 追加ニュース要求
+    is_more_news = (
+        any(k in question for k in _MAIN_MORE_KW)
+        or (any(k in question for k in _SUB_MORE_KW) and "ニュース" in question)
+    )
+    # 誤爆ガード：「影響」「意味」「問題」を含む場合は通常Q&Aに流す
+    if is_more_news and any(g in question for g in ["影響", "意味", "問題", "理由", "なぜ", "なんで"]):
+        is_more_news = False
+    if is_more_news:
+        extra_items = payload.get("extra_items", [])
+        return _answer_more_news(news_items, extra_items)
 
     is_detail = any(k in question for k in _DETAIL_KEYWORDS)
 

@@ -196,28 +196,33 @@ def save_news_context(
     news: List[Dict[str, str]],
     ai: Dict[str, Any],
     messages: List[str],
+    extra_news: List[Dict[str, str]] = None,
+    extra_ai: List[Dict[str, Any]] = None,
 ) -> None:
     """配信内容を履歴として保存（Q&A用コンテキスト）"""
     articles_ai = ai.get("articles", [])
-    news_items = []
-    for i, n in enumerate(news):
-        a = articles_ai[i] if i < len(articles_ai) else {}
-        news_items.append({
+
+    def _build_item(i, n, a):
+        return {
             "index": i + 1,
             "category": CATEGORY_LABELS.get(n.get("category", "other"), "その他"),
             "title": n["title"],
             "link": n.get("link", ""),
             "reason": a.get("reason", "") if isinstance(a, dict) else "",
             "interpretation": a.get("interpretation", "") if isinstance(a, dict) else "",
-        })
+        }
+
+    news_items  = [_build_item(i, n, articles_ai[i] if i < len(articles_ai) else {}) for i, n in enumerate(news)]
+    extra_items = [_build_item(i, n, (extra_ai or [])[i] if extra_ai and i < len(extra_ai) else {}) for i, n in enumerate(extra_news or [])]
 
     payload = {
-        "news_items": news_items,
-        "summary":   ai.get("summary", []),
-        "impact":    ai.get("impact", []),
-        "topics":    ai.get("topics", []),
-        "message_1": messages[0] if len(messages) > 0 else "",
-        "message_2": messages[1] if len(messages) > 1 else "",
+        "news_items":  news_items,
+        "extra_items": extra_items,
+        "summary":     ai.get("summary", []),
+        "impact":      ai.get("impact", []),
+        "topics":      ai.get("topics", []),
+        "message_1":   messages[0] if len(messages) > 0 else "",
+        "message_2":   messages[1] if len(messages) > 1 else "",
     }
 
     try:
@@ -226,7 +231,7 @@ def save_news_context(
             "sent_at": datetime.now(timezone.utc).isoformat(),
             "payload": payload,
         }).execute()
-        logger.info("ニュースコンテキスト保存成功: user=%s 件数=%d", user_id, len(news))
+        logger.info("ニュースコンテキスト保存成功: user=%s 件数=%d 余剰=%d", user_id, len(news), len(extra_items))
     except Exception as e:
         logger.error("ニュースコンテキスト保存失敗: %s", e)
 
@@ -724,7 +729,11 @@ def main():
 
         messages = build_message(filtered, user_ai)
         _send_two(user_id, messages)
-        save_news_context(user_id, filtered, user_ai, messages)
+
+        sent_links  = {n["link"] for n in filtered}
+        extra_news  = [n for n in news if n["link"] not in sent_links][:5]
+        extra_ai    = [article_cache.get(n["link"], {}) for n in extra_news]
+        save_news_context(user_id, filtered, user_ai, messages, extra_news, extra_ai)
         sent_count += 1
 
     record_sent(news)
@@ -766,10 +775,13 @@ def send_news_to_user(user_id: str) -> None:
         logger.warning("初回配信: フィルタ後0件のためスキップ: %s", user_id)
         return
 
-    ai_result = summarize(filtered)
-    messages = build_message(filtered, ai_result)
+    ai_result  = summarize(filtered)
+    messages   = build_message(filtered, ai_result)
     _send_two(user_id, messages)
-    save_news_context(user_id, filtered, ai_result, messages)
+
+    sent_links = {n["link"] for n in filtered}
+    extra_news = [n for n in news if n["link"] not in sent_links][:5]
+    save_news_context(user_id, filtered, ai_result, messages, extra_news, [])
     logger.info("初回配信完了: %s", user_id)
 
 
