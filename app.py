@@ -1,5 +1,6 @@
 import logging
 import os
+import time
 from typing import Optional
 
 from dotenv import load_dotenv
@@ -144,10 +145,8 @@ def format_genres(genres):
 
 def main_quick_reply() -> QuickReply:
     return QuickReply(items=[
-        QuickReplyItem(action=MessageAction(label="開始", text="開始")),
-        QuickReplyItem(action=MessageAction(label="停止", text="停止")),
-        QuickReplyItem(action=MessageAction(label="ジャンル", text="ジャンル")),
-        QuickReplyItem(action=MessageAction(label="プラン", text="プラン")),
+        QuickReplyItem(action=MessageAction(label="聞く", text="聞く")),
+        QuickReplyItem(action=MessageAction(label="設定", text="設定")),
     ])
 
 
@@ -427,21 +426,30 @@ def handle_follow(event):
 
     reply_text(
         event.reply_token,
-        "追加ありがとう\n\n"
-        "ニュースは朝6時と夜8時に届く\n"
-        "寝てる時間ならミュートしといてOK\n\n"
-        "とりあえず直近のニュース送るから\n"
+        "追加ありがとう🙌\n"
+        "よかったら使ってみて\n\n"
+        "ニュースは朝5時と夜8時に届く\n"
+        "朝早いからミュートでOK\n\n"
+        "とりあえず直近のニュース流すから\n"
         "気になるやつあればそのまま聞いて\n"
         "番号でもいけるし、リンクも出せる\n\n"
-        "ジャンルで絞ることもできるから\n"
-        "必要ならあとで変えてくれればOK",
+        "ジャンルでも絞れるから\n"
+        "必要ならあとで変えればOK👌",
         quick_reply=main_quick_reply(),
     )
 
     try:
+        time.sleep(6)
         send_news_to_user(user_id)
     except Exception as e:
         logger.error("初回配信失敗: user=%s %s", user_id, e)
+
+
+_STOP_WORDS   = {"停止", "止めて", "停止して", "配信止めて", "もういい", "オフ"}
+_START_WORDS  = {"開始", "スタート", "再開", "もう一回", "配信して", "オン", "はじめて", "始めて"}
+_GENRE_WORDS  = {"ジャンル", "ジャンル変えたい", "ジャンル変える", "ジャンル設定", "ジャンル選びたい", "設定したい"}
+_STATUS_WORDS = {"プラン", "状態", "今どんな感じ", "設定どうなってる", "今の設定"}
+_HELP_WORDS   = {"聞く", "使い方", "何できる", "どう使うの", "何聞ける"}
 
 
 @handler.add(MessageEvent, message=TextMessageContent)
@@ -455,56 +463,74 @@ def handle_message(event):
     plan = user.get("plan", "free")
     active = user.get("active", True)
     genres = user.get("genres", [])
-    rules = plan_rules(plan)
     qr = main_quick_reply()
 
-    if text in ["開始", "スタート", "再開"]:
-        save_user(user_id, active=True, plan=plan, genres=genres)
-        reply_text(event.reply_token, "配信を開始した", quick_reply=qr)
-        return
-
-    if text == "停止":
+    # ── 停止 ──
+    if text in _STOP_WORDS:
         save_user(user_id, active=False, plan=plan, genres=genres)
-        reply_text(event.reply_token, "配信を停止した", quick_reply=qr)
+        reply_text(event.reply_token, "配信止めた\n再開したい時は言って", quick_reply=qr)
         return
 
-    if text == "プラン":
+    # ── 開始 ──
+    if text in _START_WORDS:
+        save_user(user_id, active=True, plan=plan, genres=genres)
+        reply_text(event.reply_token, "配信再開した", quick_reply=qr)
+        return
+
+    # ── ヘルプ ──
+    if text in _HELP_WORDS:
         reply_text(
             event.reply_token,
-            f"plan: {plan}\n"
-            f"active: {'ON' if active else 'OFF'}\n"
-            f"genres: {format_genres(genres)}\n"
-            f"max_items: {rules['max_items']}件",
+            "気になるニュースそのまま聞けばOK\n"
+            "「3番目なに？」とかでもいける\n"
+            "リンクだけ欲しい時も返せる\n\n"
+            "ジャンル変えたい時もそのまま言って",
             quick_reply=qr,
         )
         return
 
-    if text == "ジャンル":
+    # ── 設定ボタン ──
+    if text == "設定":
+        reply_text(
+            event.reply_token,
+            "どうする？\nそのまま言ってもOK",
+            quick_reply=qr,
+        )
+        return
+
+    # ── ジャンル導線 ──
+    if text in _GENRE_WORDS:
         reply_flex(event.reply_token, build_genre_flex(genres))
         return
 
+    # ── ジャンルテキスト直接設定 ──
     if text.startswith("ジャンル "):
         raw = text.replace("ジャンル ", "", 1).strip()
         new_genres = normalize_genres(raw)
-
         if not new_genres:
             reply_text(
                 event.reply_token,
-                "ジャンル認識できなかった\n"
-                "例:\n"
-                "ジャンル お金,AI,スポーツ",
+                "ジャンル認識できなかった\n例: ジャンル お金,AI,スポーツ",
                 quick_reply=qr,
             )
             return
-
         save_user(user_id, active=True, plan=plan, genres=new_genres)
+        reply_text(event.reply_token, f"ジャンル更新: {format_genres(new_genres)}", quick_reply=qr)
+        return
+
+    # ── 状態確認 ──
+    if text in _STATUS_WORDS:
+        plan_label = {"free": "無料で動いてる", "light": "ライトで動いてる", "premium": "プレミアムで動いてる"}.get(plan, "無料で動いてる")
+        active_label = "配信オン" if active else "配信オフ"
+        genre_label = f"ジャンルは{format_genres(genres)}" if genres else "ジャンルは全部"
         reply_text(
             event.reply_token,
-            f"ジャンル更新: {format_genres(new_genres)}",
+            f"今こんな感じ\n\n{plan_label}\n{active_label}\n\n{genre_label}\n\n変えたければそのまま言って",
             quick_reply=qr,
         )
         return
 
+    # ── Q&A（最後に処理） ──
     answer = answer_news_question(user_id, text)
     reply_text(event.reply_token, answer, quick_reply=qr)
 
