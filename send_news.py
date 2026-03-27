@@ -49,6 +49,15 @@ DEFAULT_MAX_ITEMS = 5
 LINE_MAX_MESSAGE_OBJECTS = 5
 LINE_TEXT_SAFE_LIMIT = 4500
 
+_NEWS_QUICK_REPLY = {
+    "items": [
+        {"type": "action", "action": {"type": "message", "label": "開始", "text": "開始"}},
+        {"type": "action", "action": {"type": "message", "label": "停止", "text": "停止"}},
+        {"type": "action", "action": {"type": "message", "label": "ジャンル", "text": "ジャンル"}},
+        {"type": "action", "action": {"type": "message", "label": "プラン", "text": "プラン"}},
+    ]
+}
+
 EXCLUDE_KEYWORDS = [
     "占い", "グラビア", "プレゼント", "キャンペーン",
 ]
@@ -700,9 +709,11 @@ def build_message(
 # LINE送信
 # =========================
 
-def send(user_id: str, messages: List[str]) -> None:
+def send(user_id: str, messages: List[str], with_quick_reply: bool = False) -> None:
     message_objects = [{"type": "text", "text": m} for m in messages]
     message_objects = message_objects[:LINE_MAX_MESSAGE_OBJECTS]
+    if with_quick_reply and message_objects:
+        message_objects[-1]["quickReply"] = _NEWS_QUICK_REPLY
 
     try:
         res = requests.post(
@@ -721,13 +732,15 @@ def send(user_id: str, messages: List[str]) -> None:
 
 
 def _send_two(user_id: str, messages: List[str]) -> None:
-    """1通目→3秒→2通目 の順に送信する"""
+    """1通目→3秒→2通目 の順に送信する。最後のメッセージにQuickReplyを付与。"""
     if not messages:
         return
+    if len(messages) == 1:
+        send(user_id, [messages[0]], with_quick_reply=True)
+        return
     send(user_id, [messages[0]])
-    if len(messages) >= 2:
-        time.sleep(3)
-        send(user_id, [messages[1]])
+    time.sleep(3)
+    send(user_id, [messages[1]], with_quick_reply=True)
 
 
 # =========================
