@@ -3,7 +3,7 @@ import os
 import re
 import time
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import List, Optional
 
 from dotenv import load_dotenv
 from flask import Flask, request, abort
@@ -342,8 +342,8 @@ def _is_context_alive(ctx: dict, ttl_hours: int = _CONTEXT_TTL_HOURS) -> bool:
         return False
 
 
-def _collect_context_tokens(payload: dict) -> list[str]:
-    tokens: list[str] = []
+def _collect_context_tokens(payload: dict) -> List[str]:
+    tokens: List[str] = []
 
     def add_text(s: str):
         s = (s or "").strip()
