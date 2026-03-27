@@ -54,25 +54,36 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ─── ジャンル定義 ───
-# 表示ジャンル → 内部カテゴリ配列
 DISPLAY_GENRE_MAP = {
-    "お金":     ["economy", "interest_rates", "real_estate"],
+    "経済":     ["economy", "interest_rates", "real_estate"],
     "仕事":     ["business", "construction"],
-    "世界":     ["international"],
-    "AI":       ["ai", "tech"],
+    "国際":     ["international"],
+    "AI・テック": ["ai", "tech"],
     "暮らし":   ["energy", "materials"],
     "話題":     ["entertainment", "scandal", "other"],
     "スポーツ": ["sports"],
 }
 
-# 内部カテゴリ → 表示ジャンル（逆引き）
 INTERNAL_TO_DISPLAY = {
     cat: display
     for display, cats in DISPLAY_GENRE_MAP.items()
     for cat in cats
 }
 
-DISPLAY_GENRE_ORDER = list(DISPLAY_GENRE_MAP.keys())  # 表示順固定
+DISPLAY_GENRE_ORDER = list(DISPLAY_GENRE_MAP.keys())
+
+# 別名 → 正式表示ジャンル名
+DISPLAY_GENRE_ALIASES: dict = {
+    "お金":     "経済",
+    "世界":     "国際",
+    "AI":       "AI・テック",
+    "テック":   "AI・テック",
+    "IT":       "AI・テック",
+    "it":       "AI・テック",
+    "芸能":     "話題",
+    "エンタメ": "話題",
+    "生活":     "暮らし",
+}
 
 
 # テスト中はfreeでも選べるようにしておく
@@ -115,14 +126,20 @@ def ensure_user(user_id: str):
 
 # ─── 補助 ───
 def normalize_genres(raw_text: str):
-    """表示ジャンル名 → 内部カテゴリ配列に展開する"""
+    """表示ジャンル名（別名含む）→ 内部カテゴリ配列に展開する"""
     text = raw_text.replace("\u3000", " ")
     items = [x.strip() for x in text.split(",") if x.strip()]
     result = []
     lower_map = {k.lower(): k for k in DISPLAY_GENRE_MAP}
+    alias_lower = {k.lower(): v for k, v in DISPLAY_GENRE_ALIASES.items()}
     for item in items:
-        display = lower_map.get(item.lower())
-        if display:
+        key = item.lower()
+        display = lower_map.get(key)
+        if not display:
+            canonical = alias_lower.get(key)
+            if canonical:
+                display = canonical
+        if display and display in DISPLAY_GENRE_MAP:
             for cat in DISPLAY_GENRE_MAP[display]:
                 if cat not in result:
                     result.append(cat)
@@ -176,10 +193,10 @@ def reply_flex(reply_token: str, flex_msg: FlexMessage) -> None:
 
 
 def build_genre_flex(current_genres: list) -> FlexMessage:
-    """表示ジャンル単位のトグルパネル。タップで選択/解除、再送信で状態反映。"""
+    """2列レイアウトのジャンルトグルパネル"""
     rows = []
-    for i in range(0, len(DISPLAY_GENRE_ORDER), 3):
-        chunk = DISPLAY_GENRE_ORDER[i:i + 3]
+    for i in range(0, len(DISPLAY_GENRE_ORDER), 2):
+        chunk = DISPLAY_GENRE_ORDER[i:i + 2]
         buttons = []
         for display in chunk:
             internals = DISPLAY_GENRE_MAP[display]
@@ -194,32 +211,29 @@ def build_genre_flex(current_genres: list) -> FlexMessage:
                 height="sm",
                 flex=1,
             ))
-        # 最終行が3未満の場合は空Boxでパディング
-        while len(buttons) < 3:
-            buttons.append(FlexBox(layout="vertical", contents=[], flex=1))
-        rows.append(FlexBox(layout="horizontal", contents=buttons, spacing="xs"))
+        rows.append(FlexBox(layout="horizontal", contents=buttons, spacing="sm"))
 
-    header_note = f"現在: {format_genres(current_genres)}" if current_genres else "未選択（全ジャンル配信）"
+    header_note = f"現在: {format_genres(current_genres)}" if current_genres else "未選択なら全部届く"
 
     bubble = FlexBubble(
         header=FlexBox(
             layout="vertical",
             contents=[
-                FlexText(text="ジャンル選択", weight="bold", size="md"),
+                FlexText(text="受け取るニュース", weight="bold", size="md"),
                 FlexText(text=header_note, size="xs", color="#888888", wrap=True),
             ],
         ),
         body=FlexBox(
             layout="vertical",
             contents=rows,
-            spacing="xs",
+            spacing="md",
         ),
         footer=FlexBox(
             layout="vertical",
             contents=[
                 FlexButton(
                     action=PostbackAction(
-                        label="クリア（全解除）",
+                        label="すべて解除",
                         data="clear_genres",
                         display_text="クリア",
                     ),
@@ -230,7 +244,7 @@ def build_genre_flex(current_genres: list) -> FlexMessage:
             ],
         ),
     )
-    flex_msg = FlexMessage(alt_text="ジャンル選択", contents=bubble)
+    flex_msg = FlexMessage(alt_text="受け取るニュース", contents=bubble)
     flex_msg.quick_reply = main_quick_reply()
     return flex_msg
 
@@ -510,19 +524,19 @@ def handle_message(event):
         if not new_genres:
             reply_text(
                 event.reply_token,
-                "ジャンル認識できなかった\n例: ジャンル お金,AI,スポーツ",
+                "ジャンル認識できなかった\n例: ジャンル 経済,AI・テック,スポーツ",
                 quick_reply=qr,
             )
             return
         save_user(user_id, active=True, plan=plan, genres=new_genres)
-        reply_text(event.reply_token, f"ジャンル更新: {format_genres(new_genres)}", quick_reply=qr)
+        reply_text(event.reply_token, f"ジャンル変えた: {format_genres(new_genres)}", quick_reply=qr)
         return
 
     # ── 状態確認 ──
     if text in _STATUS_WORDS:
         plan_label = {"free": "無料で動いてる", "light": "ライトで動いてる", "premium": "プレミアムで動いてる"}.get(plan, "無料で動いてる")
         active_label = "配信オン" if active else "配信オフ"
-        genre_label = f"ジャンルは{format_genres(genres)}" if genres else "ジャンルは全部"
+        genre_label = f"ジャンルは {format_genres(genres)}" if genres else "ジャンルは未設定（全部配信）"
         reply_text(
             event.reply_token,
             f"今こんな感じ\n\n{plan_label}\n{active_label}\n\n{genre_label}\n\n変えたければそのまま言って",
