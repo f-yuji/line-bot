@@ -109,8 +109,8 @@ CATEGORY_LABELS: Dict[str, str] = {
     "business":       "企業",
     "tech":           "テック",
     "international":  "国際",
-    "materials":      "資材",
-    "scandal":        "スキャンダル",
+    "materials":      "生活",
+    "scandal":        "話題",
     "entertainment":  "芸能",
     "other":          "その他",
 }
