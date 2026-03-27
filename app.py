@@ -3,6 +3,7 @@ import os
 
 from dotenv import load_dotenv
 from flask import Flask, request, abort
+from openai import OpenAI
 from supabase import create_client
 
 from linebot.v3 import WebhookHandler
@@ -34,8 +35,10 @@ SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 LINE_CHANNEL_ACCESS_TOKEN = os.environ["LINE_CHANNEL_ACCESS_TOKEN"]
 LINE_CHANNEL_SECRET = os.environ["LINE_CHANNEL_SECRET"]
+OPENAI_API_KEY = os.environ["OPENAI_API_KEY"]
 
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+openai_client = OpenAI(api_key=OPENAI_API_KEY)
 
 app = Flask(__name__)
 configuration = Configuration(access_token=LINE_CHANNEL_ACCESS_TOKEN)
@@ -269,6 +272,76 @@ def build_genre_flex(current_genres: list) -> FlexMessage:
     return flex_msg
 
 
+# ─── ニュースQ&A ───
+
+def get_latest_news_context(user_id: str):
+    try:
+        res = (
+            supabase.table("news_contexts")
+            .select("payload, sent_at")
+            .eq("user_id", user_id)
+            .order("sent_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+        return res.data[0] if res.data else None
+    except Exception as e:
+        logger.error("ニュースコンテキスト取得失敗: %s", e)
+        return None
+
+
+def answer_news_question(user_id: str, question: str) -> str:
+    ctx = get_latest_news_context(user_id)
+    if not ctx:
+        return (
+            "まだニュース履歴がないから答えられないかも\n"
+            "一度配信を受けてから聞いてみて"
+        )
+
+    payload = ctx.get("payload", {})
+    news_items = payload.get("news_items", [])
+    summary    = payload.get("summary", [])
+    impact     = payload.get("impact", [])
+
+    news_text = "\n".join(
+        f"{n['index']}. 【{n['category']}】{n['title']}"
+        f"（{n.get('reason', '')} / {n.get('interpretation', '')}）"
+        for n in news_items
+    )
+    summary_text = "\n".join(f"・{s}" for s in summary)
+    impact_text  = "\n".join(f"・{i}" for i in impact)
+
+    system_prompt = (
+        "あなたはLINEニュース配信の補足AIです。\n"
+        "ユーザーに配信済みのニュースだけを前提に答えてください。\n"
+        "短く、自然な会話調で返してください。\n"
+        "不明なことは不明と言ってください。\n"
+        "ニュースと無関係な質問には、このLINEで答えられる範囲を短く案内してください。\n"
+        "返答は400文字以内に収めてください。"
+    )
+    user_prompt = (
+        f"直近配信ニュース:\n{news_text}\n\n"
+        f"全体まとめ:\n{summary_text}\n\n"
+        f"影響:\n{impact_text}\n\n"
+        f"ユーザーの質問:\n{question}"
+    )
+
+    try:
+        res = openai_client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user",   "content": user_prompt},
+            ],
+            temperature=0.5,
+            max_tokens=400,
+        )
+        return res.choices[0].message.content.strip()
+    except Exception as e:
+        logger.error("Q&A OpenAI エラー: %s", e)
+        return "今ちょっと返答うまくいかない\n少し置いてもう一回送って"
+
+
 # ─── Webhook ───
 @app.route("/callback", methods=["POST"])
 def callback():
@@ -371,16 +444,8 @@ def handle_message(event):
         )
         return
 
-    reply_text(
-        event.reply_token,
-        "使えるコマンド:\n"
-        "・開始\n"
-        "・停止\n"
-        "・プラン\n"
-        "・ジャンル\n"
-        "・ジャンル 不動産,建築,金利",
-        quick_reply=qr,
-    )
+    answer = answer_news_question(user_id, text)
+    reply_text(event.reply_token, answer, quick_reply=qr)
 
 
 @handler.add(PostbackEvent)

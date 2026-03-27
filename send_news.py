@@ -192,6 +192,44 @@ def record_sent(news_list: List[Dict[str, str]]) -> None:
         logger.error("sent_articles記録失敗: %s", e)
 
 
+def save_news_context(
+    user_id: str,
+    news: List[Dict[str, str]],
+    ai: Dict[str, Any],
+    messages: List[str],
+) -> None:
+    """配信内容をユーザーごとに保存（Q&A用コンテキスト）"""
+    articles_ai = ai.get("articles", [])
+    news_items = []
+    for i, n in enumerate(news):
+        a = articles_ai[i] if i < len(articles_ai) else {}
+        news_items.append({
+            "index": i + 1,
+            "category": CATEGORY_LABELS.get(n.get("category", "other"), "その他"),
+            "title": n["title"],
+            "reason": a.get("reason", "") if isinstance(a, dict) else "",
+            "interpretation": a.get("interpretation", "") if isinstance(a, dict) else "",
+        })
+
+    payload = {
+        "news_items": news_items,
+        "summary": ai.get("summary", []),
+        "impact":  ai.get("impact", []),
+        "topics":  ai.get("topics", []),
+        "message_1": messages[0] if len(messages) > 0 else "",
+        "message_2": messages[1] if len(messages) > 1 else "",
+    }
+
+    try:
+        supabase.table("news_contexts").upsert(
+            {"user_id": user_id, "sent_at": datetime.now(timezone.utc).isoformat(), "payload": payload},
+            on_conflict="user_id",
+        ).execute()
+        logger.info("ニュースコンテキスト保存: %s", user_id)
+    except Exception as e:
+        logger.error("ニュースコンテキスト保存失敗: %s", e)
+
+
 def load_users() -> Dict[str, Any]:
     try:
         res = supabase.table("users").select("*").eq("active", True).execute()
@@ -496,6 +534,37 @@ def summarize(news_list: List[Dict[str, str]]) -> Dict[str, Any]:
 
 
 # =========================
+# メッセージ作成ヘルパー
+# =========================
+
+def trim_text(text: str, max_len: int) -> str:
+    text = str(text or "").strip()
+    if len(text) <= max_len:
+        return text
+    return text[:max_len - 1] + "…"
+
+
+def normalize_tone(text: str) -> str:
+    text = str(text or "").strip()
+    replacements = {
+        "影響を与える可能性があります": "影響出そう",
+        "懸念されています": "気にされてる",
+        "注目されています": "注目されてそう",
+        "示しています": "っぽい",
+        "と考えられます": "かも",
+        "可能性があります": "かも",
+        "されています": "てる",
+        "です。": "",
+        "ます。": "",
+        "です": "",
+        "ます": "",
+    }
+    for before, after in replacements.items():
+        text = text.replace(before, after)
+    return text.strip()
+
+
+# =========================
 # メッセージ作成
 # =========================
 
@@ -504,9 +573,9 @@ def build_message(
     ai: Dict[str, Any],
 ) -> List[str]:
     articles_ai = ai.get("articles", [])
-    summary    = ai.get("summary", [])
-    impact     = ai.get("impact", [])
-    topics     = ai.get("topics", [])
+    summary     = ai.get("summary", [])
+    impact      = ai.get("impact", [])
+    topics      = ai.get("topics", [])
 
     # ── 1通目 ──
     lines = ["今日のニュース、ここだけ。", ""]
@@ -514,28 +583,31 @@ def build_message(
         num = CIRCLED[i] if i < len(CIRCLED) else f"{i + 1}."
         cat = CATEGORY_LABELS.get(n.get("category", "other"), "その他")
         a = articles_ai[i] if i < len(articles_ai) else {}
-        reason = a.get("reason", "") if isinstance(a, dict) else ""
-        interp = a.get("interpretation", "") if isinstance(a, dict) else ""
+        reason = normalize_tone(trim_text(a.get("reason", "")        if isinstance(a, dict) else "", 20))
+        interp = normalize_tone(trim_text(a.get("interpretation", "") if isinstance(a, dict) else "", 24))
+        if not interp:
+            interp = "気になる動きかも"
 
         lines.append(f"{num}【{cat}】")
-        lines.append(n["title"])
+        lines.append(trim_text(n["title"], 24))
         if reason:
             lines.append(f"→ {reason}")
-        if interp:
-            lines.append(f"👉 {interp}")
+        lines.append(f"👉 {interp}")
         lines.append("")
 
-    lines.append("---")
-    lines.append("")
     lines.append("要するにこんな感じ")
     lines.append("")
     for s in summary[:3]:
-        lines.append(f"・{s}")
+        s = normalize_tone(trim_text(s, 24))
+        if s:
+            lines.append(f"・{s}")
     lines.append("")
     lines.append("影響あるとしたら")
     lines.append("")
     for imp in impact[:3]:
-        lines.append(f"・{imp}")
+        imp = normalize_tone(trim_text(imp, 44))
+        if imp:
+            lines.append(f"・{imp}")
 
     msg1 = "\n".join(lines)
 
@@ -544,8 +616,8 @@ def build_message(
     for t in topics[:3]:
         if not isinstance(t, dict):
             continue
-        theme = t.get("theme", "")
-        line  = t.get("line", "")
+        theme = trim_text(t.get("theme", ""), 10)
+        line  = normalize_tone(trim_text(t.get("line", ""), 40))
         if theme and line:
             t_lines.append(f"・{theme}")
             t_lines.append(f"「{line}」")
@@ -642,6 +714,7 @@ def main():
 
         messages = build_message(filtered, user_ai)
         _send_two(user_id, messages)
+        save_news_context(user_id, filtered, user_ai, messages)
         sent_count += 1
 
     record_sent(news)
@@ -686,6 +759,7 @@ def send_news_to_user(user_id: str) -> None:
     ai_result = summarize(filtered)
     messages = build_message(filtered, ai_result)
     _send_two(user_id, messages)
+    save_news_context(user_id, filtered, ai_result, messages)
     logger.info("初回配信完了: %s", user_id)
 
 
