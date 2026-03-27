@@ -1,6 +1,8 @@
 import logging
 import os
+import re
 import time
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from dotenv import load_dotenv
@@ -277,7 +279,13 @@ def build_genre_flex(current_genres: list) -> FlexMessage:
 
 # ─── ニュースQ&A ───
 
-def get_latest_news_context(user_id: str):
+もう少し", "なんで", "なぜ", "具体的に", "仕組み"]
+_MAIN_MORE_KW      = ["ほかに", "他にニュース", "もっとニュース", "追加ニュース"]
+_SUB_MORE_KW       = ["ほか", "他に", "もっと", "追加", "それ以外", "他にも"]
+_NUM_MAP = {"1": 1, "2": 2, "3": 3, "4": 4, "5": 5,
+            "１": 1, "２": 2, "３": 3, "４": 4, "５": 5}
+_CIRCLED = "①②③④⑤⑥⑦⑧⑨⑩"
+def get_latest_news_context(user_id: str) -> Optional[dict]:
     try:
         res = (
             supabase.table("news_contexts")
@@ -293,14 +301,128 @@ def get_latest_news_context(user_id: str):
         return None
 
 
-_URL_KEYWORDS      = ["URL", "url", "リンク", "記事"]
-_DETAIL_KEYWORDS   = ["詳しく", "もう少し", "なんで", "なぜ", "具体的に", "仕組み"]
-_MAIN_MORE_KW      = ["ほかに", "他にニュース", "もっとニュース", "追加ニュース"]
-_SUB_MORE_KW       = ["ほか", "他に", "もっと", "追加", "それ以外", "他にも"]
-_NUM_MAP = {"1": 1, "2": 2, "3": 3, "4": 4, "5": 5,
-            "１": 1, "２": 2, "３": 3, "４": 4, "５": 5}
-_CIRCLED = "①②③④⑤⑥⑦⑧⑨⑩"
+_CONTEXT_TTL_HOURS = 6
 
+_BLOCKLIST = [
+    "彼氏", "彼女", "恋人",
+    "付き合", "好き",
+    "お前誰", "何者", "自己紹介",
+]
+
+_REJECT_TEXT = "それニュースの話？\n気になるニュースの内容で聞いて"
+
+
+def _normalize_text(text: str) -> str:
+    return re.sub(r"\s+", "", (text or "").lower())
+
+
+def _is_context_alive(ctx: dict, ttl_hours: int = _CONTEXT_TTL_HOURS) -> bool:
+    if not ctx:
+        return False
+
+    sent_at = ctx.get("sent_at")
+    if not sent_at:
+        return False
+
+    try:
+        dt = datetime.fromisoformat(sent_at.replace("Z", "+00:00"))
+        now = datetime.now(timezone.utc)
+        return now - dt <= timedelta(hours=ttl_hours)
+    except Exception as e:
+        logger.warning("sent_at判定失敗: %s", e)
+        return False
+
+
+def _collect_context_tokens(payload: dict) -> list[str]:
+    tokens: list[str] = []
+
+    def add_text(s: str):
+        s = (s or "").strip()
+        if not s:
+            return
+
+        tokens.append(s)
+
+        parts = re.split(r"[、。・,\s/\-\[\]（）()「」『』:：\n]+", s)
+        for p in parts:
+            p = p.strip()
+            if len(p) >= 2:
+                tokens.append(p)
+
+    for item in payload.get("news_items", []):
+        add_text(item.get("title", ""))
+        add_text(item.get("reason", ""))
+        add_text(item.get("interpretation", ""))
+
+    for item in payload.get("extra_items", []):
+        add_text(item.get("title", ""))
+        add_text(item.get("reason", ""))
+        add_text(item.get("interpretation", ""))
+
+    for s in payload.get("summary", []):
+        add_text(s)
+
+    for s in payload.get("impact", []):
+        add_text(s)
+
+    for t in payload.get("topics", []):
+        add_text(t.get("theme", ""))
+        add_text(t.get("line", ""))
+
+    add_text(payload.get("message_1", ""))
+    add_text(payload.get("message_2", ""))
+
+    seen = set()
+    uniq = []
+    for t in tokens:
+        key = _normalize_text(t)
+        if key and key not in seen:
+            seen.add(key)
+            uniq.append(t)
+    return uniq
+
+
+def _looks_like_article_reference(text: str) -> bool:
+    if _parse_article_num(text, max_n=10) is not None:
+        return True
+
+    refs = [
+        "このニュース", "そのニュース", "この話", "その話", "この件", "その件",
+        "これ", "それ", "さっきの", "今の", "例の",
+        "リンク", "url", "記事",
+        "詳しく", "なんで", "なぜ", "理由", "影響", "どういうこと",
+        "もっと", "追加ニュース", "他にニュース",
+    ]
+    return any(r in text for r in refs)
+
+
+def is_related_to_news_context(user_id: str, text: str) -> bool:
+    ctx = get_latest_news_context(user_id)
+    if not ctx or not _is_context_alive(ctx):
+        return False
+
+    payload = ctx.get("payload", {}) or {}
+    norm_text = _normalize_text(text)
+
+    if not norm_text:
+        return False
+
+    if _looks_like_article_reference(text):
+        return True
+
+    for token in _collect_context_tokens(payload):
+        norm_token = _normalize_text(token)
+        if not norm_token:
+            continue
+
+        if norm_token in norm_text or norm_text in norm_token:
+            return True
+
+    return False
+
+
+_URL_KEYWORDS      = ["URL", "url", "リンク", "記事"]
+_DETAIL_KEYWORDS   = ["詳しく", "
 
 def _parse_article_num(question: str, max_n: int = 5) -> Optional[int]:
     """「3番目」「最初」「②のやつ」などから番号を抽出する"""
@@ -585,9 +707,19 @@ def handle_message(event):
         reply_text(event.reply_token, "それは答えられない\nニュースなら答えられる", quick_reply=qr)
         return
 
-    # 10. Q&A（それ以外は全部通す）
-    answer = answer_news_question(user_id, text)
-    reply_text(event.reply_token, answer, quick_reply=qr)
+   # ── 最低限の雑談ガード ──
+    if any(w in text for w in _BLOCKLIST):
+        reply_text(event.reply_token, _REJECT_TEXT, quick_reply=qr)
+        return
+
+    # ── 直近ニュース文脈に紐づく質問だけ通す ──
+    if is_related_to_news_context(user_id, text):
+        answer = answer_news_question(user_id, text)
+        reply_text(event.reply_token, answer, quick_reply=qr)
+        return
+
+    # ── それ以外は弾く ──
+    reply_text(event.reply_token, _REJECT_TEXT, quick_reply=qr)
 
 
 @handler.add(PostbackEvent)
