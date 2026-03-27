@@ -462,6 +462,15 @@ def filter_news(
 # AI要約
 # =========================
 
+def _to_list(val) -> list:
+    """GPTが配列の代わりに文字列を返した場合に改行で分割してリスト化する"""
+    if isinstance(val, list):
+        return val
+    if isinstance(val, str):
+        return [v.strip() for v in val.split("\n") if v.strip()]
+    return []
+
+
 def summarize(news_list: List[Dict[str, str]]) -> Dict[str, Any]:
     """
     各記事の reason / interpretation と、全体の summary / impact / topics を返す。
@@ -518,10 +527,10 @@ def summarize(news_list: List[Dict[str, str]]) -> Dict[str, Any]:
 
         data = json.loads(raw)
         return {
-            "articles": data.get("articles", []),
-            "summary":  data.get("summary", []),
-            "impact":   data.get("impact", []),
-            "topics":   data.get("topics", []),
+            "articles": _to_list(data.get("articles", [])),
+            "summary":  _to_list(data.get("summary", [])),
+            "impact":   _to_list(data.get("impact", [])),
+            "topics":   _to_list(data.get("topics", [])),
         }
 
     except json.JSONDecodeError as e:
@@ -572,9 +581,9 @@ def build_message(
     ai: Dict[str, Any],
 ) -> List[str]:
     articles_ai = ai.get("articles", [])
-    summary     = ai.get("summary", [])
-    impact      = ai.get("impact", [])
-    topics      = ai.get("topics", [])
+    summary     = _to_list(ai.get("summary", []))
+    impact      = _to_list(ai.get("impact", []))
+    topics      = _to_list(ai.get("topics", []))
 
     # ── 1通目 ──
     lines = ["今日のニュース、ここだけ。", ""]
@@ -763,8 +772,17 @@ def send_news_to_user(user_id: str) -> None:
 
 
 if __name__ == "__main__":
-    try:
-        main()
-    except Exception as e:
-        logger.error("main()で予期しないエラー: %s", e)
-        notify_owner(f"[send_news] エラー発生\n{type(e).__name__}: {e}")
+    import sys
+    if "--dry-run" in sys.argv:
+        news = fetch_news()
+        news = news[:5]
+        ai_result = summarize(news)
+        msgs = build_message(news, ai_result)
+        for i, m in enumerate(msgs, 1):
+            print(f"\n{'='*30}\n【{i}通目】\n{'='*30}\n{m}")
+    else:
+        try:
+            main()
+        except Exception as e:
+            logger.error("main()で予期しないエラー: %s", e)
+            notify_owner(f"[send_news] エラー発生\n{type(e).__name__}: {e}")

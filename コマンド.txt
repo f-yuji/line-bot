@@ -1,5 +1,11 @@
+＃更新
 git add .
 git commit -m "update"
 git push
 
+＃アクティベ
 venv\Scripts\activate
+
+＃ドライラン
+cd c:\bot\line_bot
+python send_news.py --dry-run
