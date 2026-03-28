@@ -58,6 +58,7 @@ logger = logging.getLogger(__name__)
 
 print("=== 起動確認 ===")
 print(f"環境: {ENV}")
+print(f"SECRET_HEAD={LINE_CHANNEL_SECRET[:6]}")
 if ENV == "test":
     print("🟢 テスト環境で実行中")
 elif ENV == "prod":
@@ -615,6 +616,7 @@ def callback():
     signature = request.headers.get("X-Line-Signature")
     body = request.get_data(as_text=True)
 
+    print(f"BODY={body}")  # DEBUG: 送信元チャネル確認用（確認後に削除すること）
     try:
         handler.handle(body, signature)
     except InvalidSignatureError:
