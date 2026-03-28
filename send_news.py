@@ -783,102 +783,86 @@ def normalize_tone(text: str) -> str:
 # 会話フレーズ生成（テンプレ固定）
 # =========================
 
-_PHRASE_STATE_WORDS: Dict[str, List[str]] = {
-    "UP":       ["上がってきています", "高くなってきています", "上昇しています"],
-    "DOWN":     ["下がってきています", "安くなってきています", "落ち着いてきています"],
-    "VOLATILE": ["動きが激しくなっています", "荒れてきています", "読みにくくなっています"],
-    "GROWTH":   ["広がってきています", "増えてきています", "広まってきています"],
-    "TREND":    ["話題になっています", "注目されてきています", "盛り上がってきています"],
-    "RISK":     ["気になる動きが増えています", "不安定になってきています", "こういう動きが増えています"],
-    "EVENT":    ["動きが出てきています", "また動いてきています", "ニュースになっています"],
-    "VALUE":    ["買いやすくなってきています", "お得になってきています", "手頃になってきています"],
+_CATEGORY_PHRASES: Dict[str, List[tuple]] = {
+    "real_estate": [
+        ("不動産", "最近マンション価格すごいですよね。買い時ってどう思います？"),
+        ("住宅",   "家賃や住宅費って最近どうです？やっぱ高くなってます？"),
+    ],
+    "interest_rates": [
+        ("金利", "金利って最近また動いてますよね。住宅ローンとか気にしてます？"),
+        ("金融", "最近金利の話よく聞きますけど、預金とか見直してます？"),
+    ],
+    "energy": [
+        ("電気代", "電気代やガス代って最近どうです？やっぱ高いですよね。"),
+        ("光熱費", "光熱費って節約してます？最近じわじわ上がってて気になって。"),
+    ],
+    "ai": [
+        ("AI", "AIって最近どこでも聞きますけど、周りで使ってる人増えてません？"),
+        ("AI", "ChatGPTとか使ってます？最近かなり便利になってきてますよね。"),
+    ],
+    "sports": [
+        ("スポーツ", "最近スポーツのニュース多いですよね。何か注目してます？"),
+        ("スポーツ", "大谷とか日本人選手の話よく出てますよね。チェックしてます？"),
+    ],
+    "economy": [
+        ("物価", "最近なんでも高くないですか。買い物ちょっと迷いません？"),
+        ("景気", "景気の話よく出てますよね。周りどんな感じです？"),
+    ],
+    "business": [
+        ("ビジネス", "最近どこの会社も値上げしてますよね。仕事への影響とかあります？"),
+        ("企業",    "業界的にどんな感じですか？最近いろいろ変化多そうで。"),
+    ],
+    "tech": [
+        ("テック", "最近スマホとかアプリ、何か新しいの使ってます？"),
+        ("IT",    "システム障害とかセキュリティの話、最近多いですよね。"),
+    ],
+    "international": [
+        ("世界情勢", "海外のニュース最近多いですよね。なんか気になるやつあります？"),
+        ("国際",    "世界ちょっとざわついてますよね。影響感じたりしてます？"),
+    ],
+    "materials": [
+        ("食品",   "最近食費どうです？スーパー行くたびに値段変わってません？"),
+        ("日用品", "日用品もじわじわ高くなってますよね。節約とか工夫してます？"),
+    ],
+    "construction": [
+        ("建設", "工事費とか建材って最近すごい上がってるらしいですね。家の値段に影響しそうで。"),
+        ("建設", "どこでも工事してますよね。インフラ整備ってお金かかるなって感じません？"),
+    ],
+    "entertainment": [
+        ("エンタメ", "最近何か面白いドラマや映画とかあります？"),
+        ("エンタメ", "Netflixとかサブスク、何か見てます？最近話題多いですよね。"),
+    ],
+    "scandal": [
+        ("ニュース", "最近ちょっと騒がしいニュース多いですよね。気になったのあります？"),
+    ],
+    "other": [
+        ("ニュース", "最近気になったニュース、何かありました？"),
+        ("話題",    "最近周りで何か話題になってることありますか？"),
+    ],
 }
-
-_CAT_STATE: Dict[str, str] = {
-    "real_estate":    "UP",
-    "construction":   "TREND",
-    "interest_rates": "UP",
-    "energy":         "VOLATILE",
-    "ai":             "GROWTH",
-    "sports":         "EVENT",
-    "economy":        "VOLATILE",
-    "business":       "TREND",
-    "tech":           "GROWTH",
-    "international":  "RISK",
-    "materials":      "UP",
-    "scandal":        "EVENT",
-    "entertainment":  "EVENT",
-    "other":          "TREND",
-}
-
-_CAT_KEYWORD: Dict[str, str] = {
-    "real_estate":    "不動産",
-    "construction":   "建設",
-    "interest_rates": "金利",
-    "energy":         "エネルギー",
-    "ai":             "AI",
-    "sports":         "スポーツ",
-    "economy":        "物価",
-    "business":       "企業",
-    "tech":           "テック",
-    "international":  "情勢",
-    "materials":      "食品",
-    "scandal":        "ニュース",
-    "entertainment":  "エンタメ",
-    "other":          "ニュース",
-}
-
-_DANGER_CONVERT: Dict[str, str] = {
-    "殺人": "事件",
-    "戦争": "情勢",
-    "ミサイル": "ニュース",
-}
-
-_ABSTRACT_SKIP = {"ニュース", "話", "問題", "影響", "対応", "原因", "発表", "情報", "内容", "状況", "結果", "動き"}
 
 _PHRASE_FALLBACKS = [
-    "物価って最近また気になりますよね？",
-    "AIって最近かなり広がってますよね？",
-    "金利って最近また話出ますよね？",
+    ("物価", "最近なんでも高くないですか。買い物ちょっと迷いません？"),
+    ("AI",   "AIって最近どこでも聞きますけど、周りで使ってる人増えてません？"),
+    ("金利", "金利って最近また動いてますよね。住宅ローンとか気にしてます？"),
 ]
 
 
-def _extract_keyword(title: str, category: str) -> str:
-    for danger, safe in _DANGER_CONVERT.items():
-        if danger in title:
-            return safe
-    katakana = re.findall(r'[ァ-ヴー]{4,8}', title)
-    for k in katakana:
-        if k not in _ABSTRACT_SKIP:
-            return k
-    return _CAT_KEYWORD.get(category, "ニュース")
-
-
-def _generate_phrases(news: List[Dict[str, str]]) -> List[str]:
-    phrases: List[str] = []
-    used_states: Dict[str, int] = {}
-    used_kw: set = set()
-    state_offsets: Dict[str, int] = {}
+def _generate_phrases(news: List[Dict[str, str]]) -> List[tuple]:
+    phrases: List[tuple] = []
+    used_cats: set = set()
 
     for n in news:
         if len(phrases) >= 3:
             break
         cat = n.get("category", "other")
-        state = _CAT_STATE.get(cat, "TREND")
-        if state == "RISK" and used_states.get("RISK", 0) >= 1:
+        if cat in used_cats:
             continue
-        if used_states.get(state, 0) >= 2:
+        options = _CATEGORY_PHRASES.get(cat)
+        if not options:
             continue
-        kw = _extract_keyword(n.get("title", ""), cat)
-        if kw in used_kw:
-            continue
-        words = _PHRASE_STATE_WORDS[state]
-        offset = state_offsets.get(state, 0)
-        state_word = words[offset % len(words)]
-        phrases.append(f"{kw}って最近{state_word}よね？")
-        used_kw.add(kw)
-        used_states[state] = used_states.get(state, 0) + 1
-        state_offsets[state] = offset + 1
+        phrases.append(random.choice(options))
+        used_cats.add(cat)
 
     for fb in _PHRASE_FALLBACKS:
         if len(phrases) >= 3:
@@ -971,11 +955,13 @@ def build_message(
 
     msg1 = _build_msg1(news_lines, summary_lines, impact_lines)
 
-    # ── 話題フレーズ（テンプレ固定） ──
+    # ── 話題フレーズ ──
     t_lines = ["話題に困ったらこれで乗り切ろう⬇️", ""]
-    for phrase in _generate_phrases(news):
-        t_lines.append(f"・{phrase}")
-    t_lines.append("\n気になるニュース、このLINEで聞いてもらえれば👌\n記事のリンクほしいときも言って")
+    for label, phrase in _generate_phrases(news):
+        t_lines.append(label)
+        t_lines.append(phrase)
+        t_lines.append("")
+    t_lines.append("気になるニュース、このLINEで聞いてもらえれば👌\n記事のリンクほしいときも言って")
     phrase_section = "\n".join(t_lines)
 
     merged = msg1 + "\n\n" + phrase_section
