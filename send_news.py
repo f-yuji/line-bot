@@ -251,7 +251,8 @@ CATEGORY_KEYWORDS: Dict[str, List[str]] = {
     "international": [
         "米国", "中国", "ロシア", "欧州", "中東",
         "台湾", "外交", "関税", "戦争", "停戦",
-        "制裁", "首脳会談", "軍事", "イラン", "イスラエル"
+        "制裁", "首脳会談", "軍事", "イラン", "イスラエル",
+        "G7", "G20", "外相", "首脳", "大統領", "会談"
     ],
 
     "materials": [
@@ -263,7 +264,8 @@ CATEGORY_KEYWORDS: Dict[str, List[str]] = {
     "scandal": [
         "不祥事", "炎上", "辞任", "逮捕", "疑惑",
         "不起訴", "謝罪", "告発", "不正", "処分",
-        "ハラスメント", "隠蔽", "会見", "裏金", "コンプラ"
+        "ハラスメント", "隠蔽", "会見", "裏金", "コンプラ",
+        "刺殺", "殺害", "死亡", "事件", "容疑者", "被害者", "通り魔", "発生"
     ],
 
     "entertainment": [
@@ -449,8 +451,19 @@ def load_users() -> Dict[str, Any]:
 # カテゴリ判定・スコアリング
 # =========================
 
+_SCANDAL_PRIORITY    = {"刺殺", "殺害", "死亡", "事件", "容疑者", "被害者", "通り魔", "逮捕"}
+_INTL_PRIORITY       = {"G7", "G20", "外相", "首脳", "大統領", "会談", "首脳会談"}
+
+
 def classify_category(article: Dict[str, str]) -> str:
     text = f"{article['title']} {article.get('summary', '')}"
+
+    # 優先判定（1: scandal → 2: international → 3: スコアベース）
+    if any(w in text for w in _SCANDAL_PRIORITY):
+        return "scandal"
+    if any(w in text for w in _INTL_PRIORITY):
+        return "international"
+
     scores: Dict[str, int] = {}
     for cat, keywords in CATEGORY_KEYWORDS.items():
         count = sum(1 for k in keywords if k in text)
