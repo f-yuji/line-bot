@@ -795,12 +795,44 @@ def handle_message(event):
         return
 
     if is_related_to_news_context(user_id, text):
-        answer = answer_news_question(user_id, text)
-        reply_text(event.reply_token, answer, quick_reply=qr)
-        try:
-            supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
-        except Exception:
-            pass
+        is_paid = plan != "free"
+        free_reply_used = user.get("free_reply_used", False)
+
+        if is_paid:
+            # 有料ユーザー：常時AI回答
+            answer = answer_news_question(user_id, text)
+            reply_text(event.reply_token, answer, quick_reply=qr)
+            try:
+                supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
+            except Exception:
+                pass
+
+        elif not free_reply_used:
+            # 無料ユーザー初回：AI回答＋導線
+            answer = answer_news_question(user_id, text)
+            msg = f"詳しくはこんな感じ👇\n\n{answer}\n\n続きは有料版で深掘りできる"
+            reply_text(event.reply_token, msg, quick_reply=qr)
+            try:
+                supabase.table("users").update({
+                    "free_reply_used": True,
+                    "last_reply_time": now_dt.isoformat(),
+                }).eq("user_id", user_id).execute()
+                user["free_reply_used"] = True
+            except Exception:
+                pass
+
+        else:
+            # 無料ユーザー2回目以降：固定文、AI呼ばない
+            reply_text(
+                event.reply_token,
+                "無料版は1回だけ深掘り対応してる\n番号か「全部」で見てくれ",
+                quick_reply=qr,
+            )
+            try:
+                supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
+            except Exception:
+                pass
+
         print("===== 処理終了 =====")
         return
 
