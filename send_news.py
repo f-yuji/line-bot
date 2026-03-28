@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import random
 import re
 import time
 from datetime import datetime, timedelta, timezone
@@ -779,6 +780,116 @@ def normalize_tone(text: str) -> str:
 
 
 # =========================
+# 会話フレーズ生成（テンプレ固定）
+# =========================
+
+_PHRASE_STATE_WORDS: Dict[str, List[str]] = {
+    "UP":       ["上がってきています", "高くなってきています", "上昇しています"],
+    "DOWN":     ["下がってきています", "安くなってきています", "落ち着いてきています"],
+    "VOLATILE": ["動きが激しくなっています", "荒れてきています", "読みにくくなっています"],
+    "GROWTH":   ["広がってきています", "増えてきています", "広まってきています"],
+    "TREND":    ["話題になっています", "注目されてきています", "盛り上がってきています"],
+    "RISK":     ["気になる動きが増えています", "不安定になってきています", "こういう動きが増えています"],
+    "EVENT":    ["動きが出てきています", "また動いてきています", "ニュースになっています"],
+    "VALUE":    ["買いやすくなってきています", "お得になってきています", "手頃になってきています"],
+}
+
+_CAT_STATE: Dict[str, str] = {
+    "real_estate":    "UP",
+    "construction":   "TREND",
+    "interest_rates": "UP",
+    "energy":         "VOLATILE",
+    "ai":             "GROWTH",
+    "sports":         "EVENT",
+    "economy":        "VOLATILE",
+    "business":       "TREND",
+    "tech":           "GROWTH",
+    "international":  "RISK",
+    "materials":      "UP",
+    "scandal":        "EVENT",
+    "entertainment":  "EVENT",
+    "other":          "TREND",
+}
+
+_CAT_KEYWORD: Dict[str, str] = {
+    "real_estate":    "不動産",
+    "construction":   "建設",
+    "interest_rates": "金利",
+    "energy":         "エネルギー",
+    "ai":             "AI",
+    "sports":         "スポーツ",
+    "economy":        "物価",
+    "business":       "企業",
+    "tech":           "テック",
+    "international":  "情勢",
+    "materials":      "食品",
+    "scandal":        "ニュース",
+    "entertainment":  "エンタメ",
+    "other":          "ニュース",
+}
+
+_DANGER_CONVERT: Dict[str, str] = {
+    "殺人": "事件",
+    "戦争": "情勢",
+    "ミサイル": "ニュース",
+}
+
+_ABSTRACT_SKIP = {"ニュース", "話", "問題", "影響", "対応", "原因", "発表", "情報", "内容", "状況", "結果", "動き"}
+
+_PHRASE_FALLBACKS = [
+    "物価って最近また気になりますよね？",
+    "AIって最近かなり広がってますよね？",
+    "金利って最近また話出ますよね？",
+]
+
+
+def _extract_keyword(title: str, category: str) -> str:
+    for danger, safe in _DANGER_CONVERT.items():
+        if danger in title:
+            return safe
+    katakana = re.findall(r'[ァ-ヴー]{4,8}', title)
+    for k in katakana:
+        if k not in _ABSTRACT_SKIP:
+            return k
+    return _CAT_KEYWORD.get(category, "ニュース")
+
+
+def _generate_phrases(news: List[Dict[str, str]]) -> List[str]:
+    phrases: List[str] = []
+    used_states: Dict[str, int] = {}
+    used_kw: set = set()
+    state_offsets: Dict[str, int] = {}
+
+    for n in news:
+        if len(phrases) >= 3:
+            break
+        cat = n.get("category", "other")
+        state = _CAT_STATE.get(cat, "TREND")
+        if state == "RISK" and used_states.get("RISK", 0) >= 1:
+            continue
+        if used_states.get(state, 0) >= 2:
+            continue
+        kw = _extract_keyword(n.get("title", ""), cat)
+        if kw in used_kw:
+            continue
+        words = _PHRASE_STATE_WORDS[state]
+        offset = state_offsets.get(state, 0)
+        state_word = words[offset % len(words)]
+        phrases.append(f"{kw}って最近{state_word}よね？")
+        used_kw.add(kw)
+        used_states[state] = used_states.get(state, 0) + 1
+        state_offsets[state] = offset + 1
+
+    for fb in _PHRASE_FALLBACKS:
+        if len(phrases) >= 3:
+            break
+        if fb not in phrases:
+            phrases.append(fb)
+
+    return phrases[:3]
+
+
+# =========================
 # メッセージ作成
 # =========================
 
@@ -826,7 +937,7 @@ def build_message(
     articles_ai = ai.get("articles", [])
     summary     = _to_list(ai.get("summary", []))
     impact      = _to_list(ai.get("impact", []))
-    topics      = _to_list(ai.get("topics", []))
+
 
     # ── 1通目 ──
     news_lines = ["今日のニュース、ここだけ。", ""]
@@ -860,23 +971,18 @@ def build_message(
 
     msg1 = _build_msg1(news_lines, summary_lines, impact_lines)
 
-    # ── 2通目 ──
+    # ── 話題フレーズ（テンプレ固定） ──
     t_lines = ["話題に困ったらこれで乗り切ろう⬇️", ""]
-    for t in topics[:3]:
-        if not isinstance(t, dict):
-            continue
-        theme = trim_text(t.get("theme", ""), 10)
-        line  = normalize_tone(trim_text(t.get("line", ""), 40))
-        if theme and line:
-            t_lines.append(f"・{theme}")
-            t_lines.append(f"「{line}」")
-            t_lines.append("")
-    t_lines.append("気になるニュース、このLINEで聞いてもらえれば👌\n記事のリンクほしいときも言って")
-    msg2 = "\n".join(t_lines)
-    if len(msg2) > LINE_TEXT_SAFE_LIMIT:
-        msg2 = msg2[:LINE_TEXT_SAFE_LIMIT] + "\n…(省略)"
+    for phrase in _generate_phrases(news):
+        t_lines.append(f"・{phrase}")
+    t_lines.append("\n気になるニュース、このLINEで聞いてもらえれば👌\n記事のリンクほしいときも言って")
+    phrase_section = "\n".join(t_lines)
 
-    return [msg1, msg2]
+    merged = msg1 + "\n\n" + phrase_section
+    if len(merged) > LINE_TEXT_SAFE_LIMIT:
+        merged = merged[:LINE_TEXT_SAFE_LIMIT] + "\n…(省略)"
+
+    return [merged]
 
 
 # =========================
@@ -920,17 +1026,6 @@ def send(user_id: str, messages: List[str], with_quick_reply: bool = False) -> b
     return False
 
 
-def _send_two(user_id: str, messages: List[str]) -> bool:
-    """1通目→3秒→2通目 の順に送信する。最後のメッセージにQuickReplyを付与。"""
-    if not messages:
-        return True
-    if len(messages) == 1:
-        return send(user_id, [messages[0]], with_quick_reply=True)
-    ok1 = send(user_id, [messages[0]])
-    if not ok1:
-        return False
-    time.sleep(3)
-    return send(user_id, [messages[1]], with_quick_reply=True)
 
 
 # =========================
@@ -971,7 +1066,7 @@ def main():
 
         ai_result = summarize(filtered)
         messages = build_message(filtered, ai_result)
-        ok = _send_two(user_id, messages)
+        ok = send(user_id, messages, with_quick_reply=True)
 
         sent_links = {n["link"] for n in filtered}
         extra_news = [n for n in news if n["link"] not in sent_links][:5]
@@ -1027,7 +1122,7 @@ def send_news_to_user(user_id: str) -> None:
 
     ai_result  = summarize(filtered)
     messages   = build_message(filtered, ai_result)
-    _send_two(user_id, messages)
+    send(user_id, messages, with_quick_reply=True)
 
     sent_links = {n["link"] for n in filtered}
     extra_news = [n for n in news if n["link"] not in sent_links][:5]
