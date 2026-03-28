@@ -29,6 +29,7 @@ OPENAI_API_KEY = os.environ["OPENAI_API_KEY"]
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 OWNER_LINE_USER_ID = os.getenv("OWNER_LINE_USER_ID")
+ENV = os.getenv("ENV", "prod")
 
 # ─── クライアント ───
 client = OpenAI(api_key=OPENAI_API_KEY)
@@ -1044,8 +1045,17 @@ if __name__ == "__main__":
         for i, m in enumerate(msgs, 1):
             print(f"\n{'='*30}\n【{i}通目】\n{'='*30}\n{m}")
     else:
+        print("=== 起動確認 ===")
+        print(f"環境: {ENV}")
+        if ENV == "test":
+            print("🟢 テスト環境で実行中")
+        elif ENV == "prod":
+            print("🔴 本番環境で実行中（注意）")
+            print("🔴 本番環境です。内容を確認してください")
+        print("===== 処理開始 =====")
         try:
             main()
         except Exception as e:
             logger.error("main()で予期しないエラー: %s", e)
             notify_owner(f"[send_news] エラー発生\n{type(e).__name__}: {e}")
+        print("===== 処理終了 =====")

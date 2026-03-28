@@ -1,6 +1,9 @@
 ＃アクティベ
 venv\Scripts\activate
 
+ターミナル1 → python app.py
+ターミナル2 → ngrok http 8000
+
 ＃ドライラン
 cd c:\bot\line_bot
 python send_news.py --dry-run

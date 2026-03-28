@@ -40,6 +40,7 @@ SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 LINE_CHANNEL_ACCESS_TOKEN = os.environ["LINE_CHANNEL_ACCESS_TOKEN"]
 LINE_CHANNEL_SECRET = os.environ["LINE_CHANNEL_SECRET"]
 OPENAI_API_KEY = os.environ["OPENAI_API_KEY"]
+ENV = os.getenv("ENV", "prod")
 
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 openai_client = OpenAI(api_key=OPENAI_API_KEY)
@@ -54,6 +55,14 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+print("=== 起動確認 ===")
+print(f"環境: {ENV}")
+if ENV == "test":
+    print("🟢 テスト環境で実行中")
+elif ENV == "prod":
+    print("🔴 本番環境で実行中（注意）")
+    print("🔴 本番環境です。内容を確認してください")
 
 # ─── ジャンル定義 ───
 DISPLAY_GENRE_MAP = {
@@ -660,8 +669,37 @@ def handle_message(event):
     text = event.message.text.strip()
 
     logger.info("メッセージ受信: user=%s text=%s", user_id, text)
+    print("===== 処理開始 =====")
 
     user = ensure_user(user_id)
+
+    # ── 日付リセット ──
+    today = datetime.now(timezone.utc).date().isoformat()
+    if user.get("free_reply_date") != today:
+        try:
+            supabase.table("users").update({
+                "free_reply_used": False,
+                "all_links_used": False,
+                "free_reply_date": today,
+            }).eq("user_id", user_id).execute()
+        except Exception:
+            pass
+        user["free_reply_used"] = False
+        user["all_links_used"] = False
+        user["free_reply_date"] = today
+
+    # ── 連投制限 ──
+    now_dt = datetime.now(timezone.utc)
+    last_reply_time = user.get("last_reply_time")
+    if last_reply_time is not None:
+        try:
+            last_dt = datetime.fromisoformat(str(last_reply_time).replace("Z", "+00:00"))
+            if now_dt - last_dt < timedelta(seconds=5):
+                print("===== 処理終了 =====")
+                return
+        except Exception:
+            pass
+
     plan = user.get("plan", "free")
     active = user.get("active", True)
     genres = user.get("genres", [])
@@ -670,11 +708,13 @@ def handle_message(event):
     if text in _STOP_WORDS:
         save_user(user_id, active=False, plan=plan, genres=genres)
         reply_text(event.reply_token, "配信止めた\n再開したい時は言って", quick_reply=qr)
+        print("===== 処理終了 =====")
         return
 
     if text in _START_WORDS:
         save_user(user_id, active=True, plan=plan, genres=genres)
         reply_text(event.reply_token, "配信再開した", quick_reply=qr)
+        print("===== 処理終了 =====")
         return
 
     if text in _HELP_WORDS:
@@ -686,18 +726,22 @@ def handle_message(event):
             "ジャンル変えたい時もそのまま言って",
             quick_reply=qr,
         )
+        print("===== 処理終了 =====")
         return
 
     if text == "プラン":
         reply_text(event.reply_token, _plan_status_text(plan, active, genres), quick_reply=qr)
+        print("===== 処理終了 =====")
         return
 
     if text == "設定":
         reply_text(event.reply_token, "どうする？\nそのまま言ってもOK", quick_reply=qr)
+        print("===== 処理終了 =====")
         return
 
     if text in _GENRE_WORDS:
         reply_flex(event.reply_token, build_genre_flex(genres))
+        print("===== 処理終了 =====")
         return
 
     if text.startswith("ジャンル "):
@@ -709,26 +753,40 @@ def handle_message(event):
                 "ジャンル認識できなかった\n例: ジャンル 経済,AI・テック,スポーツ",
                 quick_reply=qr,
             )
+            print("===== 処理終了 =====")
             return
 
         save_user(user_id, active=True, plan=plan, genres=new_genres)
         reply_text(event.reply_token, f"ジャンル変えた: {format_genres(new_genres)}", quick_reply=qr)
+        print("===== 処理終了 =====")
         return
 
     if text in _STATUS_WORDS:
         reply_text(event.reply_token, _plan_status_text(plan, active, genres), quick_reply=qr)
+        print("===== 処理終了 =====")
         return
 
     if any(w in text for w in _BLOCKLIST):
         reply_text(event.reply_token, _REJECT_TEXT, quick_reply=qr)
+        print("===== 処理終了 =====")
         return
 
     if is_related_to_news_context(user_id, text):
         answer = answer_news_question(user_id, text)
         reply_text(event.reply_token, answer, quick_reply=qr)
+        try:
+            supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
+        except Exception:
+            pass
+        print("===== 処理終了 =====")
         return
 
     reply_text(event.reply_token, _REJECT_TEXT, quick_reply=qr)
+    try:
+        supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
+    except Exception:
+        pass
+    print("===== 処理終了 =====")
 
 
 @handler.add(PostbackEvent)
