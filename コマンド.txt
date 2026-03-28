@@ -1,11 +1,90 @@
-＃更新
-git add .
-git commit -m "update"
-git push
-
 ＃アクティベ
 venv\Scripts\activate
 
 ＃ドライラン
 cd c:\bot\line_bot
 python send_news.py --dry-run
+
+# Git コマンド最小セット（コピペ用）
+
+## ■ 状態確認
+
+git status
+git branch
+git log --oneline
+
+---
+
+## ■ セーブ（基本）
+
+git add .
+git commit -m "途中"
+
+---
+
+## ■ ブランチ操作
+
+git checkout dev
+git checkout -b feature-xxx
+git branch -d feature-xxx
+
+---
+
+## ■ 戻る（重要）
+
+git reset --hard main
+git reset --hard <commitID>
+
+---
+
+## ■ ファイル単体戻し
+
+git restore ファイル名
+git restore --source main ファイル名
+
+---
+
+## ■ クラウド（GitHub）
+
+git pull
+git push
+
+---
+
+## ■ タグ（セーブポイント）
+
+git tag stable-1
+git reset --hard stable-1
+
+---
+
+## ■ 差分確認
+
+git diff
+
+---
+
+## ■ 強制復元（今回使った）
+
+git fetch
+git reset --hard origin/main
+
+---
+
+## ■ お前用最短セット（実用）
+
+git status
+git add .
+git commit -m "途中"
+git checkout dev
+git reset --hard main
+git log --oneline
+
+---
+
+## ■ ルール（重要）
+
+・mainは触らない
+・devで作業
+・こまめにcommit
+・壊れたらreset
