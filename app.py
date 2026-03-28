@@ -460,6 +460,7 @@ def _looks_like_article_reference(text: str) -> bool:
         "リンク", "url", "記事",
         "詳しく", "なんで", "なぜ", "理由", "影響", "どういうこと",
         "もっと", "追加ニュース", "他にニュース",
+        "全部", "全リンク", "リンク全部", "全部のリンク",
     ]
     return any(r in text for r in refs)
 
@@ -811,7 +812,9 @@ def handle_message(event):
 
         elif not free_reply_used:
             # 無料ユーザー初回：AI回答＋導線
-            answer = answer_news_question(user_id, text)
+            _ALL_LINK_KW = ["全部", "全リンク", "リンク全部", "全部のリンク"]
+            question_for_ai = "今日のニュース5本をまとめて簡単に教えて" if any(kw in text for kw in _ALL_LINK_KW) else text
+            answer = answer_news_question(user_id, question_for_ai)
             msg = f"詳しくはこんな感じ👇\n\n{answer}\n\n続きは有料版で深掘りできる"
             reply_text(event.reply_token, msg, quick_reply=qr)
             try:
@@ -824,12 +827,57 @@ def handle_message(event):
                 pass
 
         else:
-            # 無料ユーザー2回目以降：固定文、AI呼ばない
-            reply_text(
-                event.reply_token,
-                "無料版は1回だけ深掘り対応してる\n番号か「全部」で見てくれ",
-                quick_reply=qr,
-            )
+            # 無料ユーザー2回目以降：数字/全リンク/固定文、AI呼ばない
+            _ALL_LINK_KW = ["全部", "全リンク", "リンク全部", "全部のリンク"]
+            num = extract_number(text)
+            all_links_used = user.get("all_links_used", False)
+
+            if num is not None:
+                # ① 数字 → 該当ニュースのURL返却
+                ctx = get_latest_news_context(user_id)
+                url = ""
+                if ctx and _is_context_alive(ctx):
+                    items = ctx.get("payload", {}).get("news_items", [])
+                    item = next((n for n in items if n.get("index") == num), None)
+                    if item:
+                        url = item.get("link", "")
+                if url:
+                    circle = _CIRCLED[num - 1] if num <= len(_CIRCLED) else str(num)
+                    reply_text(event.reply_token, f"この記事👇\n{url}", quick_reply=qr)
+                else:
+                    reply_text(event.reply_token, f"{num}番目の記事が見つからなかった", quick_reply=qr)
+
+            elif any(kw in text for kw in _ALL_LINK_KW):
+                if all_links_used:
+                    # ③ 全リンク2回目以降
+                    reply_text(event.reply_token, "今日はもう全部出してる\n番号で見てくれ", quick_reply=qr)
+                else:
+                    # ② 全リンク初回
+                    ctx = get_latest_news_context(user_id)
+                    if ctx and _is_context_alive(ctx):
+                        items = ctx.get("payload", {}).get("news_items", [])
+                        lines = ["まとめてどうぞ👇"]
+                        for item in items:
+                            idx = item.get("index", 0)
+                            circle = _CIRCLED[idx - 1] if 0 < idx <= len(_CIRCLED) else str(idx)
+                            lines.append(f"{circle} {item.get('link', '')}")
+                        reply_text(event.reply_token, "\n".join(lines), quick_reply=qr)
+                        try:
+                            supabase.table("users").update({"all_links_used": True}).eq("user_id", user_id).execute()
+                            user["all_links_used"] = True
+                        except Exception:
+                            pass
+                    else:
+                        reply_text(event.reply_token, "先に聞くでニュース出して", quick_reply=qr)
+
+            else:
+                # ④ その他
+                reply_text(
+                    event.reply_token,
+                    "無料版は1回だけ深掘り対応してる\n番号か「全部」で見てくれ",
+                    quick_reply=qr,
+                )
+
             try:
                 supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
             except Exception:
