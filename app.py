@@ -296,6 +296,7 @@ _URL_KEYWORDS = ["URL", "url", "リンク", "記事"]
 _DETAIL_KEYWORDS = ["詳しく", "もう少し", "なんで", "なぜ", "具体的に", "仕組み"]
 _MAIN_MORE_KW = ["ほかに", "他にニュース", "もっとニュース", "追加ニュース"]
 _SUB_MORE_KW = ["ほか", "他に", "もっと", "追加", "それ以外", "他にも"]
+_FOLLOWUP_KW = ["他には", "別のニュース", "続き", "次"]
 
 _NUM_MAP = {
     "1": 1, "2": 2, "3": 3, "4": 4, "5": 5,
@@ -438,6 +439,14 @@ def _parse_article_num(question: str, max_n: int = 5) -> Optional[int]:
             return n
 
     return None
+
+
+def extract_number(text: str) -> Optional[int]:
+    return _parse_article_num(text, max_n=5)
+
+
+def is_followup(text: str) -> bool:
+    return any(kw in text for kw in _FOLLOWUP_KW)
 
 
 def _looks_like_article_reference(text: str) -> bool:
@@ -763,6 +772,20 @@ def handle_message(event):
 
     if text in _STATUS_WORDS:
         reply_text(event.reply_token, _plan_status_text(plan, active, genres), quick_reply=qr)
+        print("===== 処理終了 =====")
+        return
+
+    if is_followup(text):
+        ctx = get_latest_news_context(user_id)
+        if not ctx or not _is_context_alive(ctx):
+            reply_text(event.reply_token, "先に聞くでニュース出して", quick_reply=qr)
+            print("===== 処理終了 =====")
+            return
+        payload = ctx.get("payload", {})
+        news_items = payload.get("news_items", [])
+        extra_items = payload.get("extra_items", [])
+        answer = _answer_more_news(news_items, extra_items)
+        reply_text(event.reply_token, answer, quick_reply=qr)
         print("===== 処理終了 =====")
         return
 
