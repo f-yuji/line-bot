@@ -297,6 +297,11 @@ _MAIN_MORE_KW = ["ほかに", "他にニュース", "もっとニュース", "�
 _SUB_MORE_KW = ["ほか", "他に", "もっと", "追加", "それ以外", "他にも"]
 _FOLLOWUP_KW = ["他には", "別のニュース", "続き", "次"]
 
+_CONTEXT_TOKEN_STOPWORDS = {
+    "経済", "金利", "影響", "理由", "内容", "状況",
+    "問題", "情報", "世界", "ニュース", "話題",
+}
+
 _NUM_MAP = {
     "1": 1, "2": 2, "3": 3, "4": 4, "5": 5,
     "１": 1, "２": 2, "３": 3, "４": 4, "５": 5,
@@ -387,7 +392,7 @@ def _collect_context_tokens(payload: dict) -> List[str]:
         parts = re.split(r"[、。・,\s/\-\[\]（）()「」『』:：\n]+", s)
         for p in parts:
             p = p.strip()
-            if len(p) >= 2:
+            if len(p) >= 3 and p not in _CONTEXT_TOKEN_STOPWORDS:
                 tokens.append(p)
 
     for item in payload.get("news_items", []):
@@ -699,17 +704,7 @@ def handle_message(event):
         user["all_links_used"] = False
         user["free_reply_date"] = today
 
-    # ── 連投制限 ──
     now_dt = datetime.now(timezone.utc)
-    last_reply_time = user.get("last_reply_time")
-    if last_reply_time is not None:
-        try:
-            last_dt = datetime.fromisoformat(str(last_reply_time).replace("Z", "+00:00"))
-            if now_dt - last_dt < timedelta(seconds=5):
-                print("===== 処理終了 =====")
-                return
-        except Exception:
-            pass
 
     plan = user.get("plan", "free")
     active = user.get("active", True)
@@ -800,6 +795,19 @@ def handle_message(event):
         is_paid = plan != "free"
         free_reply_used = user.get("free_reply_used", False)
 
+        # AI呼び出し前の制限チェック（有料 or 無料初回のみ）
+        if is_paid or not free_reply_used:
+            _last = user.get("last_reply_time")
+            if _last is not None:
+                try:
+                    _last_dt = datetime.fromisoformat(str(_last).replace("Z", "+00:00"))
+                    if now_dt - _last_dt < timedelta(seconds=5):
+                        reply_text(event.reply_token, "少し置いてもう一回送って", quick_reply=qr)
+                        print("===== 処理終了 =====")
+                        return
+                except Exception:
+                    pass
+
         if is_paid:
             # 有料ユーザー：常時AI回答
             answer = answer_news_question(user_id, text)
@@ -877,19 +885,10 @@ def handle_message(event):
                     quick_reply=qr,
                 )
 
-            try:
-                supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
-            except Exception:
-                pass
-
         print("===== 処理終了 =====")
         return
 
     reply_text(event.reply_token, _REJECT_TEXT, quick_reply=qr)
-    try:
-        supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
-    except Exception:
-        pass
     print("===== 処理終了 =====")
 
 
