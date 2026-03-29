@@ -972,7 +972,7 @@ def build_message(
     t_lines = ["話題に困ったらこれで乗り切ろう⬇️", ""]
     for label, phrase in _generate_phrases(news):
         t_lines.append(label)
-        t_lines.append(phrase)
+        t_lines.append(f"「{phrase}」")
         t_lines.append("")
     t_lines.append("気になるニュース、このLINEで聞いてもらえれば👌\n記事のリンクほしいときも言って")
     phrase_section = "\n".join(t_lines)
