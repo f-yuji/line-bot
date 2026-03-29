@@ -84,7 +84,9 @@ STRONG_KEYWORDS: Dict[str, List[str]] = {
         "建築基準法", "建設コスト", "工期遅延", "ゼネコン", "建設会社",
         "設備工事", "改修工事", "修繕工事", "耐震工事", "建設需要",
         "入札不調", "建築確認", "現場事故", "外壁改修", "大規模修繕",
-        "道路工事", "橋梁工事", "建築着工", "設備更新", "施工管理"
+        "道路工事", "橋梁工事", "建築着工", "設備更新", "施工管理",
+        "資材高騰", "建設資材", "人手不足倒産", "現場監督", "職人確保",
+        "建築単価", "労務費", "資材価格", "大規模改修"
     ],
 
     "interest_rates": [
@@ -142,7 +144,9 @@ STRONG_KEYWORDS: Dict[str, List[str]] = {
         "工場新設", "設備投資計画", "販売不振", "増収増益", "減収減益",
         "四半期決算", "営業利益", "最終利益", "売上高", "収益改善",
         "不採算事業", "子会社売却", "自社株買い", "増配", "減配",
-        "社長交代", "経営統合", "提携解消", "サプライチェーン", "価格改定"
+        "社長交代", "経営統合", "提携解消", "サプライチェーン", "価格改定",
+        "下方修正", "上方修正", "連結決算", "営業赤字", "最終赤字",
+        "増収", "減収", "増益", "減益"
     ],
 
     "tech": [
@@ -162,7 +166,10 @@ STRONG_KEYWORDS: Dict[str, List[str]] = {
         "南シナ海", "NATO", "G7首脳会議", "国連安保理", "核開発",
         "米大統領選", "中国景気", "欧州委員会", "イスラエル", "イラン",
         "ガザ地区", "トランプ政権", "バイデン政権", "米中会談", "対中制裁",
-        "対ロ制裁", "防衛支援", "国境紛争", "難民問題", "地政学リスク"
+        "対ロ制裁", "防衛支援", "国境紛争", "難民問題", "地政学リスク",
+        "停戦", "空爆", "攻撃", "報復", "軍", "米軍",
+        "国防", "安保", "首脳声明", "外交筋", "EU", "欧州連合",
+        "ホワイトハウス", "国務長官"
     ],
 
     "materials": [
@@ -180,7 +187,9 @@ STRONG_KEYWORDS: Dict[str, List[str]] = {
         "隠蔽疑惑", "内部告発", "コンプラ違反", "ハラスメント疑惑", "謝罪会見",
         "処分発表", "説明責任", "告発文書", "不正受給", "不正会計",
         "裏金問題", "贈収賄疑惑", "パワハラ疑惑", "セクハラ疑惑", "情報隠蔽",
-        "第三者委員会", "処分検討", "会見拒否", "不適切投稿", "発言撤回"
+        "第三者委員会", "処分検討", "会見拒否", "不適切投稿", "発言撤回",
+        "殺人", "遺体", "送検", "起訴", "立てこもり",
+        "強盗", "傷害", "暴行", "詐欺", "横領", "汚職"
     ],
 
     "entertainment": [
@@ -252,7 +261,8 @@ CATEGORY_KEYWORDS: Dict[str, List[str]] = {
         "米国", "中国", "ロシア", "欧州", "中東",
         "台湾", "外交", "関税", "戦争", "停戦",
         "制裁", "首脳会談", "軍事", "イラン", "イスラエル",
-        "G7", "G20", "外相", "首脳", "大統領", "会談"
+        "G7", "G20", "外相", "首脳", "大統領", "会談",
+        "攻撃", "報復", "空爆"
     ],
 
     "materials": [
@@ -265,7 +275,8 @@ CATEGORY_KEYWORDS: Dict[str, List[str]] = {
         "不祥事", "炎上", "辞任", "逮捕", "疑惑",
         "不起訴", "謝罪", "告発", "不正", "処分",
         "ハラスメント", "隠蔽", "会見", "裏金", "コンプラ",
-        "刺殺", "殺害", "死亡", "事件", "容疑者", "被害者", "通り魔", "発生"
+        "刺殺", "殺害", "死亡", "事件", "容疑者", "被害者", "通り魔", "発生",
+        "殺人"
     ],
 
     "entertainment": [
@@ -452,7 +463,31 @@ def load_users() -> Dict[str, Any]:
 # =========================
 
 _SCANDAL_PRIORITY    = {"刺殺", "殺害", "死亡", "事件", "容疑者", "被害者", "通り魔", "逮捕"}
-_INTL_PRIORITY       = {"G7", "G20", "外相", "首脳", "大統領", "会談", "首脳会談"}
+_INTL_PRIORITY       = {"G7", "G20", "外相", "首脳", "大統領",  "首脳会談"}
+
+# construction の誤爆を防ぐ語（含まれる場合は construction を除外）
+_CONSTRUCTION_BLOCK  = {"外相", "首相", "大統領", "G7", "G20", "首脳", "会談", "外交",
+                        "イラン", "イスラエル", "米国", "中国", "ロシア"}
+
+# business はこのうち1語以上ないとスコア対象外
+_BUSINESS_REQUIRED   = {"決算", "業績", "企業", "値上げ", "売上", "利益", "事業", "IPO", "上場", "買収"}
+
+CATEGORY_WEIGHTS: Dict[str, int] = {
+    "scandal":        3,
+    "international":  3,
+    "economy":        2,
+    "interest_rates": 2,
+    "energy":         2,
+    "business":       2,
+    "construction":   1,
+    "real_estate":    2,
+    "ai":             2,
+    "tech":           2,
+    "sports":         2,
+    "materials":      2,
+    "entertainment":  2,
+    "other":          1,
+}
 
 
 def classify_category(article: Dict[str, str]) -> str:
@@ -464,12 +499,28 @@ def classify_category(article: Dict[str, str]) -> str:
     if any(w in text for w in _INTL_PRIORITY):
         return "international"
 
+    block_construction = any(w in text for w in _CONSTRUCTION_BLOCK)
+    has_business_word  = any(w in text for w in _BUSINESS_REQUIRED)
+
     scores: Dict[str, int] = {}
     for cat, keywords in CATEGORY_KEYWORDS.items():
+        if cat == "construction" and block_construction:
+            continue
+        if cat == "business" and not has_business_word:
+            continue
         count = sum(1 for k in keywords if k in text)
         if count:
-            scores[cat] = count
-    return max(scores, key=scores.get) if scores else "other"
+            scores[cat] = count * CATEGORY_WEIGHTS.get(cat, 1)
+    if scores:
+        return max(scores, key=scores.get)
+    # fallback: スコアが付かなかった場合でも意味語で拾う
+    _SCANDAL_FB = {"事件", "逮捕", "殺人", "刺殺", "容疑者", "被害者"}
+    _INTL_FB    = {"米国", "中国", "ロシア", "イラン", "イスラエル", "G7", "外交"}
+    if any(w in text for w in _SCANDAL_FB):
+        return "scandal"
+    if any(w in text for w in _INTL_FB):
+        return "international"
+    return "other"
 
 
 def score_article(article: Dict[str, str], user_genres: List[str]) -> int:
@@ -480,8 +531,15 @@ def score_article(article: Dict[str, str], user_genres: List[str]) -> int:
         if word in text:
             score -= 3
 
+    block_construction = any(w in text for w in _CONSTRUCTION_BLOCK)
+    has_business_word  = any(w in text for w in _BUSINESS_REQUIRED)
+
     # カテゴリごとにcap: 強キーワードmax+3、弱キーワードmax+3
     for cat in set(list(STRONG_KEYWORDS.keys()) + list(CATEGORY_KEYWORDS.keys())):
+        if cat == "construction" and block_construction:
+            continue
+        if cat == "business" and not has_business_word:
+            continue
         strong_hits = sum(1 for k in STRONG_KEYWORDS.get(cat, []) if k in text)
         weak_hits = sum(1 for k in CATEGORY_KEYWORDS.get(cat, []) if k in text)
         score += min(strong_hits * 3, 3)

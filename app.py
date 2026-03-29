@@ -1,7 +1,6 @@
 import logging
 import os
 import re
-import time
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
@@ -58,7 +57,6 @@ logger = logging.getLogger(__name__)
 
 print("=== 起動確認 ===")
 print(f"環境: {ENV}")
-print(f"SECRET_HEAD={LINE_CHANNEL_SECRET[:6]}")
 if ENV == "test":
     print("🟢 テスト環境で実行中")
 elif ENV == "prod":
@@ -617,7 +615,6 @@ def callback():
     signature = request.headers.get("X-Line-Signature")
     body = request.get_data(as_text=True)
 
-    print(f"BODY={body}")  # DEBUG: 送信元チャネル確認用（確認後に削除すること）
     try:
         handler.handle(body, signature)
     except InvalidSignatureError:
@@ -655,7 +652,6 @@ def handle_follow(event):
     )
 
     try:
-        time.sleep(6)
         send_news_to_user(user_id)
     except Exception as e:
         logger.error("初回配信失敗: user=%s %s", user_id, e)
