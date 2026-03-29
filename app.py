@@ -602,6 +602,7 @@ def answer_news_question(user_id: str, question: str) -> str:
             ],
             temperature=0.5,
             max_tokens=400,
+            timeout=15,
         )
         return res.choices[0].message.content.strip()
     except Exception as e:
@@ -613,6 +614,8 @@ def answer_news_question(user_id: str, question: str) -> str:
 @app.route("/callback", methods=["POST"])
 def callback():
     signature = request.headers.get("X-Line-Signature")
+    if not signature:
+        abort(400)
     body = request.get_data(as_text=True)
 
     try:

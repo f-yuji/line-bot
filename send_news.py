@@ -366,8 +366,13 @@ def filter_sent(news_list: List[Dict[str, str]]) -> List[Dict[str, str]]:
     links = [n["link"] for n in news_list]
     try:
         twelve_hours_ago = (datetime.now(timezone.utc) - timedelta(hours=12)).isoformat()
-        res = supabase.table("sent_articles").select("link").in_("link", links).gte("sent_at", twelve_hours_ago).execute()
-        sent_links = {row["link"] for row in res.data or []}
+        _CHUNK_SIZE = 30
+        sent_links: set = set()
+        for i in range(0, len(links), _CHUNK_SIZE):
+            chunk = links[i:i + _CHUNK_SIZE]
+            res = supabase.table("sent_articles").select("link").in_("link", chunk).gte("sent_at", twelve_hours_ago).execute()
+            for row in res.data or []:
+                sent_links.add(row["link"])
         filtered = [n for n in news_list if n["link"] not in sent_links]
         logger.info("送信済み除外: %d件 → %d件", len(news_list), len(filtered))
         return filtered
@@ -797,6 +802,7 @@ def summarize(news_list: List[Dict[str, str]]) -> Dict[str, Any]:
             model="gpt-4o-mini",
             messages=[{"role": "user", "content": prompt}],
             temperature=0.3,
+            timeout=15,
         )
         raw = res.choices[0].message.content.strip()
         raw = re.sub(r"^```json\s*", "", raw)
