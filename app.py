@@ -458,6 +458,14 @@ def is_followup(text: str) -> bool:
     return any(kw in text for kw in _FOLLOWUP_KW)
 
 
+def is_news_question(text: str) -> bool:
+    keywords = [
+        "何", "なに", "どういう", "どうな", "意味", "影響",
+        "金利", "円安", "株", "経済",
+    ]
+    return any(k in text for k in keywords)
+
+
 def _looks_like_article_reference(text: str) -> bool:
     if _parse_article_num(text, max_n=10) is not None:
         return True
@@ -812,9 +820,9 @@ _STOP_WORDS = {"停止", "止めて", "停止して", "配信止めて", "もう
 _START_WORDS = {"開始", "スタート", "再開", "もう一回", "配信して", "オン", "はじめて", "始めて"}
 _GENRE_WORDS = {"ジャンル", "ジャンル変えたい", "ジャンル変える", "ジャンル設定", "ジャンル選びたい", "設定したい"}
 _MEMBERSHIP_KW = [
-    "メンバー", "メンバーシップ", "有料", "課金",
+    "メンバー", "有料", "課金",
     "いくら", "料金", "値段",
-    "どうやる", "入り方", "登録",
+    "入り方", "登録",
     "何できる", "何ができる",
 ]
 _STATUS_WORDS = {"状態", "今どんな感じ", "設定どうなってる", "今の設定"}
@@ -822,6 +830,7 @@ _HELP_WORDS = {"聞く", "使い方", "何できる", "どう使うの", "何聞
 _CHAT_TOPIC_KW = ["会話ネタ", "話のネタ", "雑談ネタ", "ネタ教えて", "何話せばいい", "何話す"]
 _PERSON_KW = ["営業", "取引先", "上司", "部下", "先輩", "後輩", "同僚", "友達", "初対面", "客", "顧客", "彼女", "彼氏", "親", "家族"]
 _PERSON_REQUEST_KW = ["会話ネタ", "話のネタ", "何話す", "何話せばいい", "雑談ネタ", "ネタ教えて", "話振る", "会話", "話題"]
+_ALL_LINK_KW = ["全部", "全て", "一覧", "まとめ", "リンク"]
 
 
 def _plan_status_text(plan: str, active: bool, genres: list) -> str:
@@ -1101,6 +1110,7 @@ def handle_message(event):
             pass
         return
 
+    # ★5 blocklist
     if any(w in text for w in _BLOCKLIST):
         reply_text(event.reply_token, _BLOCKLIST_TEXT, quick_reply=qr)
         try:
@@ -1109,8 +1119,37 @@ def handle_message(event):
             pass
         return
 
-    if is_related_to_news_context(user_id, text):
-        if not _looks_like_question_or_command(text):
+    # ★6 ALL_LINK（リンク一覧）
+    if any(kw in text for kw in _ALL_LINK_KW):
+        ctx = get_latest_news_context(user_id)
+        if not ctx or not _is_context_alive(ctx):
+            reply_text(event.reply_token, "先に聞くでニュース出して", quick_reply=qr)
+            try:
+                supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
+            except Exception:
+                pass
+            return
+        items = ctx.get("payload", {}).get("news_items", [])
+        lines = ["まとめてどうぞ👇"]
+        for item in items:
+            idx = item.get("index", 0)
+            circle = _CIRCLED[idx - 1] if 0 < idx <= len(_CIRCLED) else str(idx)
+            lines.append(f"{circle} {item.get('link', '')}")
+        reply_text(event.reply_token, "\n".join(lines), quick_reply=qr)
+        try:
+            supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
+        except Exception:
+            pass
+        return
+
+    # ★7 ニュースQ&A（番号最優先＋文脈＋自然文）
+    _is_number_start = bool(re.match(r"^[①-⑩1-9]", text))
+    _matched_by_ctx = is_related_to_news_context(user_id, text)
+    _matched_by_q = is_news_question(text)
+
+    if _is_number_start or _matched_by_ctx or _matched_by_q:
+        # 文脈マッチのみ（番号でも質問でもない）→ 弾く
+        if _matched_by_ctx and not _is_number_start and not _matched_by_q and not _looks_like_question_or_command(text):
             reply_text(event.reply_token, _REJECT_TEXT, quick_reply=qr)
             try:
                 supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
@@ -1121,7 +1160,6 @@ def handle_message(event):
         free_reply_used = user.get("free_reply_used", False)
 
         if plan == "paid":
-            # 有料ユーザー：1日10回まで
             if not can_use_paid_ai(user):
                 reply_text(
                     event.reply_token,
@@ -1138,10 +1176,7 @@ def handle_message(event):
             increment_ai_count(user_id, user.get("ai_count", 0), today, now_dt)
 
         elif not free_reply_used:
-            # 無料ユーザー初回：AI回答＋導線
-            _ALL_LINK_KW = ["全部", "全リンク", "リンク全部", "全部のリンク"]
-            question_for_ai = "今日のニュース5本をまとめて簡単に教えて" if any(kw in text for kw in _ALL_LINK_KW) else text
-            answer = answer_news_question(user_id, question_for_ai)
+            answer = answer_news_question(user_id, text)
             msg = f"詳しくはこんな感じ👇\n\n{answer}\n\nこの先はもう少し深く見れるようにしてる"
             reply_text(event.reply_token, msg, quick_reply=qr)
             try:
@@ -1154,63 +1189,18 @@ def handle_message(event):
                 pass
 
         else:
-            # 無料ユーザー2回目以降：数字/全リンク/固定文、AI呼ばない
-            _ALL_LINK_KW = ["全部", "全リンク", "リンク全部", "全部のリンク"]
-            num = extract_number(text)
-            all_links_used = user.get("all_links_used", False)
-
-            if num is not None:
-                # ① 数字 → 該当ニュースのURL返却
-                ctx = get_latest_news_context(user_id)
-                url = ""
-                if ctx and _is_context_alive(ctx):
-                    items = ctx.get("payload", {}).get("news_items", [])
-                    item = next((n for n in items if n.get("index") == num), None)
-                    if item:
-                        url = item.get("link", "")
-                if url:
-                    circle = _CIRCLED[num - 1] if num <= len(_CIRCLED) else str(num)
-                    reply_text(event.reply_token, f"この記事👇\n{url}", quick_reply=qr)
-                else:
-                    reply_text(event.reply_token, f"{num}番目の記事が見つからなかった", quick_reply=qr)
-
-            elif any(kw in text for kw in _ALL_LINK_KW):
-                if all_links_used:
-                    # ③ 全リンク2回目以降
-                    reply_text(event.reply_token, "今日はもう全部出してる\n番号で見てくれ", quick_reply=qr)
-                else:
-                    # ② 全リンク初回
-                    ctx = get_latest_news_context(user_id)
-                    if ctx and _is_context_alive(ctx):
-                        items = ctx.get("payload", {}).get("news_items", [])
-                        lines = ["まとめてどうぞ👇"]
-                        for item in items:
-                            idx = item.get("index", 0)
-                            circle = _CIRCLED[idx - 1] if 0 < idx <= len(_CIRCLED) else str(idx)
-                            lines.append(f"{circle} {item.get('link', '')}")
-                        reply_text(event.reply_token, "\n".join(lines), quick_reply=qr)
-                        try:
-                            supabase.table("users").update({"all_links_used": True}).eq("user_id", user_id).execute()
-                            user["all_links_used"] = True
-                        except Exception:
-                            pass
-                    else:
-                        reply_text(event.reply_token, "先に聞くでニュース出して", quick_reply=qr)
-
-            else:
-                # ④ その他
-                reply_text(
-                    event.reply_token,
-                    "無料版は1回だけ深掘り対応してる\n番号か「全部」で見てくれ",
-                    quick_reply=qr,
-                )
-
+            reply_text(
+                event.reply_token,
+                "無料版は1回だけ深掘り対応してる\nメンバーシップで続けられるよ",
+                quick_reply=qr,
+            )
             try:
                 supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
             except Exception:
                 pass
         return
 
+    # ★8 相手別会話ネタ（paid only）
     if plan == "paid" and any(kw in text for kw in _PERSON_KW) and any(kw in text for kw in _PERSON_REQUEST_KW):
         if not can_use_paid_ai(user):
             reply_text(
@@ -1228,6 +1218,7 @@ def handle_message(event):
         increment_ai_count(user_id, user.get("ai_count", 0), today, now_dt)
         return
 
+    # ★9 fallback
     reply_text(event.reply_token, _REJECT_TEXT, quick_reply=qr)
     try:
         supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
