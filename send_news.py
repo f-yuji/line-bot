@@ -339,7 +339,14 @@ def extract_source_name(url: str) -> str:
 # 必要になったら is.gd 等で再実装する
 
 
+def normalize_plan(plan: str) -> str:
+    if plan in ["light", "premium", "paid"]:
+        return "paid"
+    return "free"
+
+
 def plan_max_items(plan: str) -> int:
+    plan = normalize_plan(plan)
     return {
         "free": 5,
         "paid": 5,
@@ -436,7 +443,7 @@ def load_users() -> Dict[str, Any]:
             plan = row.get("plan", "free")
             users[user_id] = {
                 "user_id": user_id,
-                "plan": plan,
+                "plan": normalize_plan(plan),
                 "active": row.get("active", True),
                 "genres": row.get("genres", []) or [],
                 "max_items": plan_max_items(plan),
@@ -1117,7 +1124,7 @@ def main(is_night: bool = False):
 
         # 夜配信は有料ユーザーかつ night_delivery=True のみ
         if is_night:
-            if user.get("plan", "free") == "free":
+            if normalize_plan(user.get("plan", "free")) == "free":
                 logger.info("無料ユーザーのため夜配信スキップ: %s", user_id)
                 continue
             if not user.get("night_delivery", True):
