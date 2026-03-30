@@ -940,9 +940,12 @@ def handle_message(event):
         elif any(w in text for w in ["何できる", "何ができる"]):
             reply_text(
                 event.reply_token,
-                "気になるニュース送ってくれれば\n"
-                "もう少し深く解説できるようにしてる\n\n"
-                "あとまとめて一覧で見れるようにもしてる",
+                "無料でも使えるけど\n\n"
+                "メンバーシップだと\n"
+                "・ニュースを深掘りできる\n"
+                "・会話ネタの返しまで出せる\n"
+                "・相手に合わせた話題も出せる\n\n"
+                "気になるならそのまま聞いてくれればOK",
                 quick_reply=qr,
             )
         else:
