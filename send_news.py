@@ -336,18 +336,8 @@ def extract_source_name(url: str) -> str:
         return "不明"
 
 
-def shorten_url(url: str) -> str:
-    try:
-        res = requests.get(
-            "https://is.gd/create.php",
-            params={"format": "simple", "url": url},
-            timeout=10,
-        )
-        res.raise_for_status()
-        return res.text.strip()
-    except Exception as e:
-        logger.warning("URL短縮失敗 (%s): %s", url, e)
-        return url
+# URL短縮機能（未使用のため削除）
+# 必要になったら is.gd 等で再実装する
 
 
 def plan_max_items(plan: str) -> int:
@@ -453,6 +443,7 @@ def load_users() -> Dict[str, Any]:
                 "active": row.get("active", True),
                 "genres": row.get("genres", []) or [],
                 "max_items": plan_max_items(plan),
+                "night_delivery": row.get("night_delivery", True),
             }
 
         logger.info("Supabaseユーザー読込: %d件", len(users))
@@ -538,6 +529,11 @@ def score_article(article: Dict[str, str], user_genres: List[str]) -> int:
 
     block_construction = any(w in text for w in _CONSTRUCTION_BLOCK)
     has_business_word  = any(w in text for w in _BUSINESS_REQUIRED)
+
+    # NOTE:
+    # 同一キーワードが STRONG_KEYWORDS と CATEGORY_KEYWORDS の両方に含まれる場合、
+    # 意図的にダブルカウントされる設計
+    # 理由：重要キーワードの重みを強めるため
 
     # カテゴリごとにcap: 強キーワードmax+3、弱キーワードmax+3
     for cat in set(list(STRONG_KEYWORDS.keys()) + list(CATEGORY_KEYWORDS.keys())):
@@ -1095,7 +1091,7 @@ def send(user_id: str, messages: List[str], with_quick_reply: bool = False) -> b
 # 実行
 # =========================
 
-def main():
+def main(is_night: bool = False):
     users = load_users()
     if not users:
         logger.warning("配信対象ユーザーが0件です")
@@ -1122,6 +1118,15 @@ def main():
             logger.info("非アクティブのためスキップ: %s", user_id)
             continue
 
+        # 夜配信は有料ユーザーかつ night_delivery=True のみ
+        if is_night:
+            if user.get("plan", "free") == "free":
+                logger.info("無料ユーザーのため夜配信スキップ: %s", user_id)
+                continue
+            if not user.get("night_delivery", True):
+                logger.info("夜配信オフのためスキップ: %s", user_id)
+                continue
+
         logger.info("ニュース配信開始 user=%s plan=%s genres=%s",
                     user_id, user.get("plan"), user.get("genres"))
         filtered = filter_news(news, user)
@@ -1138,13 +1143,15 @@ def main():
         if ok:
             successfully_sent.update(sent_links)
             sent_count += 1
+            try:
+                record_sent(filtered)
+            except Exception as e:
+                logger.error("sent_articles記録失敗: user=%s %s", user_id, e)
         else:
             logger.warning("送信失敗のためsent_articles記録スキップ: user=%s", user_id)
 
         time.sleep(2)
 
-    sent_news = [n for n in news if n["link"] in successfully_sent]
-    record_sent(sent_news)
     logger.info("配信完了: %d/%d ユーザー", sent_count, len(users))
 
 
@@ -1172,11 +1179,20 @@ def send_news_to_user(user_id: str) -> None:
         logger.warning("初回配信: ニュース0件のためスキップ: %s", user_id)
         return
 
+    plan = "free"
+    genres: List[str] = []
+    try:
+        res = supabase.table("users").select("plan,genres").eq("user_id", user_id).single().execute()
+        if res.data:
+            plan   = res.data.get("plan", "free") or "free"
+            genres = res.data.get("genres") or []
+    except Exception as e:
+        logger.warning("send_news_to_user: ユーザー情報取得失敗、デフォルト使用: %s %s", user_id, e)
     user = {
-        "user_id": user_id,
-        "plan": "free",
-        "genres": [],
-        "max_items": 5,
+        "user_id":   user_id,
+        "plan":      plan,
+        "genres":    genres,
+        "max_items": plan_max_items(plan),
     }
     filtered = filter_news(news, user)
     if not filtered:
@@ -1210,10 +1226,9 @@ if __name__ == "__main__":
         elif ENV == "prod":
             print("🔴 本番環境で実行中（注意）")
             print("🔴 本番環境です。内容を確認してください")
-        print("===== 処理開始 =====")
         try:
-            main()
+            is_night = "--night" in sys.argv
+            main(is_night=is_night)
         except Exception as e:
             logger.error("main()で予期しないエラー: %s", e)
             notify_owner(f"[send_news] エラー発生\n{type(e).__name__}: {e}")
-        print("===== 処理終了 =====")

@@ -169,10 +169,9 @@ def format_genres(genres):
 # ─── LINE UI ヘルパー ───
 def main_quick_reply() -> QuickReply:
     return QuickReply(items=[
-        QuickReplyItem(action=MessageAction(label="聞く", text="聞く")),
+        QuickReplyItem(action=MessageAction(label="使い方", text="使い方")),
         QuickReplyItem(action=MessageAction(label="停止", text="停止")),
         QuickReplyItem(action=MessageAction(label="ジャンル", text="ジャンル")),
-        QuickReplyItem(action=MessageAction(label="プラン", text="プラン")),
     ])
 
 
@@ -316,7 +315,14 @@ _BLOCKLIST = [
     "お前誰", "何者", "自己紹介",
 ]
 
-_REJECT_TEXT = "それニュースの話？\n気になるニュースの内容で聞いて"
+_REJECT_TEXT = "ニュースの内容で気になることあれば聞いて\n番号やリンクでもいけるよ"
+_BLOCKLIST_TEXT = "ニュースの話で聞いてくれな"
+
+_QUESTION_SIGNALS = [
+    "？", "?", "って", "とは", "なに", "なぜ", "なんで",
+    "どう", "どこ", "いつ", "誰", "だれ", "教えて",
+    "知りたい", "聞きたい", "意味", "仕組み", "違い",
+]
 
 
 def get_latest_news_context(user_id: str) -> Optional[dict]:
@@ -468,6 +474,18 @@ def _looks_like_article_reference(text: str) -> bool:
     return any(r in text for r in refs)
 
 
+def _looks_like_question_or_command(text: str) -> bool:
+    if _parse_article_num(text, max_n=10) is not None:
+        return True
+    if any(kw in text for kw in _URL_KEYWORDS):
+        return True
+    if any(kw in text for kw in _MAIN_MORE_KW + _SUB_MORE_KW):
+        return True
+    if any(s in text for s in _QUESTION_SIGNALS):
+        return True
+    return False
+
+
 def is_related_to_news_context(user_id: str, text: str) -> bool:
     ctx = get_latest_news_context(user_id)
     if not ctx or not _is_context_alive(ctx):
@@ -504,7 +522,7 @@ def _answer_more_news(news_items: list, extra_items: list) -> str:
     sent_links = {n.get("link") for n in news_items}
     candidates = [n for n in extra_items if n.get("link") not in sent_links][:3]
     if not candidates:
-        return "今日はこれ以上ストックないかも"
+        return "この辺はメンバーシップで見れるようになってる\n\n気になるならそのまま聞いてくれればOK"
 
     lines = ["あとこれも出てる", ""]
     for i, n in enumerate(candidates):
@@ -615,6 +633,112 @@ def answer_news_question(user_id: str, question: str) -> str:
         return "今ちょっと返答うまくいかない\n少し置いてもう一回送って"
 
 
+_CHAT_TOPIC_FOLLOW_UP = (
+    "\n\nちなみに今日誰かと話す予定ある？\n\n"
+    "どんな人か教えてくれれば\n"
+    "合いそうな話題出すよ\n\n"
+    "ざっくりでもいいけど\n"
+    "詳しいほど精度出る"
+)
+
+
+def generate_chat_topic_free(user_id: str) -> str:
+    ctx = get_latest_news_context(user_id)
+    if not ctx:
+        return "まだニュースが届いてないから\n一度配信受けてから使ってみて"
+    news_items = ctx.get("payload", {}).get("news_items", [])
+    news_text = "\n".join(f"【{n['category']}】{n['title']}" for n in news_items)
+    system_prompt = (
+        "お前はLINEで使える会話ネタを提案する相手。\n\n"
+        "【ルール】\n・敬語禁止\n・会話調\n・1文短く\n・すぐ使える形で出す\n・AIっぽい文章禁止\n\n"
+        "【出力形式】\n"
+        "カテゴリ名\n"
+        "「会話フレーズ（自然に話を振れる1文）」\n\n"
+        "・広げやすいポイント（1〜2行）"
+    )
+    user_prompt = f"今日のニュース:\n{news_text}\n\nこの中から会話ネタになりそうなものを1つ選んで、上記フォーマットで出せ。"
+    try:
+        res = openai_client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
+            temperature=0.7,
+            max_tokens=200,
+            timeout=15,
+        )
+        return res.choices[0].message.content.strip() + _CHAT_TOPIC_FOLLOW_UP
+    except Exception as e:
+        logger.error("会話ネタ生成エラー: %s", e)
+        return "今ちょっとうまく生成できない\n少し置いてもう一回送って"
+
+
+def generate_chat_topic_paid(user_id: str) -> str:
+    ctx = get_latest_news_context(user_id)
+    if not ctx:
+        return "まだニュースが届いてないから\n一度配信受けてから使ってみて"
+    news_items = ctx.get("payload", {}).get("news_items", [])
+    news_text = "\n".join(f"【{n['category']}】{n['title']}" for n in news_items)
+    system_prompt = (
+        "お前はLINEで使える会話ネタを提案する相手。\n\n"
+        "【ルール】\n・敬語禁止\n・会話調\n・1文短く\n・すぐ使える形で出す\n・AIっぽい文章禁止\n\n"
+        "【出力形式】\n"
+        "カテゴリ名\n"
+        "「会話フレーズ（自然に話を振れる1文）」\n\n"
+        "・広げやすいポイント（1〜2行）\n\n"
+        "よくある返し\n"
+        "「相手の典型的な返答（1文）」\n\n"
+        "→「次の一手（すぐ使える短い質問形式）」"
+    )
+    user_prompt = f"今日のニュース:\n{news_text}\n\nこの中から会話ネタになりそうなものを1つ選んで、上記フォーマットで出せ。"
+    try:
+        res = openai_client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
+            temperature=0.7,
+            max_tokens=300,
+            timeout=15,
+        )
+        return res.choices[0].message.content.strip() + _CHAT_TOPIC_FOLLOW_UP
+    except Exception as e:
+        logger.error("会話ネタ生成エラー: %s", e)
+        return "今ちょっとうまく生成できない\n少し置いてもう一回送って"
+
+
+def generate_chat_for_person(user_id: str, person_desc: str) -> str:
+    ctx = get_latest_news_context(user_id)
+    news_text = ""
+    if ctx:
+        news_items = ctx.get("payload", {}).get("news_items", [])
+        news_text = "\n".join(f"【{n['category']}】{n['title']}" for n in news_items)
+    system_prompt = (
+        "お前はLINEで使える会話ネタを相手に合わせて提案する相手。\n\n"
+        "【ルール】\n・敬語禁止\n・会話調\n・1文短く\n・すぐ使える形で出す\n・AIっぽい文章禁止\n"
+        "・ニュースに縛られず相手に最適な話題を選ぶ\n\n"
+        "【出力形式】\n"
+        "（相手に最適化された話題）\n\n"
+        "・使いやすいポイント（1〜2行）\n\n"
+        "よくある返し\n"
+        "「相手の典型的な返答（1文）」\n\n"
+        "→「次の一手（すぐ使える短い質問形式）」"
+    )
+    user_prompt = (
+        f"話す相手: {person_desc}\n\n"
+        + (f"参考ニュース（必要なら使っていい）:\n{news_text}\n\n" if news_text else "")
+        + "この相手に使えそうな会話ネタを1つ、上記フォーマットで出せ。"
+    )
+    try:
+        res = openai_client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
+            temperature=0.7,
+            max_tokens=300,
+            timeout=15,
+        )
+        return res.choices[0].message.content.strip()
+    except Exception as e:
+        logger.error("相手別会話生成エラー: %s", e)
+        return "今ちょっとうまく生成できない\n少し置いてもう一回送って"
+
+
 # ─── Webhook ───
 @app.route("/callback", methods=["POST"])
 def callback():
@@ -647,15 +771,15 @@ def handle_follow(event):
 
     reply_text(
         event.reply_token,
-        "追加ありがとう🙌\n"
-        "よかったら使ってみて\n\n"
-        "ニュースは朝5時と夜8時に届く\n"
-        "朝早いからミュートでOK\n\n"
+        "追加ありがとう\n"
+        "よかったら使ってみて🙌\n\n"
+        "ニュースは朝起きる前に届く\n"
+        "きっと寝てる間だからミュートでOK\n\n"
+        "ジャンルでも絞れるから\n"
+        "必要ならあとで変えればOK👌\n\n"
         "とりあえず直近のニュース流すから\n"
         "気になるやつあればそのまま聞いて\n"
-        "番号でもいけるし、リンクも出せる\n\n"
-        "ジャンルでも絞れるから\n"
-        "必要ならあとで変えればOK👌",
+        "番号でもいけるし、リンクも出せる",
         quick_reply=main_quick_reply(),
     )
 
@@ -668,8 +792,16 @@ def handle_follow(event):
 _STOP_WORDS = {"停止", "止めて", "停止して", "配信止めて", "もういい", "オフ"}
 _START_WORDS = {"開始", "スタート", "再開", "もう一回", "配信して", "オン", "はじめて", "始めて"}
 _GENRE_WORDS = {"ジャンル", "ジャンル変えたい", "ジャンル変える", "ジャンル設定", "ジャンル選びたい", "設定したい"}
+_MEMBERSHIP_KW = [
+    "メンバー", "メンバーシップ", "有料", "課金",
+    "いくら", "料金", "値段",
+    "どうやる", "入り方", "登録",
+    "何できる", "何ができる",
+]
 _STATUS_WORDS = {"状態", "今どんな感じ", "設定どうなってる", "今の設定"}
 _HELP_WORDS = {"聞く", "使い方", "何できる", "どう使うの", "何聞ける"}
+_CHAT_TOPIC_KW = ["会話ネタ", "話のネタ", "話題", "雑談ネタ", "ネタ教えて", "何話せばいい", "何話す"]
+_PERSON_KW = ["営業", "取引先", "上司", "部下", "先輩", "後輩", "同僚", "友達", "初対面", "客", "顧客", "彼女", "彼氏", "親", "家族"]
 
 
 def _plan_status_text(plan: str, active: bool, genres: list) -> str:
@@ -685,9 +817,19 @@ def handle_message(event):
     text = event.message.text.strip()
 
     logger.info("メッセージ受信: user=%s text=%s", user_id, text)
-    print("===== 処理開始 =====")
-
     user = ensure_user(user_id)
+
+    now_dt = datetime.now(timezone.utc)
+
+    # ── 軽い連投制限（3秒）──
+    _last = user.get("last_reply_time")
+    if _last is not None:
+        try:
+            _last_dt = datetime.fromisoformat(str(_last).replace("Z", "+00:00"))
+            if now_dt - _last_dt < timedelta(seconds=3):
+                return
+        except Exception:
+            pass
 
     # ── 日付リセット ──
     today = datetime.now(timezone.utc).date().isoformat()
@@ -697,14 +839,27 @@ def handle_message(event):
                 "free_reply_used": False,
                 "all_links_used": False,
                 "free_reply_date": today,
+                "ai_count": 0,
+                "ai_count_date": today,
             }).eq("user_id", user_id).execute()
         except Exception:
             pass
         user["free_reply_used"] = False
         user["all_links_used"] = False
         user["free_reply_date"] = today
+        user["ai_count"] = 0
+        user["ai_count_date"] = today
 
-    now_dt = datetime.now(timezone.utc)
+    if user.get("ai_count_date") != today:
+        try:
+            supabase.table("users").update({
+                "ai_count": 0,
+                "ai_count_date": today,
+            }).eq("user_id", user_id).execute()
+        except Exception:
+            pass
+        user["ai_count"] = 0
+        user["ai_count_date"] = today
 
     plan = user.get("plan", "free")
     active = user.get("active", True)
@@ -714,13 +869,94 @@ def handle_message(event):
     if text in _STOP_WORDS:
         save_user(user_id, active=False, plan=plan, genres=genres)
         reply_text(event.reply_token, "配信止めた\n再開したい時は言って", quick_reply=qr)
-        print("===== 処理終了 =====")
+        try:
+            supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
+        except Exception:
+            pass
         return
 
     if text in _START_WORDS:
         save_user(user_id, active=True, plan=plan, genres=genres)
         reply_text(event.reply_token, "配信再開した", quick_reply=qr)
-        print("===== 処理終了 =====")
+        try:
+            supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
+        except Exception:
+            pass
+        return
+
+    if text in ["夜停止", "夜いらない"]:
+        try:
+            supabase.table("users").update({"night_delivery": False, "last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
+        except Exception:
+            pass
+        reply_text(event.reply_token, "夜の配信止めたよ", quick_reply=qr)
+        return
+
+    if text in ["夜開始", "夜オン"]:
+        try:
+            supabase.table("users").update({"night_delivery": True, "last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
+        except Exception:
+            pass
+        reply_text(event.reply_token, "夜の配信再開したよ", quick_reply=qr)
+        return
+
+    if any(kw in text for kw in _MEMBERSHIP_KW):
+        if any(w in text for w in ["いくら", "料金", "値段"]):
+            reply_text(
+                event.reply_token,
+                "月400円でやってる\n\n"
+                "ニュースの深掘りとか\n"
+                "まとめて見れるようにしてる",
+                quick_reply=qr,
+            )
+        elif any(w in text for w in ["どうやる", "入り方", "登録"]):
+            reply_text(
+                event.reply_token,
+                "メンバーシップってやつで見れるようにしてる\n\n"
+                "LINEの画面からそのまま入れるようになってるよ",
+                quick_reply=qr,
+            )
+        elif any(w in text for w in ["何できる", "何ができる"]):
+            reply_text(
+                event.reply_token,
+                "気になるニュース送ってくれれば\n"
+                "もう少し深く解説できるようにしてる\n\n"
+                "あとまとめて一覧で見れるようにもしてる",
+                quick_reply=qr,
+            )
+        else:
+            reply_text(
+                event.reply_token,
+                "メンバーシップで見れるようにしてる\n\n"
+                "気になるならそのまま聞いてくれればOK",
+                quick_reply=qr,
+            )
+        try:
+            supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
+        except Exception:
+            pass
+        return
+
+    if text == "使い方":
+        reply_text(
+            event.reply_token,
+            "使い方はこんな感じ\n\n"
+            "【ニュースを見る】\n"
+            "・番号 → 詳しく見る（例：①）\n"
+            "・リンク → 記事URL出す\n\n"
+            "【追加で見る】\n"
+            "・他には → 別のニュース出す\n\n"
+            "【深掘りする】\n"
+            "気になるニュース送れば解説する\n\n"
+            "無料でも使えるけど\n"
+            "メンバーシップだと深掘りできる\n\n"
+            "そのまま送ればOK",
+            quick_reply=qr,
+        )
+        try:
+            supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
+        except Exception:
+            pass
         return
 
     if text in _HELP_WORDS:
@@ -732,22 +968,30 @@ def handle_message(event):
             "ジャンル変えたい時もそのまま言って",
             quick_reply=qr,
         )
-        print("===== 処理終了 =====")
+        try:
+            supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
+        except Exception:
+            pass
         return
 
     if text == "プラン":
         reply_text(event.reply_token, _plan_status_text(plan, active, genres), quick_reply=qr)
-        print("===== 処理終了 =====")
+        try:
+            supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
+        except Exception:
+            pass
         return
 
     if text == "設定":
         reply_text(event.reply_token, "どうする？\nそのまま言ってもOK", quick_reply=qr)
-        print("===== 処理終了 =====")
+        try:
+            supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
+        except Exception:
+            pass
         return
 
     if text in _GENRE_WORDS:
         reply_flex(event.reply_token, build_genre_flex(genres))
-        print("===== 処理終了 =====")
         return
 
     if text.startswith("ジャンル "):
@@ -759,61 +1003,110 @@ def handle_message(event):
                 "ジャンル認識できなかった\n例: ジャンル 経済,AI・テック,スポーツ",
                 quick_reply=qr,
             )
-            print("===== 処理終了 =====")
+            try:
+                supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
+            except Exception:
+                pass
             return
 
         save_user(user_id, active=True, plan=plan, genres=new_genres)
         reply_text(event.reply_token, f"ジャンル変えた: {format_genres(new_genres)}", quick_reply=qr)
-        print("===== 処理終了 =====")
+        try:
+            supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
+        except Exception:
+            pass
         return
 
     if text in _STATUS_WORDS:
         reply_text(event.reply_token, _plan_status_text(plan, active, genres), quick_reply=qr)
-        print("===== 処理終了 =====")
+        try:
+            supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
+        except Exception:
+            pass
+        return
+
+    if any(kw in text for kw in _CHAT_TOPIC_KW):
+        is_paid = plan != "free"
+        answer = generate_chat_topic_paid(user_id) if is_paid else generate_chat_topic_free(user_id)
+        reply_text(event.reply_token, answer, quick_reply=qr)
+        try:
+            supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
+        except Exception:
+            pass
         return
 
     if is_followup(text):
         ctx = get_latest_news_context(user_id)
         if not ctx or not _is_context_alive(ctx):
             reply_text(event.reply_token, "先に聞くでニュース出して", quick_reply=qr)
-            print("===== 処理終了 =====")
+            try:
+                supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
+            except Exception:
+                pass
             return
         payload = ctx.get("payload", {})
         news_items = payload.get("news_items", [])
         extra_items = payload.get("extra_items", [])
         answer = _answer_more_news(news_items, extra_items)
         reply_text(event.reply_token, answer, quick_reply=qr)
-        print("===== 処理終了 =====")
+        try:
+            supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
+        except Exception:
+            pass
         return
 
     if any(w in text for w in _BLOCKLIST):
-        reply_text(event.reply_token, _REJECT_TEXT, quick_reply=qr)
-        print("===== 処理終了 =====")
+        reply_text(event.reply_token, _BLOCKLIST_TEXT, quick_reply=qr)
+        try:
+            supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
+        except Exception:
+            pass
+        return
+
+    if plan != "free" and any(kw in text for kw in _PERSON_KW) and len(text) <= 30:
+        answer = generate_chat_for_person(user_id, text)
+        reply_text(event.reply_token, answer, quick_reply=qr)
+        try:
+            supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
+        except Exception:
+            pass
         return
 
     if is_related_to_news_context(user_id, text):
+        if not _looks_like_question_or_command(text):
+            reply_text(event.reply_token, _REJECT_TEXT, quick_reply=qr)
+            try:
+                supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
+            except Exception:
+                pass
+            return
+
         is_paid = plan != "free"
         free_reply_used = user.get("free_reply_used", False)
 
-        # AI呼び出し前の制限チェック（有料 or 無料初回のみ）
-        if is_paid or not free_reply_used:
-            _last = user.get("last_reply_time")
-            if _last is not None:
+        if is_paid:
+            # 有料ユーザー：1日10回まで
+            ai_count = user.get("ai_count", 0)
+            if ai_count >= 10:
+                reply_text(
+                    event.reply_token,
+                    "今日は結構使ってるみたい\n\nまた明日使えるようになってるから\n気になるやつあれば明日聞いてくれればOK",
+                    quick_reply=qr,
+                )
                 try:
-                    _last_dt = datetime.fromisoformat(str(_last).replace("Z", "+00:00"))
-                    if now_dt - _last_dt < timedelta(seconds=5):
-                        reply_text(event.reply_token, "少し置いてもう一回送って", quick_reply=qr)
-                        print("===== 処理終了 =====")
-                        return
+                    supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
                 except Exception:
                     pass
-
-        if is_paid:
-            # 有料ユーザー：常時AI回答
+                return
             answer = answer_news_question(user_id, text)
             reply_text(event.reply_token, answer, quick_reply=qr)
             try:
-                supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
+                supabase.table("users").update({
+                    "ai_count": ai_count + 1,
+                    "ai_count_date": today,
+                    "last_reply_time": now_dt.isoformat(),
+                }).eq("user_id", user_id).execute()
+                user["ai_count"] = ai_count + 1
             except Exception:
                 pass
 
@@ -822,7 +1115,7 @@ def handle_message(event):
             _ALL_LINK_KW = ["全部", "全リンク", "リンク全部", "全部のリンク"]
             question_for_ai = "今日のニュース5本をまとめて簡単に教えて" if any(kw in text for kw in _ALL_LINK_KW) else text
             answer = answer_news_question(user_id, question_for_ai)
-            msg = f"詳しくはこんな感じ👇\n\n{answer}\n\n続きは有料版で深掘りできる"
+            msg = f"詳しくはこんな感じ👇\n\n{answer}\n\nこの先はもう少し深く見れるようにしてる"
             reply_text(event.reply_token, msg, quick_reply=qr)
             try:
                 supabase.table("users").update({
@@ -885,11 +1178,17 @@ def handle_message(event):
                     quick_reply=qr,
                 )
 
-        print("===== 処理終了 =====")
+            try:
+                supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
+            except Exception:
+                pass
         return
 
     reply_text(event.reply_token, _REJECT_TEXT, quick_reply=qr)
-    print("===== 処理終了 =====")
+    try:
+        supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
+    except Exception:
+        pass
 
 
 @handler.add(PostbackEvent)
