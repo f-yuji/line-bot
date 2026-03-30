@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 import re
@@ -303,7 +304,9 @@ _CONTEXT_TOKEN_STOPWORDS = {
 
 _NUM_MAP = {
     "1": 1, "2": 2, "3": 3, "4": 4, "5": 5,
+    "6": 6, "7": 7, "8": 8, "9": 9, "10": 10,
     "１": 1, "２": 2, "３": 3, "４": 4, "５": 5,
+    "６": 6, "７": 7, "８": 8, "９": 9, "１０": 10,
 }
 _CIRCLED = "①②③④⑤⑥⑦⑧⑨⑩"
 
@@ -451,7 +454,7 @@ def _parse_article_num(question: str, max_n: int = 5) -> Optional[int]:
 
 
 def extract_number(text: str) -> Optional[int]:
-    return _parse_article_num(text, max_n=5)
+    return _parse_article_num(text, max_n=10)
 
 
 def is_followup(text: str) -> bool:
@@ -536,9 +539,11 @@ def _answer_more_news(news_items: list, extra_items: list) -> str:
     if not candidates:
         return "この辺はメンバーシップで見れるようになってる\n\n気になるならそのまま聞いてくれればOK"
 
+    offset = len(news_items)
     lines = ["あとこれも出てる", ""]
     for i, n in enumerate(candidates):
-        circle = _CIRCLED[i] if i < len(_CIRCLED) else f"{i + 1}."
+        idx = offset + i + 1
+        circle = _CIRCLED[idx - 1] if 0 < idx <= len(_CIRCLED) else f"{idx}."
         lines.append(f"{circle} {n.get('title', '')}")
         reason = n.get("reason", "")
         if reason:
@@ -549,11 +554,17 @@ def _answer_more_news(news_items: list, extra_items: list) -> str:
     return "\n".join(lines).rstrip()
 
 
-def _answer_url(question: str, news_items: list) -> str:
-    num = _parse_article_num(question, max_n=len(news_items))
+def _answer_url(question: str, news_items: list, extra_items: list = None) -> str:
+    extra_items = extra_items or []
+    total = len(news_items) + len(extra_items)
+    num = _parse_article_num(question, max_n=total)
 
     if num is not None:
-        item = next((n for n in news_items if n.get("index") == num), None)
+        if num <= len(news_items):
+            item = next((n for n in news_items if n.get("index") == num), None)
+        else:
+            extra_idx = num - len(news_items) - 1
+            item = extra_items[extra_idx] if extra_idx < len(extra_items) else None
         if not item:
             return f"{num}番目のニュースが見つからなかった"
         link = item.get("link", "")
@@ -581,7 +592,7 @@ def answer_news_question(user_id: str, question: str) -> str:
     impact = payload.get("impact", [])
 
     if any(kw in question for kw in _URL_KEYWORDS):
-        return _answer_url(question, news_items)
+        return _answer_url(question, news_items, extra_items)
 
     is_more_news = (
         any(k in question for k in _MAIN_MORE_KW)
@@ -598,6 +609,18 @@ def answer_news_question(user_id: str, question: str) -> str:
         f"{n['index']}. 【{n['category']}】{n['title']}（{n.get('reason', '')} / {n.get('interpretation', '')}）"
         for n in news_items
     )
+
+    # 追加ニュース（⑥〜）への質問に対応
+    extra_num = _parse_article_num(question, max_n=len(news_items) + len(extra_items))
+    if extra_num is not None and extra_num > len(news_items):
+        extra_idx = extra_num - len(news_items) - 1
+        if extra_idx < len(extra_items):
+            en = extra_items[extra_idx]
+            circle = _CIRCLED[extra_num - 1] if extra_num <= len(_CIRCLED) else str(extra_num)
+            news_text += (
+                f"\n{circle}. 【{en.get('category', '')}】{en.get('title', '')}"
+                f"（{en.get('reason', '')} / {en.get('interpretation', '')}）"
+            )
     summary_text = "\n".join(f"・{s}" for s in summary)
     impact_text = "\n".join(f"・{i}" for i in impact)
 
@@ -658,6 +681,82 @@ _CHAT_TOPIC_FOLLOW_UP_PAID = (
     "詳しいほど精度上がる"
 )
 
+# ─── 会話ネタ共通 ───
+
+_CHAT_TOPIC_SYSTEM_BASE = """\
+お前はLINEで使える会話ネタを提案するやつ。
+
+【ルール】
+・敬語禁止
+・会話調
+・そのまま使える形で出す
+・短すぎず薄くしない
+・AIっぽい文章禁止
+・汎用テンプレ禁止。「今っぽさ」を優先
+
+【季節ルール】
+・現在の季節を必ず考慮する（日本基準）
+・季節とズレた会話は禁止（例：夏に寒い話）
+・自然に会話に溶け込ませる（説明しない）
+
+【ジャンル選択】
+生活関連 / 仕事関連 / 世界関連 / AI関連 / 話題関連 / スポーツ関連
+※迷ったら「話題関連」
+※「お金」は使用禁止（生活関連に含める）
+
+【会話フレーズ】
+・質問形式を基本にする
+・ニュースや現実と軽く接続する
+
+【よくある返し】
+・現実的な返答。短く自然
+
+【次の一手】
+・会話を広げる or 深める。自然に続く一言
+
+【使いやすいポイント】
+・1行のみ。具体的に
+
+【小ネタ】
+・1文のみ。20〜30文字。「らしい」「っぽい」で柔らかく
+
+【NG】
+・カテゴリ名（例：経済ニュース）
+・説明文
+・長文
+・季節ズレ
+・中身のない雑談
+
+必ずJSON形式のみで出力すること。キー：genre / main / reply / next / point / trivia
+"""
+
+
+def format_topic(data: dict) -> str:
+    """会話ネタの dict → LINEメッセージ文字列"""
+    return (
+        f"【{data['genre']}】\n"
+        f"「{data['main']}」\n\n"
+        "ーーー\n\n"
+        f"よくある返し\n『{data['reply']}』\n\n"
+        f"→「{data['next']}」\n\n"
+        "ーーー\n\n"
+        f"・使いやすいポイント\n{data['point']}\n\n"
+        "ーーー\n\n"
+        f"小ネタ\n《{data['trivia']}》"
+    )
+
+
+def _get_season() -> str:
+    month = datetime.now(timezone.utc).month
+    if month in (3, 4, 5):
+        return "春"
+    elif month in (6, 7, 8):
+        return "夏"
+    elif month in (9, 10, 11):
+        return "秋"
+    else:
+        return "冬"
+
 
 def generate_chat_topic_free(user_id: str) -> str:
     ctx = get_latest_news_context(user_id)
@@ -665,24 +764,20 @@ def generate_chat_topic_free(user_id: str) -> str:
         return "まだニュースが届いてないから\n一度配信受けてから使ってみて"
     news_items = ctx.get("payload", {}).get("news_items", [])
     news_text = "\n".join(f"【{n['category']}】{n['title']}" for n in news_items)
-    system_prompt = (
-        "お前はLINEで使える会話ネタを提案する相手。\n\n"
-        "【ルール】\n・敬語禁止\n・会話調\n・1文短く\n・すぐ使える形で出す\n・AIっぽい文章禁止\n\n"
-        "【出力形式】\n"
-        "カテゴリ名\n"
-        "「会話フレーズ（自然に話を振れる1文）」\n\n"
-        "・広げやすいポイント（1〜2行）"
-    )
-    user_prompt = f"今日のニュース:\n{news_text}\n\nこの中から会話ネタになりそうなものを1つ選んで、上記フォーマットで出せ。"
+    season = _get_season()
+    system_prompt = _CHAT_TOPIC_SYSTEM_BASE + f"\n現在の季節：{season}"
+    user_prompt = f"今日のニュース:\n{news_text}\n\nこの中から会話ネタになりそうなものを1つ選んでJSONで出せ。"
     try:
         res = openai_client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
             temperature=0.7,
-            max_tokens=200,
+            max_tokens=300,
             timeout=15,
+            response_format={"type": "json_object"},
         )
-        return res.choices[0].message.content.strip() + _CHAT_TOPIC_FOLLOW_UP_FREE
+        data = json.loads(res.choices[0].message.content)
+        return format_topic(data) + _CHAT_TOPIC_FOLLOW_UP_FREE
     except Exception as e:
         logger.error("会話ネタ生成エラー: %s", e)
         return "今ちょっとうまく生成できない\n少し置いてもう一回送って"
@@ -694,18 +789,9 @@ def generate_chat_topic_paid(user_id: str) -> str:
         return "まだニュースが届いてないから\n一度配信受けてから使ってみて"
     news_items = ctx.get("payload", {}).get("news_items", [])
     news_text = "\n".join(f"【{n['category']}】{n['title']}" for n in news_items)
-    system_prompt = (
-        "お前はLINEで使える会話ネタを提案する相手。\n\n"
-        "【ルール】\n・敬語禁止\n・会話調\n・1文短く\n・すぐ使える形で出す\n・AIっぽい文章禁止\n\n"
-        "【出力形式】\n"
-        "カテゴリ名\n"
-        "「会話フレーズ（自然に話を振れる1文）」\n\n"
-        "・広げやすいポイント（1〜2行）\n\n"
-        "よくある返し\n"
-        "「相手の典型的な返答（1文）」\n\n"
-        "→「次の一手（すぐ使える短い質問形式）」"
-    )
-    user_prompt = f"今日のニュース:\n{news_text}\n\nこの中から会話ネタになりそうなものを1つ選んで、上記フォーマットで出せ。"
+    season = _get_season()
+    system_prompt = _CHAT_TOPIC_SYSTEM_BASE + f"\n現在の季節：{season}"
+    user_prompt = f"今日のニュース:\n{news_text}\n\nこの中から会話ネタになりそうなものを1つ選んでJSONで出せ。"
     try:
         res = openai_client.chat.completions.create(
             model="gpt-4o-mini",
@@ -713,8 +799,10 @@ def generate_chat_topic_paid(user_id: str) -> str:
             temperature=0.7,
             max_tokens=300,
             timeout=15,
+            response_format={"type": "json_object"},
         )
-        return res.choices[0].message.content.strip() + _CHAT_TOPIC_FOLLOW_UP_PAID
+        data = json.loads(res.choices[0].message.content)
+        return format_topic(data) + _CHAT_TOPIC_FOLLOW_UP_PAID
     except Exception as e:
         logger.error("会話ネタ生成エラー: %s", e)
         return "今ちょっとうまく生成できない\n少し置いてもう一回送って"
@@ -726,32 +814,25 @@ def generate_chat_for_person(user_id: str, person_desc: str) -> str:
     if ctx:
         news_items = ctx.get("payload", {}).get("news_items", [])
         news_text = "\n".join(f"【{n['category']}】{n['title']}" for n in news_items)
+    season = _get_season()
     system_prompt = (
-        "お前はLINEで使える会話ネタを相手に合わせて提案する相手。\n\n"
-        "【ルール】\n・敬語禁止\n・会話調\n・1文短く\n・すぐ使える形で出す\n・AIっぽい文章禁止\n"
-        "・ニュースに縛られず相手に最適な話題を選ぶ\n"
-        "・相手に合わない重い話題は避ける\n\n"
+        _CHAT_TOPIC_SYSTEM_BASE
+        + f"\n現在の季節：{season}\n\n"
         "【相手ごとの優先ジャンル】\n"
         "彼女・彼氏・家族・友達：日常、食べ物、休日、エンタメ、軽い流行、身近なニュースを優先。"
         "地政学・軍事・金利政策のような重い話題は基本避ける\n"
         "上司・取引先・営業・顧客・初対面：無難で広げやすい話題を優先。"
         "仕事・景気・AI・生活コスト・スポーツ・季節ネタを優先。"
         "政治・宗教・下ネタ・重すぎる事件は避ける\n\n"
-        "【出力ルール】\n"
-        "・「相手に合う話題」を優先\n"
-        "・ニュースを使う場合も、そのまま出さず会話向けに軽く変換する\n"
-        "・話題の選定理由は相手基準で考えること\n\n"
-        "【出力形式】\n"
-        "（相手に最適化された話題）\n\n"
-        "・使いやすいポイント（1〜2行）\n\n"
-        "よくある返し\n"
-        "「相手の典型的な返答（1文）」\n\n"
-        "→「次の一手（すぐ使える短い質問形式）」"
+        "【追加ルール】\n"
+        "・ニュースに縛られず相手に最適な話題を選ぶ\n"
+        "・相手に合わない重い話題は避ける\n"
+        "・ニュースを使う場合も、そのまま出さず会話向けに軽く変換する"
     )
     user_prompt = (
         f"話す相手: {person_desc}\n\n"
         + (f"参考ニュース（必要なら使っていい）:\n{news_text}\n\n" if news_text else "")
-        + "この相手に使えそうな会話ネタを1つ、上記フォーマットで出せ。"
+        + "この相手に使えそうな会話ネタを1つJSONで出せ。"
     )
     try:
         res = openai_client.chat.completions.create(
@@ -760,8 +841,10 @@ def generate_chat_for_person(user_id: str, person_desc: str) -> str:
             temperature=0.7,
             max_tokens=300,
             timeout=15,
+            response_format={"type": "json_object"},
         )
-        return res.choices[0].message.content.strip()
+        data = json.loads(res.choices[0].message.content)
+        return format_topic(data)
     except Exception as e:
         logger.error("相手別会話生成エラー: %s", e)
         return "今ちょっとうまく生成できない\n少し置いてもう一回送って"
@@ -841,6 +924,19 @@ _MEMBERSHIP_KW = [
     "入り方", "登録",
     "何できる", "何ができる",
 ]
+
+
+def normalize_user_text(text: str) -> str:
+    """表記ゆれを正規化してキーワードマッチの精度を上げる"""
+    t = (text or "").strip()
+    t = t.replace("出来る", "できる")
+    t = t.replace("出来んの", "できんの")
+    t = t.replace("できんの", "できる")
+    t = t.replace("なに", "何")
+    t = re.sub(r"\s+", "", t)
+    return t
+
+
 _STATUS_WORDS = {"状態", "今どんな感じ", "設定どうなってる", "今の設定"}
 _HELP_WORDS = {"聞く", "使い方", "何できる", "どう使うの", "何聞ける"}
 _CHAT_TOPIC_KW = ["会話ネタ", "話のネタ", "雑談ネタ", "ネタ教えて", "何話せばいい", "何話す"]
@@ -860,7 +956,7 @@ def _plan_status_text(plan: str, active: bool, genres: list) -> str:
 @handler.add(MessageEvent, message=TextMessageContent)
 def handle_message(event):
     user_id = event.source.user_id
-    text = event.message.text.strip()
+    text = normalize_user_text(event.message.text)
 
     logger.info("メッセージ受信: user=%s text=%s", user_id, text)
     user = ensure_user(user_id)
@@ -1105,6 +1201,24 @@ def handle_message(event):
             pass
         return
 
+    # ★3 相手別会話ネタ（paid only）— 通常会話ネタより先に判定
+    if plan == "paid" and any(kw in text for kw in _PERSON_KW) and any(kw in text for kw in _PERSON_REQUEST_KW):
+        if not can_use_paid_ai(user):
+            reply_text(
+                event.reply_token,
+                "今日は結構使ってるみたい\n\nまた明日使えるようになってるから\n気になるやつあれば明日聞いてくれればOK",
+                quick_reply=qr,
+            )
+            try:
+                supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
+            except Exception:
+                pass
+            return
+        answer = generate_chat_for_person(user_id, text)
+        reply_text(event.reply_token, answer, quick_reply=qr)
+        increment_ai_count(user_id, user.get("ai_count", 0), today, now_dt)
+        return
+
     if any(kw in text for kw in _CHAT_TOPIC_KW):
         if plan == "paid":
             if not can_use_paid_ai(user):
@@ -1255,23 +1369,6 @@ def handle_message(event):
                 pass
         return
 
-    # ★8 相手別会話ネタ（paid only）
-    if plan == "paid" and any(kw in text for kw in _PERSON_KW) and any(kw in text for kw in _PERSON_REQUEST_KW):
-        if not can_use_paid_ai(user):
-            reply_text(
-                event.reply_token,
-                "今日は結構使ってるみたい\n\nまた明日使えるようになってるから\n気になるやつあれば明日聞いてくれればOK",
-                quick_reply=qr,
-            )
-            try:
-                supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
-            except Exception:
-                pass
-            return
-        answer = generate_chat_for_person(user_id, text)
-        reply_text(event.reply_token, answer, quick_reply=qr)
-        increment_ai_count(user_id, user.get("ai_count", 0), today, now_dt)
-        return
 
     # ★9 fallback
     reply_text(event.reply_token, _REJECT_TEXT, quick_reply=qr)

@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import os
@@ -9,7 +10,7 @@ from typing import List, Dict, Any
 from urllib.parse import urlparse
 
 import feedparser
-import requests
+import httpx
 from dotenv import load_dotenv
 from openai import OpenAI
 from supabase import create_client
@@ -560,24 +561,24 @@ def score_article(article: Dict[str, str], user_genres: List[str]) -> int:
 # ニュース取得
 # =========================
 
-def _fetch_single_rss(url: str, max_retries: int = 2) -> feedparser.FeedParserDict:
-    """単一RSSソースを取得。リトライ付き"""
-    session = requests.Session()
-    session.headers.update({
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/124.0.0.0 Safari/537.36"
-        ),
-        "Accept": "application/rss+xml, application/xml, text/xml, */*",
-        "Accept-Language": "ja-JP,ja;q=0.9,en;q=0.8",
-        "Referer": "https://news.google.com/",
-        "Cache-Control": "no-cache",
-    })
+_RSS_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Accept": "application/rss+xml, application/xml, text/xml, */*",
+    "Accept-Language": "ja-JP,ja;q=0.9,en;q=0.8",
+    "Referer": "https://news.google.com/",
+    "Cache-Control": "no-cache",
+}
 
+
+async def _fetch_rss_async(url: str, client: httpx.AsyncClient, max_retries: int = 2) -> feedparser.FeedParserDict:
+    """単一RSSソースを非同期取得。リトライ付き"""
     for attempt in range(1, max_retries + 1):
         try:
-            res = session.get(url, timeout=20)
+            res = await client.get(url, timeout=20)
 
             logger.info(
                 "RSS HTTP応答: url=%s status=%d size=%d",
@@ -613,7 +614,7 @@ def _fetch_single_rss(url: str, max_retries: int = 2) -> feedparser.FeedParserDi
                 attempt, max_retries, url, res.text[:200],
             )
 
-        except requests.RequestException as e:
+        except httpx.HTTPError as e:
             logger.warning(
                 "RSS 試行%d/%d HTTPエラー: %s → %s",
                 attempt, max_retries, url, e,
@@ -625,19 +626,28 @@ def _fetch_single_rss(url: str, max_retries: int = 2) -> feedparser.FeedParserDi
             )
 
         if attempt < max_retries:
-            time.sleep(3 * attempt)
+            await asyncio.sleep(3 * attempt)
 
     logger.error("RSS全試行失敗: %s", url)
     return feedparser.FeedParserDict(entries=[])
 
 
+async def _fetch_all_rss_async(urls: list) -> list:
+    async with httpx.AsyncClient(headers=_RSS_HEADERS) as client:
+        tasks = [_fetch_rss_async(url, client) for url in urls]
+        return await asyncio.gather(*tasks, return_exceptions=True)
+
+
 def fetch_news() -> List[Dict[str, str]]:
-    """複数RSSソースをすべて試し、成功したものをマージして返す"""
+    """複数RSSソースを並列取得してマージして返す"""
     all_entries: List[Any] = []
 
-    for rss_url in RSS_SOURCES:
-        logger.info("RSSソース試行: %s", rss_url)
-        result = _fetch_single_rss(rss_url)
+    results = asyncio.run(_fetch_all_rss_async(RSS_SOURCES))
+    for i, result in enumerate(results):
+        rss_url = RSS_SOURCES[i]
+        if isinstance(result, Exception):
+            logger.warning("RSSソース失敗: %s → %s", rss_url, result)
+            continue
         if result.entries:
             logger.info("RSSソース成功: url=%s entries=%d", rss_url, len(result.entries))
             all_entries.extend(result.entries[:MAX_FETCH_ITEMS])
@@ -767,8 +777,9 @@ def summarize(news_list: List[Dict[str, str]]) -> Dict[str, Any]:
     count = len(news_list)
     titles = "\n".join(f"{i + 1}. {n['title']}" for i, n in enumerate(news_list))
 
-    prompt = (
-        f"以下の{count}件のニュース見出しを、会話に使いやすい形でまとめてください。\n\n"
+    system_prompt = (
+        "あなたはニュース要約AIです。必ずJSON形式のみで出力してください。\n"
+        "キー: articles, summary, impact, topics\n\n"
         "【文体ルール（必須）】\n"
         "・短く、会話調にする\n"
         "・敬語禁止、1文短く、主語省略OK\n"
@@ -792,21 +803,23 @@ def summarize(news_list: List[Dict[str, str]]) -> Dict[str, Any]:
         "【topics】会話ネタを3つ（summary/impactと重複しすぎない話題で）：\n"
         "・theme: テーマ（10文字以内）\n"
         "・line: そのまま使える一言（です・ます調OK、30〜50文字）\n"
-        "  例：「最近ちょっと荒れてるらしいですね」\n\n"
-        "JSONのみ返してください。キー: articles, summary, impact, topics\n\n"
-        f"{titles}"
+        "  例：「最近ちょっと荒れてるらしいですね」"
     )
+    user_prompt = f"以下の{count}件のニュース見出しをまとめてください。\n\n{titles}"
 
     try:
         res = client.chat.completions.create(
             model="gpt-4o-mini",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.3,
-            timeout=15,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            temperature=0.5,
+            max_tokens=2000,
+            timeout=30,
+            response_format={"type": "json_object"},
         )
         raw = res.choices[0].message.content.strip()
-        raw = re.sub(r"^```json\s*", "", raw)
-        raw = re.sub(r"\s*```$", "", raw)
 
         data = json.loads(raw)
         articles_raw = data.get("articles", [])
@@ -1060,7 +1073,7 @@ def send(user_id: str, messages: List[str], with_quick_reply: bool = False) -> b
 
     for attempt in range(1, LINE_RETRY_MAX + 1):
         try:
-            res = requests.post(
+            res = httpx.post(
                 LINE_URL,
                 headers={
                     "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}",
@@ -1081,7 +1094,7 @@ def send(user_id: str, messages: List[str], with_quick_reply: bool = False) -> b
             res.raise_for_status()
             logger.info("送信成功: %s", user_id)
             return True
-        except requests.RequestException as e:
+        except httpx.HTTPError as e:
             logger.error("LINE送信失敗 (user=%s): %s", user_id, e)
             return False
 
@@ -1163,7 +1176,7 @@ def notify_owner(text: str) -> None:
     if not OWNER_LINE_USER_ID:
         return
     try:
-        requests.post(
+        httpx.post(
             LINE_URL,
             headers={
                 "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}",
@@ -1210,6 +1223,7 @@ def send_news_to_user(user_id: str) -> None:
     sent_links = {n["link"] for n in filtered}
     extra_news = [n for n in news if n["link"] not in sent_links][:5]
     save_news_context(user_id, filtered, ai_result, messages, extra_news)
+    record_sent(filtered)
     logger.info("初回配信完了: %s", user_id)
 
 
