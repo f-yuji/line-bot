@@ -462,6 +462,7 @@ def is_news_question(text: str) -> bool:
     keywords = [
         "何", "なに", "どういう", "どうな", "意味", "影響",
         "金利", "円安", "株", "経済",
+        "AI", "ニュース", "話", "やつ", "って何", "どういうこと",
     ]
     return any(k in text for k in keywords)
 
@@ -521,6 +522,10 @@ def is_related_to_news_context(user_id: str, text: str) -> bool:
 
         if norm_token in match_text or match_text in norm_token:
             return True
+
+    # コンテキストが生きていて自然文ニュース質問なら一致とみなす
+    if is_news_question(text):
+        return True
 
     return False
 
@@ -724,7 +729,18 @@ def generate_chat_for_person(user_id: str, person_desc: str) -> str:
     system_prompt = (
         "お前はLINEで使える会話ネタを相手に合わせて提案する相手。\n\n"
         "【ルール】\n・敬語禁止\n・会話調\n・1文短く\n・すぐ使える形で出す\n・AIっぽい文章禁止\n"
-        "・ニュースに縛られず相手に最適な話題を選ぶ\n\n"
+        "・ニュースに縛られず相手に最適な話題を選ぶ\n"
+        "・相手に合わない重い話題は避ける\n\n"
+        "【相手ごとの優先ジャンル】\n"
+        "彼女・彼氏・家族・友達：日常、食べ物、休日、エンタメ、軽い流行、身近なニュースを優先。"
+        "地政学・軍事・金利政策のような重い話題は基本避ける\n"
+        "上司・取引先・営業・顧客・初対面：無難で広げやすい話題を優先。"
+        "仕事・景気・AI・生活コスト・スポーツ・季節ネタを優先。"
+        "政治・宗教・下ネタ・重すぎる事件は避ける\n\n"
+        "【出力ルール】\n"
+        "・「相手に合う話題」を優先\n"
+        "・ニュースを使う場合も、そのまま出さず会話向けに軽く変換する\n"
+        "・話題の選定理由は相手基準で考えること\n\n"
         "【出力形式】\n"
         "（相手に最適化された話題）\n\n"
         "・使いやすいポイント（1〜2行）\n\n"
@@ -867,7 +883,6 @@ def handle_message(event):
         try:
             supabase.table("users").update({
                 "free_reply_used": False,
-                "all_links_used": False,
                 "free_reply_date": today,
                 "ai_count": 0,
                 "ai_count_date": today,
@@ -875,10 +890,20 @@ def handle_message(event):
         except Exception:
             pass
         user["free_reply_used"] = False
-        user["all_links_used"] = False
         user["free_reply_date"] = today
         user["ai_count"] = 0
         user["ai_count_date"] = today
+
+    if user.get("free_chat_topic_date") != today:
+        try:
+            supabase.table("users").update({
+                "free_chat_topic_used": False,
+                "free_chat_topic_date": today,
+            }).eq("user_id", user_id).execute()
+        except Exception:
+            pass
+        user["free_chat_topic_used"] = False
+        user["free_chat_topic_date"] = today
 
     if user.get("ai_count_date") != today:
         try:
@@ -935,11 +960,13 @@ def handle_message(event):
             reply_text(
                 event.reply_token,
                 "月400円でやってる\n\n"
-                "ニュースの深掘りとか\n"
-                "まとめて見れるようにしてる",
+                "メンバーシップだと\n"
+                "・ニュースを深掘りできる\n"
+                "・会話ネタの返しまで出せる\n"
+                "・相手に合わせた話題も出せる",
                 quick_reply=qr,
             )
-        elif any(w in text for w in ["どうやる", "入り方", "登録"]):
+        elif any(w in text for w in ["入り方", "登録"]):
             reply_text(
                 event.reply_token,
                 "メンバーシップってやつで見れるようにしてる\n\n"
@@ -947,14 +974,26 @@ def handle_message(event):
                 quick_reply=qr,
             )
         elif any(w in text for w in ["何できる", "何ができる"]):
+            if plan == "paid":
+                _msg = (
+                    "今使えるのはこんな感じ\n\n"
+                    "・ニュースを深掘りできる\n"
+                    "・会話ネタの返しまで出せる\n"
+                    "・相手に合わせた話題も出せる\n\n"
+                    "そのまま送ればOK"
+                )
+            else:
+                _msg = (
+                    "無料でも使えるけど\n\n"
+                    "メンバーシップだと\n"
+                    "・ニュースを深掘りできる\n"
+                    "・会話ネタの返しまで出せる\n"
+                    "・相手に合わせた話題も出せる\n\n"
+                    "気になるならそのまま聞いてくれればOK"
+                )
             reply_text(
                 event.reply_token,
-                "無料でも使えるけど\n\n"
-                "メンバーシップだと\n"
-                "・ニュースを深掘りできる\n"
-                "・会話ネタの返しまで出せる\n"
-                "・相手に合わせた話題も出せる\n\n"
-                "気になるならそのまま聞いてくれればOK",
+                _msg,
                 quick_reply=qr,
             )
         else:
@@ -990,7 +1029,8 @@ def handle_message(event):
             "・ニュースを深掘りできる\n"
             "・会話ネタの返しまで出る\n"
             "・相手に合わせた話題も出せる\n\n"
-            "そのまま送ればOK",
+            "そのまま送ればOK"
+            "\n\n" + _plan_status_text(plan, active, genres),
             quick_reply=qr,
         )
         try:
@@ -1079,11 +1119,27 @@ def handle_message(event):
                     pass
                 return
             answer = generate_chat_topic_paid(user_id)
+            reply_text(event.reply_token, answer, quick_reply=qr)
             increment_ai_count(user_id, user.get("ai_count", 0), today, now_dt)
         else:
-            answer = generate_chat_topic_free(user_id)
-        reply_text(event.reply_token, answer, quick_reply=qr)
-        if plan != "paid":
+            if user.get("free_chat_topic_used", False):
+                reply_text(
+                    event.reply_token,
+                    "無料版の会話ネタは1日1回までにしてる\n\n続きはメンバーシップで使える",
+                    quick_reply=qr,
+                )
+            else:
+                answer = generate_chat_topic_free(user_id)
+                reply_text(event.reply_token, answer, quick_reply=qr)
+                try:
+                    supabase.table("users").update({
+                        "free_chat_topic_used": True,
+                        "free_chat_topic_date": today,
+                        "last_reply_time": now_dt.isoformat(),
+                    }).eq("user_id", user_id).execute()
+                    user["free_chat_topic_used"] = True
+                except Exception:
+                    pass
             try:
                 supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
             except Exception:
@@ -1145,11 +1201,10 @@ def handle_message(event):
     # ★7 ニュースQ&A（番号最優先＋文脈＋自然文）
     _is_number_start = bool(re.match(r"^[①-⑩1-9]", text))
     _matched_by_ctx = is_related_to_news_context(user_id, text)
-    _matched_by_q = is_news_question(text)
 
-    if _is_number_start or _matched_by_ctx or _matched_by_q:
-        # 文脈マッチのみ（番号でも質問でもない）→ 弾く
-        if _matched_by_ctx and not _is_number_start and not _matched_by_q and not _looks_like_question_or_command(text):
+    if _is_number_start or _matched_by_ctx:
+        # 文脈マッチのみ（番号でも質問語でもない）→ 弾く
+        if _matched_by_ctx and not _is_number_start and not is_news_question(text) and not _looks_like_question_or_command(text):
             reply_text(event.reply_token, _REJECT_TEXT, quick_reply=qr)
             try:
                 supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
