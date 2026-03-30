@@ -54,10 +54,9 @@ LINE_RETRY_MAX = 3
 
 _NEWS_QUICK_REPLY = {
     "items": [
-        {"type": "action", "action": {"type": "message", "label": "開始", "text": "開始"}},
+        {"type": "action", "action": {"type": "message", "label": "使い方", "text": "使い方"}},
         {"type": "action", "action": {"type": "message", "label": "停止", "text": "停止"}},
         {"type": "action", "action": {"type": "message", "label": "ジャンル", "text": "ジャンル"}},
-        {"type": "action", "action": {"type": "message", "label": "プラン", "text": "プラン"}},
     ]
 }
 
@@ -341,11 +340,9 @@ def extract_source_name(url: str) -> str:
 
 
 def plan_max_items(plan: str) -> int:
-    # 暫定：全プラン5件。プラン制に戻す場合はここを修正
     return {
         "free": 5,
-        "light": 5,
-        "premium": 8,
+        "paid": 5,
     }.get(plan, DEFAULT_MAX_ITEMS)
 
 

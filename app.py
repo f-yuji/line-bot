@@ -95,14 +95,6 @@ DISPLAY_GENRE_ALIASES: dict = {
 }
 
 
-def plan_rules(plan: str):
-    return {
-        "free": {"max_items": 3, "max_genres": 10},
-        "light": {"max_items": 5, "max_genres": 10},
-        "premium": {"max_items": 8, "max_genres": 12},
-    }.get(plan, {"max_items": 3, "max_genres": 10})
-
-
 # ─── DB操作 ───
 def get_user(user_id: str):
     res = supabase.table("users").select("*").eq("user_id", user_id).execute()
@@ -636,9 +628,9 @@ def answer_news_question(user_id: str, question: str) -> str:
 _CHAT_TOPIC_FOLLOW_UP = (
     "\n\nちなみに今日誰かと話す予定ある？\n\n"
     "どんな人か教えてくれれば\n"
-    "合いそうな話題出すよ\n\n"
+    "その人に合わせて話題出すよ\n\n"
     "ざっくりでもいいけど\n"
-    "詳しいほど精度出る"
+    "詳しいほど精度上がる"
 )
 
 
@@ -800,12 +792,12 @@ _MEMBERSHIP_KW = [
 ]
 _STATUS_WORDS = {"状態", "今どんな感じ", "設定どうなってる", "今の設定"}
 _HELP_WORDS = {"聞く", "使い方", "何できる", "どう使うの", "何聞ける"}
-_CHAT_TOPIC_KW = ["会話ネタ", "話のネタ", "話題", "雑談ネタ", "ネタ教えて", "何話せばいい", "何話す"]
+_CHAT_TOPIC_KW = ["会話ネタ", "話のネタ", "雑談ネタ", "ネタ教えて", "何話せばいい", "何話す"]
 _PERSON_KW = ["営業", "取引先", "上司", "部下", "先輩", "後輩", "同僚", "友達", "初対面", "客", "顧客", "彼女", "彼氏", "親", "家族"]
 
 
 def _plan_status_text(plan: str, active: bool, genres: list) -> str:
-    plan_label = {"free": "無料プラン", "light": "ライトプラン", "premium": "プレミアムプラン"}.get(plan, "無料プラン")
+    plan_label = "メンバーシップ" if plan != "free" else "無料プラン"
     active_label = "配信オン" if active else "配信オフ"
     genre_label = f"ジャンル: {format_genres(genres)}" if genres else "ジャンル: 未設定（全部配信）"
     return f"今こんな感じ\n\n{plan_label}\n{active_label}\n{genre_label}"
@@ -927,7 +919,10 @@ def handle_message(event):
         else:
             reply_text(
                 event.reply_token,
-                "メンバーシップで見れるようにしてる\n\n"
+                "無料でも使えるけど\n\n"
+                "メンバーシップだと\n"
+                "・会話ネタの返しまで出せる\n"
+                "・相手に合わせた話題も出せる\n\n"
                 "気になるならそのまま聞いてくれればOK",
                 quick_reply=qr,
             )
@@ -949,7 +944,9 @@ def handle_message(event):
             "【深掘りする】\n"
             "気になるニュース送れば解説する\n\n"
             "無料でも使えるけど\n"
-            "メンバーシップだと深掘りできる\n\n"
+            "メンバーシップだと\n"
+            "・会話ネタの返しまで出る\n"
+            "・相手に合わせた話題も出せる\n\n"
             "そのまま送ればOK",
             quick_reply=qr,
         )
@@ -1063,7 +1060,7 @@ def handle_message(event):
             pass
         return
 
-    if plan != "free" and any(kw in text for kw in _PERSON_KW) and len(text) <= 30:
+    if plan != "free" and any(kw in text for kw in _PERSON_KW):
         answer = generate_chat_for_person(user_id, text)
         reply_text(event.reply_token, answer, quick_reply=qr)
         try:
