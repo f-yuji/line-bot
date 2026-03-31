@@ -251,14 +251,14 @@ def reply_with_payment(reply_token: str, text: str, quick_reply: QuickReply = No
                     layout="vertical",
                     contents=[
                         FlexButton(
-                            action=URIAction(label="このまま使う", uri=PAYMENT_URL),
+                            action=URIAction(label="このまま続ける", uri=PAYMENT_URL),
                             style="primary",
                             height="sm",
                         )
                     ],
                 )
             )
-            flex_msg = FlexMessage(alt_text="このまま使う", contents=payment_bubble)
+            flex_msg = FlexMessage(alt_text="このまま続ける", contents=payment_bubble)
             if quick_reply:
                 flex_msg.quick_reply = quick_reply
             api.reply_message(
@@ -320,7 +320,7 @@ def build_genre_flex(current_genres: list) -> FlexMessage:
 
         rows.append(FlexBox(layout="horizontal", contents=cells, spacing="sm"))
 
-    header_note = f"現在: {format_genres(current_genres)}" if current_genres else "未選択の場合はジャンル指定なしで配信されます"
+    header_note = f"現在: {format_genres(current_genres)}" if current_genres else "未選択の場合はジャンル指定なしで\n配信されます"
 
     bubble = FlexBubble(
         header=FlexBox(
@@ -769,8 +769,6 @@ _CHAT_TOPIC_FOLLOW_UP_PAID = (
     "\n\nちなみに今日誰かと話す予定ある？\n\n"
     "誰と話すか教えてくれれば\n"
     "その人に合わせて話題出すよ。\n"
-    "ざっくりでもいいけど\n"
-    "詳しいほど精度上がる"
 )
 
 # ─── 会話ネタ共通 ───
@@ -1163,11 +1161,46 @@ _DIRECT_TOPIC_KW = [
 
 
 def looks_like_feedback(text: str) -> bool:
-    """フィードバックらしい文章かどうかを判定する。"""
+    import re
+
+    t = (text or "").strip()
+    if not t:
+        return False
+
+    # 数字だけ
+    if re.fullmatch(r"[0-9０-９]+", t):
+        return False
+
+    # 記号だけ
+    if re.fullmatch(r"[\W_。、，,！？!?ー〜～…]+", t):
+        return False
+
+    # NG短文
+    short_ng = {"はい", "いいえ", "ok", "OK", "了解", "うん", "いや"}
+    if t in short_ng:
+        return False
+
+    # テンプレ項目
     markers = ["使いやすさ", "よかった点", "微妙だった点", "あったらいい機能"]
-    if any(m in text for m in markers):
+    if any(m in t for m in markers):
         return True
-    return len(text.strip()) >= 50
+
+    # 感想ワード
+    feedback_words = [
+        "使いやすい", "使いにくい",
+        "わかりやすい", "分かりやすい",
+        "わかりにくい", "分かりにくい",
+        "よかった", "良かった",
+        "微妙", "いい", "悪い",
+        "便利", "不便",
+        "見やすい", "見づらい",
+        "難しい", "むずい",
+    ]
+    if any(w in t for w in feedback_words):
+        return True
+
+    # 最低10文字以上
+    return len(t) >= 10
 
 
 def is_direct_person_chat_request(text: str) -> bool:
@@ -1286,6 +1319,41 @@ def handle_message(event):
     active = user.get("active", True)
     genres = user.get("genres", [])
     qr = main_quick_reply()
+
+    # ─── フィードバック受理（最優先・トライアル延長）───
+    if user.get("feedback_pending") and not user.get("feedback_reward_used"):
+        if looks_like_feedback(text):
+            try:
+                supabase.table("trial_feedbacks").insert({
+                    "user_id": user_id,
+                    "feedback": text,
+                    "created_at": now_dt.isoformat(),
+                }).execute()
+            except Exception as e:
+                logger.error("trial_feedbacks insert失敗: %s", e)
+
+            try:
+                supabase.table("users").update({
+                    "trial_extended_until": (now_dt + timedelta(days=7)).isoformat(),
+                    "feedback_reward_used": True,
+                    "feedback_pending": False,
+                }).eq("user_id", user_id).execute()
+            except Exception as e:
+                logger.error("延長付与失敗: %s", e)
+
+            user["trial_extended_until"] = (now_dt + timedelta(days=7)).isoformat()
+            user["feedback_reward_used"] = True
+            user["feedback_pending"] = False
+
+            reply_text(
+                event.reply_token,
+                "ありがとう\n感想ちゃんと受け取った\n\n"
+                "このままでも使えるけど\n"
+                "メンバーシップで機能を開放してる\n\n"
+                "お礼であと1週間はこの状態で使えるようにした",
+                quick_reply=qr,
+            )
+            return
 
     # ── 強コマンドは pending を無条件クリアしてから通常処理 ──
     if text in _STRONG_COMMANDS and user.get("pending_action"):
@@ -1503,29 +1571,6 @@ def handle_message(event):
             pass
         return
 
-    # ─── フィードバック受理（トライアル延長）───
-    if user.get("feedback_pending") and not user.get("feedback_reward_used") and looks_like_feedback(text):
-        ext_until = (now_dt + timedelta(days=7)).isoformat()
-        try:
-            supabase.table("users").update({
-                "trial_extended_until": ext_until,
-                "feedback_reward_used": True,
-                "feedback_pending": False,
-                "last_reply_time": now_dt.isoformat(),
-            }).eq("user_id", user_id).execute()
-            supabase.table("trial_feedbacks").insert({
-                "user_id": user_id,
-                "content": text,
-            }).execute()
-        except Exception as e:
-            logger.error("フィードバック処理失敗: %s", e)
-        reply_with_payment(
-            event.reply_token,
-            "ありがとう\n感想ちゃんと受け取った\n\nお礼であと1週間使えるようにした",
-            quick_reply=qr,
-        )
-        return
-
     # ─── トライアル終了通知（初回のみ）───
     _base_plan = normalize_plan(user.get("plan", "free"))
     if (plan == "free" and _base_plan == "free"
@@ -1535,8 +1580,10 @@ def handle_message(event):
         reply_with_payment(
             event.reply_token,
             "トライアルはここまで\n\n"
+            "このままでもニュースは見れるけど\n"
+            "メンバーシップなら、会話ネタとか深掘りまで全部使える\n\n"
             "よければ感想もらえたら\n"
-            "もう1週間使えるようにしてる\n\n"
+            "もう1週間トライアルが延長できる\n\n"
             "コピペして軽くでOK👇\n\n"
             "【使いやすさ】\n"
             "（例：使いやすい / わかりにくい）\n\n"
@@ -1554,6 +1601,41 @@ def handle_message(event):
         except Exception:
             pass
         return
+
+    # ─── 延長トライアル終了通知（1回のみ）───
+    _base_plan = normalize_plan(user.get("plan", "free"))
+    extended_until = user.get("trial_extended_until")
+    if (
+        plan == "free"
+        and _base_plan == "free"
+        and user.get("feedback_reward_used") == True
+        and extended_until
+        and not user.get("extended_trial_ended_notified")
+    ):
+        try:
+            ext_dt = datetime.fromisoformat(str(extended_until).replace("Z", "+00:00"))
+        except Exception:
+            ext_dt = None
+
+        if ext_dt and now_dt > ext_dt:
+            try:
+                supabase.table("users").update({
+                    "extended_trial_ended_notified": True
+                }).eq("user_id", user_id).execute()
+            except Exception:
+                pass
+
+            user["extended_trial_ended_notified"] = True
+
+            reply_with_payment(
+                event.reply_token,
+                "延長分はここまで\n\n"
+                "このままでもニュースは見れるけど\n"
+                "メンバーシップなら、会話ネタとか深掘りまで全部使える\n\n"
+                "よかったらこのまま続けてみて",
+                quick_reply=qr,
+            )
+            return
 
     # ★2.4 相手別会話ネタ直発火（「彼女と会話」のような一発入力）
     if is_direct_person_chat_request(text):
