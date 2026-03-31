@@ -854,12 +854,11 @@ def can_use_paid_ai(user: dict) -> bool:
     return user.get("plan") == "paid" and user.get("ai_count", 0) < 10
 
 
-def _set_pending_person_topic(user_id: str, now_dt) -> None:
-    expires = (now_dt + timedelta(minutes=10)).isoformat()
+def _set_pending_person_topic(user_id: str) -> None:
     try:
         supabase.table("users").update({
             "pending_action": "person_topic",
-            "pending_expires_at": expires,
+            "pending_count": 1,
         }).eq("user_id", user_id).execute()
     except Exception:
         pass
@@ -869,23 +868,17 @@ def _clear_pending(user_id: str) -> None:
     try:
         supabase.table("users").update({
             "pending_action": None,
-            "pending_expires_at": None,
+            "pending_count": None,
         }).eq("user_id", user_id).execute()
     except Exception:
         pass
 
 
-def _is_pending_person_topic(user: dict, now_dt) -> bool:
-    if user.get("pending_action") != "person_topic":
-        return False
-    expires_raw = user.get("pending_expires_at")
-    if not expires_raw:
-        return False
-    try:
-        expires_dt = datetime.fromisoformat(str(expires_raw).replace("Z", "+00:00"))
-        return now_dt < expires_dt
-    except Exception:
-        return False
+def _is_pending_person_topic(user: dict) -> bool:
+    return (
+        user.get("pending_action") == "person_topic"
+        and (user.get("pending_count") or 0) > 0
+    )
 
 
 def increment_ai_count(user_id: str, count: int, today: str, now_dt) -> None:
@@ -974,6 +967,7 @@ def normalize_user_text(text: str) -> str:
 _STATUS_WORDS = {"状態", "今どんな感じ", "設定どうなってる", "今の設定"}
 _HELP_WORDS = {"聞く", "使い方", "何できる", "どう使うの", "何聞ける"}
 _CHAT_TOPIC_KW = ["会話ネタ", "話のネタ", "雑談ネタ", "ネタ教えて", "何話せばいい", "何話す"]
+_CHAT_TOPIC_EXACT = {"会話", "会話ネタ", "雑談", "ネタ"}
 _PERSON_KW = [
     # 恋愛・パートナー
     "彼女", "彼氏", "好きな人", "気になる人", "嫁", "妻", "旦那", "夫",
@@ -1078,6 +1072,7 @@ def handle_message(event):
     if text in _STRONG_COMMANDS and user.get("pending_action"):
         _clear_pending(user_id)
         user["pending_action"] = None
+        user["pending_count"] = None
 
     if text in _STOP_WORDS:
         save_user(user_id, active=False, plan=plan, genres=genres)
@@ -1263,26 +1258,8 @@ def handle_message(event):
             pass
         return
 
-    # ★3 相手別会話ネタ（paid only）— 通常会話ネタより先に判定
-    # 人物KW単体 or 人物KW+要求KW のどちらでも起動
-    if plan == "paid" and any(kw in text for kw in _PERSON_KW):
-        if not can_use_paid_ai(user):
-            reply_text(
-                event.reply_token,
-                "今日は結構使ってるみたい\n\nまた明日使えるようになってるから\n気になるやつあれば明日聞いてくれればOK",
-                quick_reply=qr,
-            )
-            try:
-                supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
-            except Exception:
-                pass
-            return
-        answer = generate_chat_for_person(user_id, text)
-        reply_text(event.reply_token, answer, quick_reply=qr)
-        increment_ai_count(user_id, user.get("ai_count", 0), today, now_dt)
-        return
-
-    if any(kw in text for kw in _CHAT_TOPIC_KW):
+    # ★2.5 会話ネタ完全一致トリガー（Q&Aより前に処理）
+    if text in _CHAT_TOPIC_EXACT or any(kw in text for kw in _CHAT_TOPIC_KW):
         if plan == "paid":
             if not can_use_paid_ai(user):
                 reply_text(
@@ -1297,6 +1274,7 @@ def handle_message(event):
                 return
             answer = generate_chat_topic_paid(user_id)
             reply_text(event.reply_token, answer, quick_reply=qr)
+            _set_pending_person_topic(user_id)
             increment_ai_count(user_id, user.get("ai_count", 0), today, now_dt)
         else:
             if user.get("free_chat_topic_used", False):
@@ -1322,6 +1300,36 @@ def handle_message(event):
             except Exception:
                 pass
         return
+
+    # ★3 相手別会話ネタ（paid only）— pending中の次の1ターン限定
+    if plan == "paid" and _is_pending_person_topic(user):
+        _qa_would_fire = bool(re.match(r"^[①-⑩1-9]", text)) or is_related_to_news_context(user_id, text)
+        if not _qa_would_fire:
+            _person_hit = any(kw in text for kw in _PERSON_KW)
+            if _person_hit:
+                if not can_use_paid_ai(user):
+                    reply_text(
+                        event.reply_token,
+                        "今日は結構使ってるみたい\n\nまた明日使えるようになってるから\n気になるやつあれば明日聞いてくれればOK",
+                        quick_reply=qr,
+                    )
+                    _clear_pending(user_id)
+                    try:
+                        supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
+                    except Exception:
+                        pass
+                    return
+                answer = generate_chat_for_person(user_id, text)
+                reply_text(event.reply_token, answer, quick_reply=qr)
+                _clear_pending(user_id)
+                increment_ai_count(user_id, user.get("ai_count", 0), today, now_dt)
+                return
+            else:
+                # 人物KWなし → pendingを消して通常fallbackへ
+                _clear_pending(user_id)
+                user["pending_action"] = None
+                user["pending_count"] = None
+        # _qa_would_fire の場合は ★7 Q&A 側でクリア
 
     if is_followup(text):
         ctx = get_latest_news_context(user_id)
@@ -1403,6 +1411,10 @@ def handle_message(event):
                 except Exception:
                     pass
                 return
+            if user.get("pending_action"):
+                _clear_pending(user_id)
+                user["pending_action"] = None
+                user["pending_count"] = None
             answer = answer_news_question(user_id, text)
             reply_text(event.reply_token, answer, quick_reply=qr)
             increment_ai_count(user_id, user.get("ai_count", 0), today, now_dt)
