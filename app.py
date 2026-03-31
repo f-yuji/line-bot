@@ -569,9 +569,6 @@ def _answer_more_news(shown: list, display_start: int) -> str:
         num = display_start + i
         circle = _CIRCLED[num - 1] if 0 < num <= len(_CIRCLED) else f"{num}."
         lines.append(f"{circle} {n.get('title', '')}")
-        reason = n.get("reason", "")
-        if reason:
-            lines.append(f"→ {reason}")
         lines.append("")
 
     lines.append("気になるのあれば言って")
@@ -891,42 +888,6 @@ def generate_chat_for_person(user_id: str, person_desc: str) -> str:
         logger.error("相手別会話生成エラー: %s", e)
         return "今ちょっとうまく生成できない\n少し置いてもう一回送って"
 
-
-def _enrich_extra_items(items: list) -> list:
-    """extra_items の reason/interpretation が空の場合、AIで補完して返す。"""
-    if not items:
-        return items
-    titles = "\n".join(f"{i + 1}. {n.get('title', '')}" for i, n in enumerate(items))
-    prompt = (
-        f"以下の{len(items)}件のニュース見出しについて、各記事の補足を返してください。\n\n"
-        "【文体ルール】\n"
-        "・短く会話調、敬語禁止\n"
-        "・reason: 背景（10〜15文字、体言止め）\n"
-        "・interpretation: 読者視点（15〜25文字、〜そう/〜っぽい調）\n\n"
-        "JSONのみ返す。キー: articles（配列）。各要素: reason, interpretation\n\n"
-        f"{titles}"
-    )
-    try:
-        res = openai_client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[{"role": "user", "content": prompt}],
-            response_format={"type": "json_object"},
-            temperature=0.3,
-            timeout=15,
-        )
-        data = json.loads(res.choices[0].message.content)
-        articles = data.get("articles", [])
-        enriched = []
-        for i, item in enumerate(items):
-            a = articles[i] if i < len(articles) else {}
-            enriched.append({
-                **item,
-                "reason": a.get("reason", item.get("reason", "")),
-                "interpretation": a.get("interpretation", item.get("interpretation", "")),
-            })
-        return enriched
-    except Exception:
-        return items
 
 
 def can_use_paid_ai(user: dict) -> bool:
@@ -1522,10 +1483,6 @@ def handle_message(event):
             return
 
         shown = extra_items[idx:idx + 5]
-
-        if plan == "paid" and can_use_paid_ai(user) and shown:
-            shown = _enrich_extra_items(shown)
-            increment_ai_count(user_id, user.get("ai_count", 0), today, now_dt)
 
         answer = _answer_more_news(shown, len(news_items) + idx + 1)
         reply_text(event.reply_token, answer, quick_reply=qr)

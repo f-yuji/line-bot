@@ -395,7 +395,6 @@ def save_news_context(
     ai: Dict[str, Any],
     messages: List[str],
     extra_news: List[Dict[str, str]] = None,
-    extra_ai: List[Dict[str, Any]] = None,
 ) -> None:
     """配信内容を履歴として保存（Q&A用コンテキスト）"""
     articles_ai = ai.get("articles", [])
@@ -410,8 +409,19 @@ def save_news_context(
             "interpretation": a.get("interpretation", "") if isinstance(a, dict) else "",
         }
 
-    news_items  = [_build_item(i, n, articles_ai[i] if i < len(articles_ai) else {}) for i, n in enumerate(news)]
-    extra_items = [_build_item(i, n, (extra_ai or [])[i] if extra_ai and i < len(extra_ai) else {}) for i, n in enumerate(extra_news or [])]
+    news_items = [_build_item(i, n, articles_ai[i] if i < len(articles_ai) else {}) for i, n in enumerate(news)]
+    offset = len(news_items)
+    extra_items = [
+        {
+            "index":          offset + i + 1,
+            "category":       CATEGORY_LABELS.get(n.get("category", "other"), "その他"),
+            "title":          n["title"],
+            "link":           n.get("link", ""),
+            "reason":         "",
+            "interpretation": "",
+        }
+        for i, n in enumerate(extra_news or [])
+    ]
 
     payload = {
         "news_items":  news_items,
@@ -1141,7 +1151,7 @@ def main(is_night: bool = False):
         ok = send(user_id, messages, with_quick_reply=True)
 
         sent_links = {n["link"] for n in filtered}
-        extra_news = [n for n in news if n["link"] not in sent_links][:5]
+        extra_news = [n for n in news if n["link"] not in sent_links][:15]
         save_news_context(user_id, filtered, ai_result, messages, extra_news)
 
         if ok:
@@ -1208,7 +1218,7 @@ def send_news_to_user(user_id: str) -> None:
     send(user_id, messages, with_quick_reply=True)
 
     sent_links = {n["link"] for n in filtered}
-    extra_news = [n for n in news if n["link"] not in sent_links][:5]
+    extra_news = [n for n in news if n["link"] not in sent_links][:15]
     save_news_context(user_id, filtered, ai_result, messages, extra_news)
     logger.info("初回配信完了: %s", user_id)
 
