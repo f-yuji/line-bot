@@ -675,8 +675,8 @@ _CHAT_TOPIC_FOLLOW_UP_FREE = (
 
 _CHAT_TOPIC_FOLLOW_UP_PAID = (
     "\n\nちなみに今日誰かと話す予定ある？\n\n"
-    "どんな人か教えてくれれば\n"
-    "その人に合わせて話題出すよ\n\n"
+    "誰と話すか教えてくれれば\n"
+    "その人に合わせて話題出すよ。\n"
     "ざっくりでもいいけど\n"
     "詳しいほど精度上がる"
 )
@@ -804,7 +804,7 @@ def generate_chat_topic_paid(user_id: str) -> str:
         data = json.loads(res.choices[0].message.content)
         return format_topic(data) + _CHAT_TOPIC_FOLLOW_UP_PAID
     except Exception as e:
-        logger.error("会話ネタ生成エラー: %s", e)
+        logger.error("生成エラー: %s", e)
         return "今ちょっとうまく生成できない\n少し置いてもう一回送って"
 
 
@@ -852,6 +852,40 @@ def generate_chat_for_person(user_id: str, person_desc: str) -> str:
 
 def can_use_paid_ai(user: dict) -> bool:
     return user.get("plan") == "paid" and user.get("ai_count", 0) < 10
+
+
+def _set_pending_person_topic(user_id: str, now_dt) -> None:
+    expires = (now_dt + timedelta(minutes=10)).isoformat()
+    try:
+        supabase.table("users").update({
+            "pending_action": "person_topic",
+            "pending_expires_at": expires,
+        }).eq("user_id", user_id).execute()
+    except Exception:
+        pass
+
+
+def _clear_pending(user_id: str) -> None:
+    try:
+        supabase.table("users").update({
+            "pending_action": None,
+            "pending_expires_at": None,
+        }).eq("user_id", user_id).execute()
+    except Exception:
+        pass
+
+
+def _is_pending_person_topic(user: dict, now_dt) -> bool:
+    if user.get("pending_action") != "person_topic":
+        return False
+    expires_raw = user.get("pending_expires_at")
+    if not expires_raw:
+        return False
+    try:
+        expires_dt = datetime.fromisoformat(str(expires_raw).replace("Z", "+00:00"))
+        return now_dt < expires_dt
+    except Exception:
+        return False
 
 
 def increment_ai_count(user_id: str, count: int, today: str, now_dt) -> None:
@@ -940,9 +974,32 @@ def normalize_user_text(text: str) -> str:
 _STATUS_WORDS = {"状態", "今どんな感じ", "設定どうなってる", "今の設定"}
 _HELP_WORDS = {"聞く", "使い方", "何できる", "どう使うの", "何聞ける"}
 _CHAT_TOPIC_KW = ["会話ネタ", "話のネタ", "雑談ネタ", "ネタ教えて", "何話せばいい", "何話す"]
-_PERSON_KW = ["営業", "取引先", "上司", "部下", "先輩", "後輩", "同僚", "友達", "初対面", "客", "顧客", "彼女", "彼氏", "親", "家族"]
-_PERSON_REQUEST_KW = ["会話ネタ", "話のネタ", "何話す", "何話せばいい", "雑談ネタ", "ネタ教えて", "話振る", "会話", "話題"]
+_PERSON_KW = [
+    # 恋愛・パートナー
+    "彼女", "彼氏", "好きな人", "気になる人", "嫁", "妻", "旦那", "夫",
+    # 友人・知人
+    "友達", "親友", "知人",
+    # 職場・ビジネス
+    "上司", "部下", "先輩", "後輩", "同僚", "職場の人", "会社の人", "仕事相手",
+    "営業", "営業先", "取引先", "お客さん", "顧客", "客", "初対面",
+    # 関係が難しい人
+    "きまずい人", "苦手な人", "微妙な人", "仲悪い人", "距離ある人",
+    # 家族
+    "親", "母親", "父親", "家族", "兄弟", "姉妹",
+    # その他
+    "現場の人", "近所の人",
+]
 _ALL_LINK_KW = ["全部", "全て", "一覧", "まとめ", "リンク"]
+
+# 強コマンド — pending を問答無用でスキップ・クリアする
+_STRONG_COMMANDS = (
+    _STOP_WORDS
+    | _START_WORDS
+    | _GENRE_WORDS
+    | _STATUS_WORDS
+    | _HELP_WORDS
+    | {"夜停止", "夜いらない", "夜開始", "夜オン"}
+)
 
 
 def _plan_status_text(plan: str, active: bool, genres: list) -> str:
@@ -1016,6 +1073,11 @@ def handle_message(event):
     active = user.get("active", True)
     genres = user.get("genres", [])
     qr = main_quick_reply()
+
+    # ── 強コマンドは pending を無条件クリアしてから通常処理 ──
+    if text in _STRONG_COMMANDS and user.get("pending_action"):
+        _clear_pending(user_id)
+        user["pending_action"] = None
 
     if text in _STOP_WORDS:
         save_user(user_id, active=False, plan=plan, genres=genres)
@@ -1202,7 +1264,8 @@ def handle_message(event):
         return
 
     # ★3 相手別会話ネタ（paid only）— 通常会話ネタより先に判定
-    if plan == "paid" and any(kw in text for kw in _PERSON_KW) and any(kw in text for kw in _PERSON_REQUEST_KW):
+    # 人物KW単体 or 人物KW+要求KW のどちらでも起動
+    if plan == "paid" and any(kw in text for kw in _PERSON_KW):
         if not can_use_paid_ai(user):
             reply_text(
                 event.reply_token,
