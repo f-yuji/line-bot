@@ -759,7 +759,7 @@ def fallback_summary(news_list: List[Dict[str, str]]) -> Dict[str, Any]:
         }
         for n in news_list
     ]
-    return {"articles": articles, "summary": [], "impact": [], "topics": []}
+    return {"articles": articles, "summary": [], "summary_title": "", "impact": [], "topics": []}
 
 
 def summarize(news_list: List[Dict[str, str]]) -> Dict[str, Any]:
@@ -800,11 +800,13 @@ def summarize(news_list: List[Dict[str, str]]) -> Dict[str, Any]:
         "【impact】3行：\n"
         "・各20文字以内、短く具体的に\n"
         "  例：「電気代じわ上げ」「ローンは慎重」「生活コスト全体に効く」\n\n"
+        "【summary_title】全体の流れを1行タイトルに（10〜15文字、体言止めOK）\n"
+        "  例：「市場の不安定感が増加中」「生活コストじわ上げ」\n\n"
         "【topics】会話ネタを3つ（summary/impactと重複しすぎない話題で）：\n"
         "・theme: テーマ（10文字以内）\n"
         "・line: そのまま使える一言（です・ます調OK、30〜50文字）\n"
         "  例：「最近ちょっと荒れてるらしいですね」\n\n"
-        "JSONのみ返してください。キー: articles, summary, impact, topics\n\n"
+        "JSONのみ返してください。キー: articles, summary, summary_title, impact, topics\n\n"
         f"{titles}"
     )
 
@@ -822,10 +824,11 @@ def summarize(news_list: List[Dict[str, str]]) -> Dict[str, Any]:
         data = json.loads(raw)
         articles_raw = data.get("articles", [])
         return {
-            "articles": articles_raw if isinstance(articles_raw, list) else [],
-            "summary":  _to_list(data.get("summary", [])),
-            "impact":   _to_list(data.get("impact", [])),
-            "topics":   _to_list(data.get("topics", [])),
+            "articles":      articles_raw if isinstance(articles_raw, list) else [],
+            "summary":       _to_list(data.get("summary", [])),
+            "summary_title": str(data.get("summary_title", "")),
+            "impact":        _to_list(data.get("impact", [])),
+            "topics":        _to_list(data.get("topics", [])),
         }
 
     except json.JSONDecodeError as e:
@@ -965,17 +968,17 @@ def _generate_phrases(news: List[Dict[str, str]]) -> List[tuple]:
 # メッセージ作成
 # =========================
 
-def _build_msg1(news_lines: list, summary_lines: list, impact_lines: list) -> str:
-    """msg1をLINE文字数制限内に収める（優先度順削除: impact→summary→ニュースのみ）"""
-    def _assemble(summ: list, imp: list) -> str:
+def _build_msg1(news_lines: list, summary_title: str, impact_lines: list) -> str:
+    """msg1をLINE文字数制限内に収める（優先度順削除: impact→summary_title→ニュースのみ）"""
+    def _assemble(title: str, imp: list) -> str:
         parts = list(news_lines)
-        if summ:
-            parts += ["要するにこんな感じ", ""] + summ
+        if title:
+            parts += ["要するにこんな感じ", "", f"【{title}】", ""]
         if imp:
-            parts += ["", "影響あるとしたら", ""] + imp
+            parts += ["影響あるとしたら", ""] + imp
         return "\n".join(parts)
 
-    text = _assemble(summary_lines, impact_lines)
+    text = _assemble(summary_title, impact_lines)
     if len(text) <= LINE_TEXT_SAFE_LIMIT:
         return text
 
@@ -983,20 +986,12 @@ def _build_msg1(news_lines: list, summary_lines: list, impact_lines: list) -> st
     imp = list(impact_lines)
     while imp:
         imp.pop()
-        text = _assemble(summary_lines, imp)
+        text = _assemble(summary_title, imp)
         if len(text) <= LINE_TEXT_SAFE_LIMIT:
             return text
 
-    # summary を1行ずつ削る
-    summ = list(summary_lines)
-    while summ:
-        summ.pop()
-        text = _assemble(summ, [])
-        if len(text) <= LINE_TEXT_SAFE_LIMIT:
-            return text
-
-    # 最終手段：ニュースのみ（末尾カット）
-    text = _assemble([], [])
+    # summary_title を消す
+    text = _assemble("", [])
     if len(text) > LINE_TEXT_SAFE_LIMIT:
         text = text[:LINE_TEXT_SAFE_LIMIT] + "\n…(省略)"
     return text
@@ -1006,10 +1001,9 @@ def build_message(
     news: List[Dict[str, str]],
     ai: Dict[str, Any],
 ) -> List[str]:
-    articles_ai = ai.get("articles", [])
-    summary     = _to_list(ai.get("summary", []))
-    impact      = _to_list(ai.get("impact", []))
-
+    articles_ai   = ai.get("articles", [])
+    summary_title = str(ai.get("summary_title", ""))
+    impact        = _to_list(ai.get("impact", []))
 
     # ── 1通目 ──
     news_lines = ["今日のニュース、ここだけ。", ""]
@@ -1023,28 +1017,23 @@ def build_message(
             interp = "気になる動きかも"
 
         headline = trim_text((a.get("headline") or "") if isinstance(a, dict) else "", 25) or trim_text(n["title"], 25)
-        news_lines.append(f"{num}【{cat}】")
+        news_lines.append(f"{num}［{cat}］")
         news_lines.append(headline)
         if reason:
             news_lines.append(f"→ {reason}")
         news_lines.append(f"👉 {interp}")
         news_lines.append("")
 
-    summary_lines = [
-        f"・{normalize_tone(trim_text(s, 24))}"
-        for s in summary[:3]
-        if normalize_tone(trim_text(s, 24))
-    ]
     impact_lines = [
         f"・{normalize_tone(trim_text(imp, 22))}"
         for imp in impact[:3]
         if normalize_tone(trim_text(imp, 22))
     ]
 
-    msg1 = _build_msg1(news_lines, summary_lines, impact_lines)
+    msg1 = _build_msg1(news_lines, summary_title, impact_lines)
 
     # ── 話題フレーズ ──
-    t_lines = ["⬇️---\n話題に困ったらこれで乗り切ろう", ""]
+    t_lines = ["⬇️話題に困ったらこれで⬇️", ""]
     for label, phrase in _generate_phrases(news):
         t_lines.append(label)
         t_lines.append(f"「{phrase}」")
