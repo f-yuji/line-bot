@@ -457,6 +457,18 @@ def extract_number(text: str) -> Optional[int]:
     return _parse_article_num(text, max_n=10)
 
 
+def _parse_multi_article_nums(question: str, max_n: int = 10) -> List[int]:
+    """テキスト中に含まれる全ての記事番号を昇順で返す。なければ空リスト。"""
+    found = set()
+    for i, ch in enumerate(_CIRCLED[:max_n], 1):
+        if ch in question:
+            found.add(i)
+    for ch, n in _NUM_MAP.items():
+        if ch in question and n <= max_n:
+            found.add(n)
+    return sorted(found)
+
+
 def is_followup(text: str) -> bool:
     return any(kw in text for kw in _FOLLOWUP_KW)
 
@@ -535,7 +547,7 @@ def is_related_to_news_context(user_id: str, text: str) -> bool:
 
 def _answer_more_news(news_items: list, extra_items: list) -> str:
     sent_links = {n.get("link") for n in news_items}
-    candidates = [n for n in extra_items if n.get("link") not in sent_links][:3]
+    candidates = [n for n in extra_items if n.get("link") not in sent_links][:5]
     if not candidates:
         return "この辺はメンバーシップで見れるようになってる\n\n気になるならそのまま聞いてくれればOK"
 
@@ -556,23 +568,35 @@ def _answer_more_news(news_items: list, extra_items: list) -> str:
 
 def _answer_url(question: str, news_items: list, extra_items: list = None) -> str:
     extra_items = extra_items or []
-    total = len(news_items) + len(extra_items)
-    num = _parse_article_num(question, max_n=total)
+    all_items = news_items + extra_items
+    total = len(all_items)
 
-    if num is not None:
-        if num <= len(news_items):
-            item = next((n for n in news_items if n.get("index") == num), None)
-        else:
-            extra_idx = num - len(news_items) - 1
-            item = extra_items[extra_idx] if extra_idx < len(extra_items) else None
-        if not item:
-            return f"{num}番目のニュースが見つからなかった"
-        link = item.get("link", "")
-        circle = _CIRCLED[num - 1] if num <= len(_CIRCLED) else str(num)
-        return f"{circle}の元記事\n{link}" if link else "この記事は元リンクが取れなかった"
+    # 全件インデックスで引けるマップ（index → item）
+    index_map = {item.get("index", 0): item for item in all_items}
 
+    nums = _parse_multi_article_nums(question, max_n=total)
+
+    if nums:
+        if len(nums) == 1:
+            item = index_map.get(nums[0])
+            if not item:
+                return f"{nums[0]}番目のニュースが見つからなかった"
+            link = item.get("link", "")
+            circle = _CIRCLED[nums[0] - 1] if nums[0] <= len(_CIRCLED) else str(nums[0])
+            return f"{circle}の元記事\n{link}" if link else "この記事は元リンクが取れなかった"
+        lines = ["元記事リンク", ""]
+        for n in nums:
+            item = index_map.get(n)
+            if not item:
+                continue
+            link = item.get("link", "")
+            circle = _CIRCLED[n - 1] if n <= len(_CIRCLED) else str(n)
+            lines.append(f"{circle} {link}" if link else f"{circle} (リンクなし)")
+        return "\n".join(lines)
+
+    # 番号指定なし → 全件
     lines = ["元記事リンク", ""]
-    for item in news_items:
+    for item in all_items:
         idx = item.get("index", 0)
         link = item.get("link", "")
         circle = _CIRCLED[idx - 1] if 0 < idx <= len(_CIRCLED) else str(idx)
@@ -848,6 +872,43 @@ def generate_chat_for_person(user_id: str, person_desc: str) -> str:
     except Exception as e:
         logger.error("相手別会話生成エラー: %s", e)
         return "今ちょっとうまく生成できない\n少し置いてもう一回送って"
+
+
+def _enrich_extra_items(items: list) -> list:
+    """extra_items の reason/interpretation が空の場合、AIで補完して返す。"""
+    if not items:
+        return items
+    titles = "\n".join(f"{i + 1}. {n.get('title', '')}" for i, n in enumerate(items))
+    prompt = (
+        f"以下の{len(items)}件のニュース見出しについて、各記事の補足を返してください。\n\n"
+        "【文体ルール】\n"
+        "・短く会話調、敬語禁止\n"
+        "・reason: 背景（10〜15文字、体言止め）\n"
+        "・interpretation: 読者視点（15〜25文字、〜そう/〜っぽい調）\n\n"
+        "JSONのみ返す。キー: articles（配列）。各要素: reason, interpretation\n\n"
+        f"{titles}"
+    )
+    try:
+        res = openai_client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            response_format={"type": "json_object"},
+            temperature=0.3,
+            timeout=15,
+        )
+        data = json.loads(res.choices[0].message.content)
+        articles = data.get("articles", [])
+        enriched = []
+        for i, item in enumerate(items):
+            a = articles[i] if i < len(articles) else {}
+            enriched.append({
+                **item,
+                "reason": a.get("reason", item.get("reason", "")),
+                "interpretation": a.get("interpretation", item.get("interpretation", "")),
+            })
+        return enriched
+    except Exception:
+        return items
 
 
 def can_use_paid_ai(user: dict) -> bool:
@@ -1167,23 +1228,44 @@ def handle_message(event):
         return
 
     if text == "使い方":
+        _plan_text = "メンバーシップ" if normalize_plan(plan) != "free" else "無料（基本機能）"
+        _delivery_text = "オン" if active else "停止中"
+        _genre_text = format_genres(genres) if genres else "未設定（すべて配信）"
         reply_text(
             event.reply_token,
-            "使い方はこんな感じ\n\n"
+            "使い方\n\n"
             "【ニュースを見る】\n"
-            "・番号 → 詳しく見る（例：①）\n"
-            "・リンク → 記事URL出す\n\n"
-            "【追加で見る】\n"
-            "・他には → 別のニュース出す\n\n"
-            "【深掘りする】\n"
-            "気になるニュース送れば解説する\n\n"
-            "無料でも使えるけど\n"
-            "メンバーシップだと\n"
-            "・ニュースを深掘りできる\n"
-            "・会話ネタの返しまで出る\n"
-            "・相手に合わせた話題も出せる\n\n"
-            "そのまま送ればOK"
-            "\n\n" + _plan_status_text(plan, active, genres),
+            "・例えば、「1」や「1 2」と入力 → 詳しい解説を表示（複数OK）\n"
+            "・「リンク」→ 元記事のURLを表示\n\n"
+            "【追加でニュースを見る】\n"
+            "・「他には」→ 別のニュースを表示\n\n"
+            "【ニュースを深掘りする】\n"
+            "・ニュースのタイトルやキーワードを送る → そのまま解説できる\n\n"
+            "ーーー\n\n"
+            "【会話ネタを使う】\n"
+            "・「会話」→ 会話で使える話題を表示\n\n"
+            "※メンバーシップの場合\n"
+            "・ニュースの理解に加えて、会話で使える「返し」まで出る\n"
+            "・誰と話すか入力すると相手に合わせた話題が出せる\n"
+            "例：彼女 / 上司 / お客さん など\n\n"
+            "ーーー\n\n"
+            "【プランについて】\n\n"
+            "無料でも基本機能は使える\n\n"
+            "メンバーシップでは\n"
+            "・ニュースの理解に加えて、会話で使える「返し」まで出る\n"
+            "・相手に合わせた話題が出せる\n\n"
+            "→ そのまま会話で使えるレベルまで仕上がる\n\n"
+            "ーーー\n\n"
+            "【配信の操作】\n"
+            "・「止めて」→ 配信停止\n"
+            "・「再開」→ 配信再開\n\n"
+            "ーーー\n\n"
+            "【現在の設定】\n"
+            f"・プラン：{_plan_text}\n"
+            f"・配信：{_delivery_text}\n"
+            f"・ジャンル：{_genre_text}\n\n"
+            "ーーー\n\n"
+            "そのままテキストを送れば操作できる",
             quick_reply=qr,
         )
         try:
@@ -1345,6 +1427,31 @@ def handle_message(event):
         extra_items = payload.get("extra_items", [])
         answer = _answer_more_news(news_items, extra_items)
         reply_text(event.reply_token, answer, quick_reply=qr)
+        # 表示した追加ニュースをコンテキストに昇格保存（Q&A対象にする）
+        sent_links = {n.get("link") for n in news_items}
+        unsent = [n for n in extra_items if n.get("link") not in sent_links]
+        shown = unsent[:5]
+        if shown:
+            if plan == "paid" and can_use_paid_ai(user):
+                shown = _enrich_extra_items(shown)
+                increment_ai_count(user_id, user.get("ai_count", 0), today, now_dt)
+            offset = len(news_items)
+            promoted = [{**item, "index": offset + i + 1} for i, item in enumerate(shown)]
+            shown_links = {n.get("link") for n in shown}
+            remaining = [n for n in unsent[3:] if n.get("link") not in shown_links]
+            new_payload = {
+                **payload,
+                "news_items": news_items + promoted,
+                "extra_items": remaining,
+            }
+            try:
+                supabase.table("news_contexts").insert({
+                    "user_id": user_id,
+                    "sent_at": now_dt.isoformat(),
+                    "payload": new_payload,
+                }).execute()
+            except Exception:
+                pass
         try:
             supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
         except Exception:
@@ -1370,9 +1477,10 @@ def handle_message(event):
             except Exception:
                 pass
             return
-        items = ctx.get("payload", {}).get("news_items", [])
+        _ctx_payload = ctx.get("payload", {})
+        _all_link_items = _ctx_payload.get("news_items", []) + _ctx_payload.get("extra_items", [])
         lines = ["まとめてどうぞ👇"]
-        for item in items:
+        for item in _all_link_items:
             idx = item.get("index", 0)
             circle = _CIRCLED[idx - 1] if 0 < idx <= len(_CIRCLED) else str(idx)
             lines.append(f"{circle} {item.get('link', '')}")

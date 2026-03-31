@@ -1,93 +1,52 @@
-＃アクティベ
+# ===== 起動セット =====
+cd C:\bot\line_bot
 venv\Scripts\activate
 
-ターミナル1 → python app.py
-ターミナル2 → ngrok http 8000
+# ===== 実行（ターミナル①）=====
+python app.py
 
-＃ドライラン
-cd c:\bot\line_bot
+# ===== 公開（ターミナル②）=====
+ngrok http 8000
+
+# ===== ドライラン =====
+cd C:\bot\line_bot
+venv\Scripts\activate
 python send_news.py --dry-run
 
-# Git コマンド最小セット（コピペ用）
-
-## ■ 状態確認
-
+# ===== Git 基本 =====
 git status
-git branch
-git log --oneline
-
----
-
-## ■ セーブ（基本）
-
 git add .
 git commit -m "途中"
+git pull
+git push
 
----
-
-## ■ ブランチ操作
-
+# ===== ブランチ =====
 git checkout dev
 git checkout -b feature-xxx
 git branch -d feature-xxx
 
----
-
-## ■ 戻る（重要）
-
+# ===== 戻る（強力）=====
 git reset --hard main
 git reset --hard <commitID>
 
----
-
-## ■ ファイル単体戻し
-
+# ===== ファイル単体戻し =====
 git restore ファイル名
 git restore --source main ファイル名
 
----
-
-## ■ クラウド（GitHub）
-
-git pull
-git push
-
----
-
-## ■ タグ（セーブポイント）
-
-git tag v0.1-stable
-git reset --hard stable-1
-
----
-
-## ■ 差分確認
-
+# ===== 差分確認 =====
 git diff
 
----
-
-## ■ 強制復元（今回使った）
-
+# ===== 強制復元（事故対応）=====
 git fetch
 git reset --hard origin/main
 
----
+# ===== commit取り消し（安全）=====
+git reset --soft HEAD~1
 
-## ■ お前用最短セット（実用）
+# ===== 完全初期化（危険）=====
+git reset --hard
+git clean -fd
 
-git status
-git add .
-git commit -m "途中"
-git checkout dev
-git reset --hard main
-git log --oneline
-
----
-
-## ■ ルール（重要）
-
-・mainは触らない
-・devで作業
-・こまめにcommit
-・壊れたらreset
+# ===== 再起動 =====
+Ctrl + C
+python app.py
