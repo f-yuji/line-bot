@@ -1062,14 +1062,33 @@ _PERSON_KW = [
     # その他
     "現場の人", "近所の人",
 ]
-_DIRECT_TOPIC_KW = ["会話", "話す", "話題", "雑談", "ネタ", "何話", "なに話", "使える話題", "向けの話題"]
+_DIRECT_TOPIC_KW = [
+    "会話", "話す", "話題", "雑談", "ネタ",
+    "何話", "なに話", "何しゃべ", "何喋",
+    "使える話題", "向けの話題", "どう話す", "どう会話する",
+]
 
 
 def is_direct_person_chat_request(text: str) -> bool:
-    """相手キーワード＋会話ネタ意図が同時に含まれる一発入力を判定する。"""
-    person_hit = any(kw in text for kw in _PERSON_KW)
-    topic_hit = any(kw in text for kw in _DIRECT_TOPIC_KW)
-    return person_hit and topic_hit
+    """会話ネタ意図＋相手説明を含む一発入力を判定する（辞書不要の自由記述対応）。"""
+    # 会話ネタ意図がなければ問答無用でFalse
+    topic_hit = any(k in text for k in _DIRECT_TOPIC_KW)
+    if not topic_hit:
+        return False
+
+    # 辞書一致があればTrue
+    if any(kw in text for kw in _PERSON_KW):
+        return True
+
+    # 「と」「向け」「相手」があればTrue
+    if any(p in text for p in ("と", "向け", "相手")):
+        return True
+
+    # 会話ワードを除いた残り文字が4文字以上あればTrue（自由記述）
+    stripped = text
+    for k in _DIRECT_TOPIC_KW:
+        stripped = stripped.replace(k, "")
+    return len(stripped.strip()) >= 4
 
 
 _ALL_LINK_KW = ["全部", "全て", "一覧", "まとめ", "リンク"]
@@ -1452,30 +1471,23 @@ def handle_message(event):
     if plan == "paid" and _is_pending_person_topic(user):
         _qa_would_fire = bool(re.match(r"^[①-⑩1-9]", text)) or is_related_to_news_context(user_id, text)
         if not _qa_would_fire:
-            _person_hit = any(kw in text for kw in _PERSON_KW)
-            if _person_hit:
-                if not can_use_paid_ai(user):
-                    reply_text(
-                        event.reply_token,
-                        "今日は結構使ってるみたい\n\nまた明日使えるようになってるから\n気になるやつあれば明日聞いてくれればOK",
-                        quick_reply=qr,
-                    )
-                    _clear_pending(user_id)
-                    try:
-                        supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
-                    except Exception:
-                        pass
-                    return
-                answer = generate_chat_for_person(user_id, text)
-                reply_text(event.reply_token, answer, quick_reply=qr)
+            if not can_use_paid_ai(user):
+                reply_text(
+                    event.reply_token,
+                    "今日は結構使ってるみたい\n\nまた明日使えるようになってるから\n気になるやつあれば明日聞いてくれればOK",
+                    quick_reply=qr,
+                )
                 _clear_pending(user_id)
-                increment_ai_count(user_id, user.get("ai_count", 0), today, now_dt)
+                try:
+                    supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
+                except Exception:
+                    pass
                 return
-            else:
-                # 人物KWなし → pendingを消して通常fallbackへ
-                _clear_pending(user_id)
-                user["pending_action"] = None
-                user["pending_count"] = None
+            answer = generate_chat_for_person(user_id, text)
+            reply_text(event.reply_token, answer, quick_reply=qr)
+            _clear_pending(user_id)
+            increment_ai_count(user_id, user.get("ai_count", 0), today, now_dt)
+            return
         # _qa_would_fire の場合は ★7 Q&A 側でクリア
 
     if is_followup(text):

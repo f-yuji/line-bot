@@ -1044,7 +1044,7 @@ def build_message(
     msg1 = _build_msg1(news_lines, summary_lines, impact_lines)
 
     # ── 話題フレーズ ──
-    t_lines = ["話題に困ったらこれで乗り切ろう⬇️", ""]
+    t_lines = ["⬇️---\n話題に困ったらこれで乗り切ろう", ""]
     for label, phrase in _generate_phrases(news):
         t_lines.append(label)
         t_lines.append(f"「{phrase}」")
