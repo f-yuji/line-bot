@@ -847,6 +847,41 @@ def generate_chat_topic_paid(user_id: str) -> str:
         return "今ちょっとうまく生成できない\n少し置いてもう一回送って"
 
 
+_POLITE_TONE_RULE = (
+    "【口調ルール】\n"
+    "・会話文は自然な敬語にする\n"
+    "・タメ語は禁止\n"
+    "・堅すぎるビジネス文書調も禁止\n"
+    "・実際の雑談で使える、柔らかい丁寧語にする\n"
+)
+
+_CASUAL_TONE_RULE = (
+    "【口調ルール】\n"
+    "・友達や恋人に話すような自然なくだけた口調でよい\n"
+    "・ただし荒い口調は禁止\n"
+)
+
+
+def infer_tone_for_person(person_desc: str) -> str:
+    """相手の説明文からカジュアル/丁寧を判定する。"""
+    polite_keywords = [
+        "上司", "部下", "先輩", "後輩", "同僚", "職場", "会社",
+        "仕事相手", "営業", "営業先", "取引先", "お客", "顧客", "客",
+        "初対面", "現場", "近所", "元請け", "社長",
+    ]
+    casual_keywords = [
+        "彼女", "彼氏", "好きな人", "気になる人",
+        "嫁", "妻", "旦那", "夫",
+        "友達", "親友", "知人",
+        "家族", "兄弟", "姉妹", "親", "母親", "父親",
+    ]
+    if any(k in person_desc for k in polite_keywords):
+        return "polite"
+    if any(k in person_desc for k in casual_keywords):
+        return "casual"
+    return "casual"
+
+
 def generate_chat_for_person(user_id: str, person_desc: str) -> str:
     ctx = get_latest_news_context(user_id)
     news_text = ""
@@ -854,6 +889,8 @@ def generate_chat_for_person(user_id: str, person_desc: str) -> str:
         news_items = ctx.get("payload", {}).get("news_items", [])
         news_text = "\n".join(f"【{n['category']}】{n['title']}" for n in news_items)
     season = _get_season()
+    tone = infer_tone_for_person(person_desc)
+    tone_rule = _POLITE_TONE_RULE if tone == "polite" else _CASUAL_TONE_RULE
     system_prompt = (
         _CHAT_TOPIC_SYSTEM_BASE
         + f"\n現在の季節：{season}\n\n"
@@ -866,7 +903,8 @@ def generate_chat_for_person(user_id: str, person_desc: str) -> str:
         "【追加ルール】\n"
         "・ニュースに縛られず相手に最適な話題を選ぶ\n"
         "・相手に合わない重い話題は避ける\n"
-        "・ニュースを使う場合も、そのまま出さず会話向けに軽く変換する"
+        "・ニュースを使う場合も、そのまま出さず会話向けに軽く変換する\n\n"
+        + tone_rule
     )
     user_prompt = (
         f"話す相手: {person_desc}\n\n"
@@ -1264,7 +1302,7 @@ def handle_message(event):
             "メンバーシップでは\n"
             "・朝と夜の2回ニュースが届く\n"
             "・追加で見られるニュースが増える\n"
-            "・会話ネタ、ニュース要約、ニュースQ＆Aの制限が解除される\n\n"
+            "・会話ネタ、ニュースQ＆Aが上限数が増える\n\n"
             "ーーー\n\n"
             "【配信の操作】\n"
             "・「止めて」→ 配信停止\n"
