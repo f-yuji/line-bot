@@ -293,7 +293,7 @@ def build_genre_flex(current_genres: list) -> FlexMessage:
     return flex_msg
 
 
-# ─── ニュースQ&A ───
+# ─── Q&A ───
 _URL_KEYWORDS = ["URL", "url", "リンク", "記事"]
 _DETAIL_KEYWORDS = ["詳しく", "もう少し", "なんで", "なぜ", "具体的に", "仕組み"]
 _MAIN_MORE_KW = ["ほかに", "他にニュース", "もっとニュース", "追加ニュース"]
@@ -559,17 +559,15 @@ def is_related_to_news_context(user_id: str, text: str) -> bool:
     return False
 
 
-def _answer_more_news(news_items: list, extra_items: list) -> str:
-    sent_links = {n.get("link") for n in news_items}
-    candidates = [n for n in extra_items if n.get("link") not in sent_links][:5]
-    if not candidates:
-        return "この辺はメンバーシップで見れるようになってる\n\n気になるならそのまま聞いてくれればOK"
+def _answer_more_news(shown: list, display_start: int) -> str:
+    """shown: 表示対象記事リスト, display_start: 最初の記事の表示番号（1始まり）"""
+    if not shown:
+        return "一旦このへんかな\n\n気になるやつあれば聞いて\nこの先もう少し見れるようにしてる"
 
-    offset = len(news_items)
     lines = ["あとこれも出てる", ""]
-    for i, n in enumerate(candidates):
-        idx = offset + i + 1
-        circle = _CIRCLED[idx - 1] if 0 < idx <= len(_CIRCLED) else f"{idx}."
+    for i, n in enumerate(shown):
+        num = display_start + i
+        circle = _CIRCLED[num - 1] if 0 < num <= len(_CIRCLED) else f"{num}."
         lines.append(f"{circle} {n.get('title', '')}")
         reason = n.get("reason", "")
         if reason:
@@ -639,7 +637,9 @@ def answer_news_question(user_id: str, question: str) -> str:
     if is_more_news and any(g in question for g in ["影響", "意味", "問題", "理由", "なぜ", "なんで"]):
         is_more_news = False
     if is_more_news:
-        return _answer_more_news(news_items, extra_items)
+        idx = payload.get("extra_index", 0)
+        shown = extra_items[idx:idx + 5]
+        return _answer_more_news(shown, len(news_items) + idx + 1)
 
     is_detail = any(k in question for k in _DETAIL_KEYWORDS)
 
@@ -1006,10 +1006,9 @@ def handle_follow(event):
         "追加ありがとう\n\n"
         "ニュースは朝起きる前に届く\n"
         "きっと寝てる間だからミュートでOK\n\n"
-        "ジャンルでも絞れるから\n"
+        "必要なジャンルに絞れるから\n"
         "必要ならあとで変えればOK👌\n\n"
-        "とりあえず直近のニュース流すから\n"
-        "気になるやつあればそのまま聞いて\n"
+        "とりあえず直近のニュース流すから、気になるやつあればそのまま質問して\n"
         "番号でもいけるし、リンクも出せる\n"
         "そのまま使える会話ネタもある\n"
         "詳しくは「使い方」で確認してみて",
@@ -1063,6 +1062,16 @@ _PERSON_KW = [
     # その他
     "現場の人", "近所の人",
 ]
+_DIRECT_TOPIC_KW = ["会話", "話す", "話題", "雑談", "ネタ", "何話", "なに話", "使える話題", "向けの話題"]
+
+
+def is_direct_person_chat_request(text: str) -> bool:
+    """相手キーワード＋会話ネタ意図が同時に含まれる一発入力を判定する。"""
+    person_hit = any(kw in text for kw in _PERSON_KW)
+    topic_hit = any(kw in text for kw in _DIRECT_TOPIC_KW)
+    return person_hit and topic_hit
+
+
 _ALL_LINK_KW = ["全部", "全て", "一覧", "まとめ", "リンク"]
 
 # 強コマンド — pending を問答無用でスキップ・クリアする
@@ -1177,10 +1186,10 @@ def handle_message(event):
             supabase.table("users").update({"night_delivery": False, "last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
         except Exception:
             pass
-        reply_text(event.reply_token, "夜の配信止めたよ", quick_reply=qr)
+        reply_text(event.reply_token, "夜の配信止めた\n再開したいときは「夜再開」って言って", quick_reply=qr)
         return
 
-    if text in ["夜開始", "夜オン"]:
+    if text in ["夜開始","夜再開", "夜オン"]:
         try:
             supabase.table("users").update({"night_delivery": True, "last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
         except Exception:
@@ -1254,12 +1263,12 @@ def handle_message(event):
             event.reply_token,
             "使い方\n\n"
             "【ニュースを見る】\n"
-            "・例えば、「1」や「1 2」と入力 → 詳しい解説を表示（複数OK）\n"
-            "・「135」でも複数指定OK\n"
+            "・例えば、「1」や「1と2」と入力 → 詳しい解説を表示\n"
+            "・「1-3-5」みたいな複数指定OK\n"
             "・「リンク」→ 元記事のURLを表示\n\n"
             "【追加でニュースを見る】\n"
             "・「他には」→ 別のニュースを表示\n\n"
-            "【ニュースを深掘りする】\n"
+            "【ニュースについて質問する】\n"
             "・ニュースのタイトルやキーワードを送る → そのまま解説できる\n\n"
             "ーーー\n\n"
             "【会話ネタを使う】\n"
@@ -1274,6 +1283,7 @@ def handle_message(event):
             "無料でも基本機能は使える\n\n"
             "メンバーシップでは\n"
             "・朝と夜の2回ニュースが届く\n"
+            "・追加で見られるニュースが増える\n"
             "・会話ネタ、ニュース要約、ニュースQ＆Aの制限が解除される\n\n"
             "ーーー\n\n"
             "【配信の操作】\n"
@@ -1356,6 +1366,39 @@ def handle_message(event):
 
     if text in _STATUS_WORDS:
         reply_text(event.reply_token, _plan_status_text(plan, active, genres), quick_reply=qr)
+        try:
+            supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
+        except Exception:
+            pass
+        return
+
+    # ★2.4 相手別会話ネタ直発火（「彼女と会話」のような一発入力）
+    if is_direct_person_chat_request(text):
+        if plan == "paid":
+            if not can_use_paid_ai(user):
+                reply_text(
+                    event.reply_token,
+                    "今日は結構使ってるみたい\n\nまた明日使えるようになってるから\n気になるやつあれば明日聞いてくれればOK",
+                    quick_reply=qr,
+                )
+                try:
+                    supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
+                except Exception:
+                    pass
+                return
+            if user.get("pending_action"):
+                _clear_pending(user_id)
+                user["pending_action"] = None
+                user["pending_count"] = None
+            answer = generate_chat_for_person(user_id, text)
+            reply_text(event.reply_token, answer, quick_reply=qr)
+            increment_ai_count(user_id, user.get("ai_count", 0), today, now_dt)
+        else:
+            reply_text(
+                event.reply_token,
+                "相手に合わせた話題は\nメンバーシップで使える",
+                quick_reply=qr,
+            )
         try:
             supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
         except Exception:
@@ -1447,25 +1490,36 @@ def handle_message(event):
         payload = ctx.get("payload", {})
         news_items = payload.get("news_items", [])
         extra_items = payload.get("extra_items", [])
-        answer = _answer_more_news(news_items, extra_items)
+        idx = payload.get("extra_index", 0)
+        count = payload.get("extra_count", 0)
+
+        if plan == "free" and count >= 1:
+            reply_text(event.reply_token, "この先もう少し見れるようにしてる", quick_reply=qr)
+            try:
+                supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
+            except Exception:
+                pass
+            return
+
+        if plan == "paid" and count >= 3:
+            reply_text(event.reply_token, "まあめぼしいのはこの辺かな\n\n気になるやつあればそのまま聞いて", quick_reply=qr)
+            try:
+                supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
+            except Exception:
+                pass
+            return
+
+        shown = extra_items[idx:idx + 5]
+
+        if plan == "paid" and can_use_paid_ai(user) and shown:
+            shown = _enrich_extra_items(shown)
+            increment_ai_count(user_id, user.get("ai_count", 0), today, now_dt)
+
+        answer = _answer_more_news(shown, len(news_items) + idx + 1)
         reply_text(event.reply_token, answer, quick_reply=qr)
-        # 表示した追加ニュースをコンテキストに昇格保存（Q&A対象にする）
-        sent_links = {n.get("link") for n in news_items}
-        unsent = [n for n in extra_items if n.get("link") not in sent_links]
-        shown = unsent[:5]
+
         if shown:
-            if plan == "paid" and can_use_paid_ai(user):
-                shown = _enrich_extra_items(shown)
-                increment_ai_count(user_id, user.get("ai_count", 0), today, now_dt)
-            offset = len(news_items)
-            promoted = [{**item, "index": offset + i + 1} for i, item in enumerate(shown)]
-            shown_links = {n.get("link") for n in shown}
-            remaining = [n for n in unsent[len(shown):] if n.get("link") not in shown_links]
-            new_payload = {
-                **payload,
-                "news_items": news_items + promoted,
-                "extra_items": remaining,
-            }
+            new_payload = {**payload, "extra_index": idx + len(shown), "extra_count": count + 1}
             try:
                 supabase.table("news_contexts").insert({
                     "user_id": user_id,
