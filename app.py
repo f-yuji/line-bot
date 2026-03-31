@@ -130,6 +130,9 @@ def ensure_user(user_id: str):
         logger.info("新規ユーザー登録: %s", user_id)
         return {"user_id": user_id, "active": True, "plan": "free", "genres": []}
     user["plan"] = normalize_plan(user.get("plan", "free"))
+    user.setdefault("night_delivery", True)
+    user.setdefault("ai_count", 0)
+    user.setdefault("pending_action", None)
     return user
 
 
@@ -253,7 +256,7 @@ def build_genre_flex(current_genres: list) -> FlexMessage:
 
         rows.append(FlexBox(layout="horizontal", contents=cells, spacing="sm"))
 
-    header_note = f"現在: {format_genres(current_genres)}" if current_genres else "未選択なら全部届く"
+    header_note = f"現在: {format_genres(current_genres)}" if current_genres else "未選択の場合はジャンル指定なしで配信されます"
 
     bubble = FlexBubble(
         header=FlexBox(
@@ -302,12 +305,7 @@ _CONTEXT_TOKEN_STOPWORDS = {
     "問題", "情報", "世界", "ニュース", "話題",
 }
 
-_NUM_MAP = {
-    "1": 1, "2": 2, "3": 3, "4": 4, "5": 5,
-    "6": 6, "7": 7, "8": 8, "9": 9, "10": 10,
-    "１": 1, "２": 2, "３": 3, "４": 4, "５": 5,
-    "６": 6, "７": 7, "８": 8, "９": 9, "１０": 10,
-}
+
 _CIRCLED = "①②③④⑤⑥⑦⑧⑨⑩"
 
 _CONTEXT_TTL_HOURS = 6
@@ -442,13 +440,11 @@ def _parse_article_num(question: str, max_n: int = 5) -> Optional[int]:
     if any(w in question for w in ["最後", f"{max_n}番目"]):
         return max_n
 
-    for i, ch in enumerate(_CIRCLED[1:max_n], 2):
-        if ch in question:
-            return i
-
-    for ch, n in _NUM_MAP.items():
-        if ch in question and n <= max_n:
-            return n
+    nums = parse_article_numbers(question, max_n=max_n)
+    if len(nums) == 1:
+        return nums[0]
+    if len(nums) > 1:
+        return None  # 複数指定は単数扱いしない
 
     return None
 
@@ -457,15 +453,33 @@ def extract_number(text: str) -> Optional[int]:
     return _parse_article_num(text, max_n=10)
 
 
-def _parse_multi_article_nums(question: str, max_n: int = 10) -> List[int]:
-    """テキスト中に含まれる全ての記事番号を昇順で返す。なければ空リスト。"""
-    found = set()
+def parse_article_numbers(text: str, max_n: int = 10) -> List[int]:
+    """テキスト中の記事番号を全て抽出して昇順リストで返す。
+    「135」→[1,3,5]、「①③⑤」→[1,3,5]、「1と3と5」→[1,3,5] のように処理する。
+    """
+    found: set = set()
+    # 丸数字を抽出
     for i, ch in enumerate(_CIRCLED[:max_n], 1):
-        if ch in question:
+        if ch in text:
             found.add(i)
-    for ch, n in _NUM_MAP.items():
-        if ch in question and n <= max_n:
+    # 全角数字→半角に変換
+    normalized = text.translate(str.maketrans("１２３４５６７８９０", "1234567890"))
+    # 区切り文字（と・、,，）を空白に統一
+    normalized = re.sub(r"[と・、,，]+", " ", normalized)
+    # 数字以外を空白に変換
+    normalized = re.sub(r"[^0-9\s]", " ", normalized)
+    for token in normalized.split():
+        if not token.isdigit():
+            continue
+        n = int(token)
+        if 1 <= n <= max_n:
             found.add(n)
+        elif n > max_n:
+            # 桁ごとに分解: "135" → 1, 3, 5
+            for ch in token:
+                d = int(ch)
+                if 1 <= d <= max_n:
+                    found.add(d)
     return sorted(found)
 
 
@@ -483,7 +497,7 @@ def is_news_question(text: str) -> bool:
 
 
 def _looks_like_article_reference(text: str) -> bool:
-    if _parse_article_num(text, max_n=10) is not None:
+    if parse_article_numbers(text, max_n=10):
         return True
 
     refs = [
@@ -498,7 +512,7 @@ def _looks_like_article_reference(text: str) -> bool:
 
 
 def _looks_like_question_or_command(text: str) -> bool:
-    if _parse_article_num(text, max_n=10) is not None:
+    if parse_article_numbers(text, max_n=10):
         return True
     if any(kw in text for kw in _URL_KEYWORDS):
         return True
@@ -574,7 +588,7 @@ def _answer_url(question: str, news_items: list, extra_items: list = None) -> st
     # 全件インデックスで引けるマップ（index → item）
     index_map = {item.get("index", 0): item for item in all_items}
 
-    nums = _parse_multi_article_nums(question, max_n=total)
+    nums = parse_article_numbers(question, max_n=total)
 
     if nums:
         if len(nums) == 1:
@@ -629,22 +643,21 @@ def answer_news_question(user_id: str, question: str) -> str:
 
     is_detail = any(k in question for k in _DETAIL_KEYWORDS)
 
-    news_text = "\n".join(
-        f"{n['index']}. 【{n['category']}】{n['title']}（{n.get('reason', '')} / {n.get('interpretation', '')}）"
-        for n in news_items
-    )
+    all_items = news_items + extra_items
+    total = len(all_items)
+    index_map = {item.get("index", 0): item for item in all_items}
 
-    # 追加ニュース（⑥〜）への質問に対応
-    extra_num = _parse_article_num(question, max_n=len(news_items) + len(extra_items))
-    if extra_num is not None and extra_num > len(news_items):
-        extra_idx = extra_num - len(news_items) - 1
-        if extra_idx < len(extra_items):
-            en = extra_items[extra_idx]
-            circle = _CIRCLED[extra_num - 1] if extra_num <= len(_CIRCLED) else str(extra_num)
-            news_text += (
-                f"\n{circle}. 【{en.get('category', '')}】{en.get('title', '')}"
-                f"（{en.get('reason', '')} / {en.get('interpretation', '')}）"
-            )
+    # 番号指定があれば対象記事だけに絞る
+    specified_nums = parse_article_numbers(question, max_n=total)
+    if specified_nums:
+        target_items = [index_map[n] for n in specified_nums if n in index_map]
+    else:
+        target_items = news_items  # 番号指定なし → 定期配信分のみ
+
+    news_text = "\n".join(
+        f"{n['index']}. 【{n.get('category', '')}】{n['title']}（{n.get('reason', '')} / {n.get('interpretation', '')}）"
+        for n in target_items
+    )
     summary_text = "\n".join(f"・{s}" for s in summary)
     impact_text = "\n".join(f"・{i}" for i in impact)
 
@@ -666,7 +679,12 @@ def answer_news_question(user_id: str, question: str) -> str:
         "【詳細モード】3〜6文。結論→理由→もう一歩の構造。難しい言葉禁止。\n\n"
         "【禁止】です/ます口調、長文（6文以上）、教科書みたいな説明"
     )
-    mode = "詳細モードで答えろ。" if is_detail else "通常モードで答えろ。"
+    if len(specified_nums) > 1:
+        mode = "複数記事が指定されている。番号ごとに分けて答えろ（例：①→..., ③→..., ⑤→... の形式）。各記事は1〜2文で短く。"
+    elif is_detail:
+        mode = "詳細モードで答えろ。"
+    else:
+        mode = "通常モードで答えろ。"
     user_prompt = (
         f"直近ニュース:\n{news_text}\n\n"
         f"まとめ:\n{summary_text}\n\n"
@@ -985,15 +1003,16 @@ def handle_follow(event):
 
     reply_text(
         event.reply_token,
-        "追加ありがとう\n"
-        "よかったら使ってみて🙌\n\n"
+        "追加ありがとう\n\n"
         "ニュースは朝起きる前に届く\n"
         "きっと寝てる間だからミュートでOK\n\n"
         "ジャンルでも絞れるから\n"
         "必要ならあとで変えればOK👌\n\n"
         "とりあえず直近のニュース流すから\n"
         "気になるやつあればそのまま聞いて\n"
-        "番号でもいけるし、リンクも出せる",
+        "番号でもいけるし、リンクも出せる\n"
+        "そのまま使える会話ネタもある\n"
+        "詳しくは「使い方」で確認してみて",
         quick_reply=main_quick_reply(),
     )
 
@@ -1136,8 +1155,8 @@ def handle_message(event):
         user["pending_count"] = None
 
     if text in _STOP_WORDS:
-        save_user(user_id, active=False, plan=plan, genres=genres)
-        reply_text(event.reply_token, "配信止めた\n再開したい時は言って", quick_reply=qr)
+        supabase.table("users").update({"active": False}).eq("user_id", user_id).execute()
+        reply_text(event.reply_token, "配信止めた\n再開したい時は「再開」って言って", quick_reply=qr)
         try:
             supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
         except Exception:
@@ -1145,7 +1164,7 @@ def handle_message(event):
         return
 
     if text in _START_WORDS:
-        save_user(user_id, active=True, plan=plan, genres=genres)
+        supabase.table("users").update({"active": True}).eq("user_id", user_id).execute()
         reply_text(event.reply_token, "配信再開した", quick_reply=qr)
         try:
             supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
@@ -1236,6 +1255,7 @@ def handle_message(event):
             "使い方\n\n"
             "【ニュースを見る】\n"
             "・例えば、「1」や「1 2」と入力 → 詳しい解説を表示（複数OK）\n"
+            "・「135」でも複数指定OK\n"
             "・「リンク」→ 元記事のURLを表示\n\n"
             "【追加でニュースを見る】\n"
             "・「他には」→ 別のニュースを表示\n\n"
@@ -1248,17 +1268,19 @@ def handle_message(event):
             "・ニュースの理解に加えて、会話で使える「返し」まで出る\n"
             "・誰と話すか入力すると相手に合わせた話題が出せる\n"
             "例：彼女 / 上司 / お客さん など\n\n"
+            "→ そのまま会話で使えるレベルまで仕上がる\n\n"
             "ーーー\n\n"
             "【プランについて】\n\n"
             "無料でも基本機能は使える\n\n"
             "メンバーシップでは\n"
-            "・ニュースの理解に加えて、会話で使える「返し」まで出る\n"
-            "・相手に合わせた話題が出せる\n\n"
-            "→ そのまま会話で使えるレベルまで仕上がる\n\n"
+            "・朝と夜の2回ニュースが届く\n"
+            "・会話ネタ、ニュース要約、ニュースQ＆Aの制限が解除される\n\n"
             "ーーー\n\n"
             "【配信の操作】\n"
             "・「止めて」→ 配信停止\n"
-            "・「再開」→ 配信再開\n\n"
+            "・「再開」→ 配信再開\n"
+            "・「夜停止」→ 夜配信だけ止める\n"
+            "・「夜開始」→ 夜配信だけ再開\n\n"            
             "ーーー\n\n"
             "【現在の設定】\n"
             f"・プラン：{_plan_text}\n"
@@ -1324,7 +1346,7 @@ def handle_message(event):
                 pass
             return
 
-        save_user(user_id, active=True, plan=plan, genres=new_genres)
+        supabase.table("users").update({"genres": new_genres}).eq("user_id", user_id).execute()
         reply_text(event.reply_token, f"ジャンル変えた: {format_genres(new_genres)}", quick_reply=qr)
         try:
             supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
@@ -1438,7 +1460,7 @@ def handle_message(event):
             offset = len(news_items)
             promoted = [{**item, "index": offset + i + 1} for i, item in enumerate(shown)]
             shown_links = {n.get("link") for n in shown}
-            remaining = [n for n in unsent[3:] if n.get("link") not in shown_links]
+            remaining = [n for n in unsent[len(shown):] if n.get("link") not in shown_links]
             new_payload = {
                 **payload,
                 "news_items": news_items + promoted,
@@ -1569,8 +1591,6 @@ def handle_postback(event):
     logger.info("Postback受信: user=%s data=%s", user_id, data)
 
     user = ensure_user(user_id)
-    plan = user.get("plan", "free")
-    active = user.get("active", True)
     genres = list(user.get("genres", []) or [])
 
     if data.startswith("toggle_display_genre:"):
@@ -1584,11 +1604,11 @@ def handle_postback(event):
                 if cat not in genres:
                     genres.append(cat)
 
-        save_user(user_id, active=active, plan=plan, genres=genres)
+        supabase.table("users").update({"genres": genres}).eq("user_id", user_id).execute()
         reply_flex(event.reply_token, build_genre_flex(genres))
 
     elif data == "clear_genres":
-        save_user(user_id, active=active, plan=plan, genres=[])
+        supabase.table("users").update({"genres": []}).eq("user_id", user_id).execute()
         reply_flex(event.reply_token, build_genre_flex([]))
 
 
