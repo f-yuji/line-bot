@@ -11,6 +11,7 @@ from urllib.parse import urlparse
 
 import feedparser
 import httpx
+import requests
 from dotenv import load_dotenv
 from openai import OpenAI
 from supabase import create_client
