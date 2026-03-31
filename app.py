@@ -499,18 +499,8 @@ def _collect_context_tokens(payload: dict) -> List[str]:
 
 
 def _parse_article_num(question: str, max_n: int = 5) -> Optional[int]:
-    if any(w in question for w in ["最初", "1番目", "一番目", "1つ目", "①"]):
-        return 1
-    if any(w in question for w in ["最後", f"{max_n}番目"]):
-        return max_n
-
     nums = parse_article_numbers(question, max_n=max_n)
-    if len(nums) == 1:
-        return nums[0]
-    if len(nums) > 1:
-        return None  # 複数指定は単数扱いしない
-
-    return None
+    return nums[0] if len(nums) == 1 else None
 
 
 def extract_number(text: str) -> Optional[int]:
@@ -528,8 +518,8 @@ def parse_article_numbers(text: str, max_n: int = 10) -> List[int]:
             found.add(i)
     # 全角数字→半角に変換
     normalized = text.translate(str.maketrans("１２３４５６７８９０", "1234567890"))
-    # 区切り文字（と・、,，）を空白に統一
-    normalized = re.sub(r"[と・、,，]+", " ", normalized)
+    # 区切り文字（と・、,，／/-）を空白に統一
+    normalized = re.sub(r"[と・、,，／/－\-]+", " ", normalized)
     # 数字以外を空白に変換
     normalized = re.sub(r"[^0-9\s]", " ", normalized)
     for token in normalized.split():
@@ -708,8 +698,10 @@ def answer_news_question(user_id: str, question: str) -> str:
 
     # 番号指定があれば対象記事だけに絞る
     specified_nums = parse_article_numbers(question, max_n=total)
+    logger.info("抽出番号: %s", specified_nums)
     if specified_nums:
         target_items = [index_map[n] for n in specified_nums if n in index_map]
+        logger.info("対象: %s", [n.get("index") for n in target_items])
     else:
         # 自然文：タイトル/reason/interpretationにキーワード一致で最大2件
         norm_q = _normalize_text(question)
@@ -738,13 +730,15 @@ def answer_news_question(user_id: str, question: str) -> str:
         "ニュース文脈に沿って答えろ"
     )
     if len(specified_nums) > 1:
-        mode = "複数記事が指定されている。番号ごとに分けて答えろ（①→..., ②→... の形式）。各記事1〜2文で短く。"
+        mode = f"複数記事。指定番号 {specified_nums} をそのまま使って答えろ。番号は絶対に振り直すな。各記事1〜2文。"
     elif is_detail:
         mode = "詳細モードで答えろ。"
     else:
         mode = "通常モードで答えろ。"
+    number_rule = f"指定番号は {specified_nums}。必ずこの番号で返答しろ。①②のように振り直すな。\n\n" if specified_nums else ""
     user_prompt = (
         f"ニュース:\n{news_text}\n\n"
+        f"{number_rule}"
         f"質問:\n{question}\n\n"
         f"{mode}短く答えろ。"
     )
@@ -1198,7 +1192,7 @@ def is_direct_person_chat_request(text: str) -> bool:
     return len(stripped.strip()) >= 4
 
 
-_ALL_LINK_KW = ["全部", "全て", "一覧", "まとめ", "リンク"]
+_ALL_LINK_KW = ["全部", "全て", "一覧", "まとめ", "全リンク", "リンク全部", "全部のリンク"]
 
 # 強コマンド — pending を問答無用でスキップ・クリアする
 _STRONG_COMMANDS = (
@@ -1725,7 +1719,7 @@ def handle_message(event):
         return
 
     # ★6 ALL_LINK（リンク一覧）
-    if any(kw in text for kw in _ALL_LINK_KW):
+    if any(kw in text for kw in _ALL_LINK_KW) and not parse_article_numbers(text, max_n=10):
         ctx = get_latest_news_context(user_id)
         if not ctx or not _is_context_alive(ctx):
             reply_text(event.reply_token, "先に聞くでニュース出して", quick_reply=qr)
