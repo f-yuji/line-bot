@@ -22,6 +22,7 @@ from linebot.v3.messaging import (
     QuickReplyItem,
     MessageAction,
     PostbackAction,
+    URIAction,
     FlexMessage,
     FlexBubble,
     FlexBox,
@@ -41,6 +42,7 @@ LINE_CHANNEL_ACCESS_TOKEN = os.environ["LINE_CHANNEL_ACCESS_TOKEN"]
 LINE_CHANNEL_SECRET = os.environ["LINE_CHANNEL_SECRET"]
 OPENAI_API_KEY = os.environ["OPENAI_API_KEY"]
 ENV = os.getenv("ENV", "prod")
+PAYMENT_URL = os.getenv("PAYMENT_URL", "").strip()
 
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 openai_client = OpenAI(api_key=OPENAI_API_KEY)
@@ -108,6 +110,33 @@ def normalize_plan(plan: str) -> str:
     return "free"
 
 
+def resolve_effective_plan(user: dict, now_dt) -> str:
+    """課金プラン or トライアル期間中なら "paid" を返す。"""
+    base_plan = normalize_plan(user.get("plan", "free"))
+    if base_plan == "paid":
+        return "paid"
+
+    trial_started_at = user.get("trial_started_at")
+    if trial_started_at:
+        try:
+            trial_dt = datetime.fromisoformat(str(trial_started_at).replace("Z", "+00:00"))
+            if now_dt <= trial_dt + timedelta(days=7):
+                return "paid"
+        except Exception:
+            pass
+
+    extended_until = user.get("trial_extended_until")
+    if extended_until:
+        try:
+            ext_dt = datetime.fromisoformat(str(extended_until).replace("Z", "+00:00"))
+            if now_dt <= ext_dt:
+                return "paid"
+        except Exception:
+            pass
+
+    return "free"
+
+
 def save_user(user_id: str, active=True, plan="free", genres=None):
     if genres is None:
         genres = []
@@ -133,6 +162,10 @@ def ensure_user(user_id: str):
     user.setdefault("night_delivery", True)
     user.setdefault("ai_count", 0)
     user.setdefault("pending_action", None)
+    user.setdefault("trial_started_at", None)
+    user.setdefault("trial_extended_until", None)
+    user.setdefault("feedback_reward_used", False)
+    user.setdefault("feedback_pending", False)
     return user
 
 
@@ -202,6 +235,37 @@ def reply_flex(reply_token: str, flex_msg: FlexMessage) -> None:
             )
     except Exception as e:
         logger.error("LINE返信エラー: %s", e)
+
+
+def reply_with_payment(reply_token: str, text: str, quick_reply: QuickReply = None) -> None:
+    """テキスト＋課金ボタン（Flex）を1回のreplyで送る。PAYMENT_URL未設定時は通常テキスト返信にフォールバック。"""
+    if not PAYMENT_URL:
+        reply_text(reply_token, text, quick_reply)
+        return
+    try:
+        with ApiClient(configuration) as api_client:
+            api = MessagingApi(api_client)
+            text_msg = TextMessage(text=text)
+            payment_bubble = FlexBubble(
+                body=FlexBox(
+                    layout="vertical",
+                    contents=[
+                        FlexButton(
+                            action=URIAction(label="このまま使う", uri=PAYMENT_URL),
+                            style="primary",
+                            height="sm",
+                        )
+                    ],
+                )
+            )
+            flex_msg = FlexMessage(alt_text="このまま使う", contents=payment_bubble)
+            if quick_reply:
+                flex_msg.quick_reply = quick_reply
+            api.reply_message(
+                ReplyMessageRequest(reply_token=reply_token, messages=[text_msg, flex_msg])
+            )
+    except Exception as e:
+        logger.error("LINE課金ボタン返信エラー: %s", e)
 
 
 GENRE_DESC = {
@@ -621,8 +685,6 @@ def answer_news_question(user_id: str, question: str) -> str:
     payload = ctx.get("payload", {})
     news_items = payload.get("news_items", [])
     extra_items = payload.get("extra_items", [])
-    summary = payload.get("summary", [])
-    impact = payload.get("impact", [])
 
     if any(kw in question for kw in _URL_KEYWORDS):
         return _answer_url(question, news_items, extra_items)
@@ -649,43 +711,40 @@ def answer_news_question(user_id: str, question: str) -> str:
     if specified_nums:
         target_items = [index_map[n] for n in specified_nums if n in index_map]
     else:
-        target_items = news_items  # 番号指定なし → 定期配信分のみ
+        # 自然文：タイトル/reason/interpretationにキーワード一致で最大2件
+        norm_q = _normalize_text(question)
+        matched = []
+        for item in news_items:
+            fields = item.get("title", "") + item.get("reason", "") + item.get("interpretation", "")
+            if norm_q and any(_normalize_text(tok) in norm_q for tok in re.split(r"[　\s、。・,/\-（）「」\n]+", fields) if len(tok) >= 2):
+                matched.append(item)
+            if len(matched) >= 2:
+                break
+        target_items = matched if matched else news_items
 
     news_text = "\n".join(
         f"{n['index']}. 【{n.get('category', '')}】{n['title']}（{n.get('reason', '')} / {n.get('interpretation', '')}）"
         for n in target_items
     )
-    summary_text = "\n".join(f"・{s}" for s in summary)
-    impact_text = "\n".join(f"・{i}" for i in impact)
 
     system_prompt = (
-        "お前はLINEでニュースを補足する相手。\n\n"
-        "【共通ルール】\n"
+        "お前はLINEでニュース解説するやつ\n\n"
         "・敬語禁止\n"
-        "・会話調\n"
         "・結論から\n"
-        "・1文短く\n"
-        "・説明しすぎない\n"
-        "・AIっぽい文章禁止\n"
-        "・最後に誘導しない（公式サイト見て等は禁止）\n"
-        "・断定しすぎない（〜っぽい、〜かも）\n\n"
-        "【単語・用語質問】「金利とは」「半導体って？」みたいな単語系は\n"
-        "  一般的な簡単な説明（1文）＋直近ニュースとの関連（1〜2文）で答えろ。\n"
-        "  辞書説明だけで終わるな。「分かりません」「ニュースにありません」で終わるな。\n\n"
-        "【通常モード】1〜3文。短く一発で理解できる形。\n"
-        "【詳細モード】3〜6文。結論→理由→もう一歩の構造。難しい言葉禁止。\n\n"
-        "【禁止】です/ます口調、長文（6文以上）、教科書みたいな説明"
+        "・短く（通常1〜3文）\n"
+        "・詳細なら3〜5文\n"
+        "・会話調\n"
+        "・断定しすぎない（〜かも）\n\n"
+        "ニュース文脈に沿って答えろ"
     )
     if len(specified_nums) > 1:
-        mode = "複数記事が指定されている。番号ごとに分けて答えろ（例：①→..., ③→..., ⑤→... の形式）。各記事は1〜2文で短く。"
+        mode = "複数記事が指定されている。番号ごとに分けて答えろ（①→..., ②→... の形式）。各記事1〜2文で短く。"
     elif is_detail:
         mode = "詳細モードで答えろ。"
     else:
         mode = "通常モードで答えろ。"
     user_prompt = (
-        f"直近ニュース:\n{news_text}\n\n"
-        f"まとめ:\n{summary_text}\n\n"
-        f"影響:\n{impact_text}\n\n"
+        f"ニュース:\n{news_text}\n\n"
         f"質問:\n{question}\n\n"
         f"{mode}短く答えろ。"
     )
@@ -704,7 +763,7 @@ def answer_news_question(user_id: str, question: str) -> str:
         return res.choices[0].message.content.strip()
     except Exception as e:
         logger.error("Q&A OpenAI エラー: %s", e)
-        return "今ちょっと返答うまくいかない\n少し置いてもう一回送って"
+        return "今ちょっと返答うまくいかない\n\nもう一回送るか\n「使い方」押してみて"
 
 
 _CHAT_TOPIC_FOLLOW_UP_FREE = (
@@ -721,6 +780,27 @@ _CHAT_TOPIC_FOLLOW_UP_PAID = (
 )
 
 # ─── 会話ネタ共通 ───
+
+_CHAT_TOPIC_SCHEMA = {
+    "type": "json_schema",
+    "json_schema": {
+        "name": "chat_topic",
+        "strict": True,
+        "schema": {
+            "type": "object",
+            "properties": {
+                "genre":  {"type": "string"},
+                "main":   {"type": "string"},
+                "reply":  {"type": "string"},
+                "next":   {"type": "string"},
+                "point":  {"type": "string"},
+                "trivia": {"type": "string"},
+            },
+            "required": ["genre", "main", "reply", "next", "point", "trivia"],
+            "additionalProperties": False,
+        },
+    },
+}
 
 _CHAT_TOPIC_SYSTEM_BASE = """\
 お前はLINEで使える会話ネタを提案するやつ。
@@ -813,7 +893,7 @@ def generate_chat_topic_free(user_id: str) -> str:
             temperature=0.7,
             max_tokens=300,
             timeout=15,
-            response_format={"type": "json_object"},
+            response_format=_CHAT_TOPIC_SCHEMA,
         )
         data = json.loads(res.choices[0].message.content)
         return format_topic(data) + _CHAT_TOPIC_FOLLOW_UP_FREE
@@ -838,7 +918,7 @@ def generate_chat_topic_paid(user_id: str) -> str:
             temperature=0.7,
             max_tokens=300,
             timeout=15,
-            response_format={"type": "json_object"},
+            response_format=_CHAT_TOPIC_SCHEMA,
         )
         data = json.loads(res.choices[0].message.content)
         return format_topic(data) + _CHAT_TOPIC_FOLLOW_UP_PAID
@@ -918,7 +998,7 @@ def generate_chat_for_person(user_id: str, person_desc: str) -> str:
             temperature=0.7,
             max_tokens=300,
             timeout=15,
-            response_format={"type": "json_object"},
+            response_format=_CHAT_TOPIC_SCHEMA,
         )
         data = json.loads(res.choices[0].message.content)
         return format_topic(data)
@@ -928,8 +1008,16 @@ def generate_chat_for_person(user_id: str, person_desc: str) -> str:
 
 
 
-def can_use_paid_ai(user: dict) -> bool:
-    return user.get("plan") == "paid" and user.get("ai_count", 0) < 10
+def can_use_paid_ai(user: dict, effective_plan: str) -> bool:
+    return effective_plan == "paid" and user.get("ai_count", 0) < 30
+
+
+def get_paid_usage_tail(ai_count_after: int) -> str:
+    if ai_count_after == 25:
+        return "\n\n今日だいぶ使ってるな\nあと少しだな"
+    if ai_count_after == 28:
+        return "\n\n今日かなり使ってるな\nあとちょっとで上限だ"
+    return ""
 
 
 def _set_pending_person_topic(user_id: str) -> None:
@@ -998,7 +1086,19 @@ def callback():
 @handler.add(FollowEvent)
 def handle_follow(event):
     user_id = event.source.user_id
-    ensure_user(user_id)
+    user = ensure_user(user_id)
+
+    # トライアル開始日が未設定なら登録（新規ユーザー or システム導入前の既存ユーザー）
+    if not user.get("trial_started_at"):
+        _now = datetime.now(timezone.utc)
+        try:
+            supabase.table("users").update({
+                "trial_started_at": _now.isoformat(),
+                "feedback_reward_used": False,
+                "feedback_pending": False,
+            }).eq("user_id", user_id).execute()
+        except Exception as e:
+            logger.error("trial_started_at設定失敗: %s", e)
 
     reply_text(
         event.reply_token,
@@ -1068,6 +1168,14 @@ _DIRECT_TOPIC_KW = [
 ]
 
 
+def looks_like_feedback(text: str) -> bool:
+    """フィードバックらしい文章かどうかを判定する。"""
+    markers = ["使いやすさ", "よかった点", "微妙だった点", "あったらいい機能"]
+    if any(m in text for m in markers):
+        return True
+    return len(text.strip()) >= 50
+
+
 def is_direct_person_chat_request(text: str) -> bool:
     """会話ネタ意図＋相手説明を含む一発入力を判定する（辞書不要の自由記述対応）。"""
     # 会話ネタ意図がなければ問答無用でFalse
@@ -1121,6 +1229,16 @@ def handle_message(event):
 
     now_dt = datetime.now(timezone.utc)
 
+    _base_plan = normalize_plan(user.get("plan", "free"))
+    if _base_plan == "free" and not user.get("trial_started_at"):
+        try:
+            supabase.table("users").update({
+                "trial_started_at": now_dt.isoformat(),
+            }).eq("user_id", user_id).execute()
+            user["trial_started_at"] = now_dt.isoformat()
+        except Exception as e:
+            logger.error("trial_started_at補完失敗: %s", e)
+
     # ── 軽い連投制限（3秒）──
     _last = user.get("last_reply_time")
     if _last is not None:
@@ -1170,7 +1288,7 @@ def handle_message(event):
         user["ai_count"] = 0
         user["ai_count_date"] = today
 
-    plan = user.get("plan", "free")
+    plan = resolve_effective_plan(user, now_dt)
     active = user.get("active", True)
     genres = user.get("genres", [])
     qr = main_quick_reply()
@@ -1227,10 +1345,10 @@ def handle_message(event):
                 quick_reply=qr,
             )
         elif any(w in text for w in ["入り方", "登録"]):
-            reply_text(
+            _reg_url = f"\n\n👇ここから入れる\n{PAYMENT_URL}" if PAYMENT_URL else ""
+            reply_with_payment(
                 event.reply_token,
-                "メンバーシップってやつで見れるようにしてる\n\n"
-                "LINEの画面からそのまま入れるようになってるよ",
+                "メンバーシップってやつで見れるようにしてる" + _reg_url,
                 quick_reply=qr,
             )
         elif any(w in text for w in ["何できる", "何ができる"]):
@@ -1295,7 +1413,8 @@ def handle_message(event):
             "・ニュースの理解に加えて、会話で使える「返し」まで出る\n"
             "・誰と話すか入力すると相手に合わせた話題が出せる\n"
             "例：彼女 / 上司 / お客さん など\n\n"
-            "→ そのまま会話で使えるレベルまで仕上がる\n\n"
+            "→ そのまま会話で使えるレベルまで仕上がる\n"
+            "→ 登録は案内メッセージからそのまま進められる\n\n"
             "ーーー\n\n"
             "【プランについて】\n\n"
             "無料でも基本機能は使える\n\n"
@@ -1390,13 +1509,65 @@ def handle_message(event):
             pass
         return
 
+    # ─── フィードバック受理（トライアル延長）───
+    if user.get("feedback_pending") and not user.get("feedback_reward_used") and looks_like_feedback(text):
+        ext_until = (now_dt + timedelta(days=7)).isoformat()
+        try:
+            supabase.table("users").update({
+                "trial_extended_until": ext_until,
+                "feedback_reward_used": True,
+                "feedback_pending": False,
+                "last_reply_time": now_dt.isoformat(),
+            }).eq("user_id", user_id).execute()
+            supabase.table("trial_feedbacks").insert({
+                "user_id": user_id,
+                "content": text,
+            }).execute()
+        except Exception as e:
+            logger.error("フィードバック処理失敗: %s", e)
+        reply_with_payment(
+            event.reply_token,
+            "ありがとう\n感想ちゃんと受け取った\n\nお礼であと1週間使えるようにした",
+            quick_reply=qr,
+        )
+        return
+
+    # ─── トライアル終了通知（初回のみ）───
+    _base_plan = normalize_plan(user.get("plan", "free"))
+    if (plan == "free" and _base_plan == "free"
+            and user.get("trial_started_at")
+            and not user.get("feedback_pending")
+            and not user.get("feedback_reward_used")):
+        reply_with_payment(
+            event.reply_token,
+            "トライアルはここまで\n\n"
+            "よければ感想もらえたら\n"
+            "もう1週間使えるようにしてる\n\n"
+            "コピペして軽くでOK👇\n\n"
+            "【使いやすさ】\n"
+            "（例：使いやすい / わかりにくい）\n\n"
+            "【よかった点】\n\n"
+            "【微妙だった点】\n\n"
+            "【あったらいい機能】\n\n"
+            "一言でもOK",
+            quick_reply=qr,
+        )
+        try:
+            supabase.table("users").update({
+                "feedback_pending": True,
+                "last_reply_time": now_dt.isoformat(),
+            }).eq("user_id", user_id).execute()
+        except Exception:
+            pass
+        return
+
     # ★2.4 相手別会話ネタ直発火（「彼女と会話」のような一発入力）
     if is_direct_person_chat_request(text):
         if plan == "paid":
-            if not can_use_paid_ai(user):
+            if not can_use_paid_ai(user, plan):
                 reply_text(
                     event.reply_token,
-                    "今日は結構使ってるみたい\n\nまた明日使えるようになってるから\n気になるやつあれば明日聞いてくれればOK",
+                    "今日はここまでだな\nまた明日使えるようになってる",
                     quick_reply=qr,
                 )
                 try:
@@ -1409,7 +1580,8 @@ def handle_message(event):
                 user["pending_action"] = None
                 user["pending_count"] = None
             answer = generate_chat_for_person(user_id, text)
-            reply_text(event.reply_token, answer, quick_reply=qr)
+            next_count = user.get("ai_count", 0) + 1
+            reply_text(event.reply_token, answer + get_paid_usage_tail(next_count), quick_reply=qr)
             increment_ai_count(user_id, user.get("ai_count", 0), today, now_dt)
         else:
             reply_text(
@@ -1426,10 +1598,10 @@ def handle_message(event):
     # ★2.5 会話ネタ完全一致トリガー（Q&Aより前に処理）
     if text in _CHAT_TOPIC_EXACT or any(kw in text for kw in _CHAT_TOPIC_KW):
         if plan == "paid":
-            if not can_use_paid_ai(user):
+            if not can_use_paid_ai(user, plan):
                 reply_text(
                     event.reply_token,
-                    "今日は結構使ってるみたい\n\nまた明日使えるようになってるから\n気になるやつあれば明日聞いてくれればOK",
+                    "今日はここまでだな\nまた明日使えるようになってる",
                     quick_reply=qr,
                 )
                 try:
@@ -1438,7 +1610,8 @@ def handle_message(event):
                     pass
                 return
             answer = generate_chat_topic_paid(user_id)
-            reply_text(event.reply_token, answer, quick_reply=qr)
+            next_count = user.get("ai_count", 0) + 1
+            reply_text(event.reply_token, answer + get_paid_usage_tail(next_count), quick_reply=qr)
             _set_pending_person_topic(user_id)
             increment_ai_count(user_id, user.get("ai_count", 0), today, now_dt)
         else:
@@ -1470,10 +1643,10 @@ def handle_message(event):
     if plan == "paid" and _is_pending_person_topic(user):
         _qa_would_fire = bool(re.match(r"^[①-⑩1-9]", text)) or is_related_to_news_context(user_id, text)
         if not _qa_would_fire:
-            if not can_use_paid_ai(user):
+            if not can_use_paid_ai(user, plan):
                 reply_text(
                     event.reply_token,
-                    "今日は結構使ってるみたい\n\nまた明日使えるようになってるから\n気になるやつあれば明日聞いてくれればOK",
+                    "今日はここまでだな\nまた明日使えるようになってる",
                     quick_reply=qr,
                 )
                 _clear_pending(user_id)
@@ -1483,7 +1656,8 @@ def handle_message(event):
                     pass
                 return
             answer = generate_chat_for_person(user_id, text)
-            reply_text(event.reply_token, answer, quick_reply=qr)
+            next_count = user.get("ai_count", 0) + 1
+            reply_text(event.reply_token, answer + get_paid_usage_tail(next_count), quick_reply=qr)
             _clear_pending(user_id)
             increment_ai_count(user_id, user.get("ai_count", 0), today, now_dt)
             return
@@ -1591,10 +1765,10 @@ def handle_message(event):
         free_reply_used = user.get("free_reply_used", False)
 
         if plan == "paid":
-            if not can_use_paid_ai(user):
+            if not can_use_paid_ai(user, plan):
                 reply_text(
                     event.reply_token,
-                    "今日は結構使ってるみたい\n\nまた明日使えるようになってるから\n気になるやつあれば明日聞いてくれればOK",
+                    "今日はここまでだな\nまた明日使えるようになってる",
                     quick_reply=qr,
                 )
                 try:
@@ -1607,7 +1781,8 @@ def handle_message(event):
                 user["pending_action"] = None
                 user["pending_count"] = None
             answer = answer_news_question(user_id, text)
-            reply_text(event.reply_token, answer, quick_reply=qr)
+            next_count = user.get("ai_count", 0) + 1
+            reply_text(event.reply_token, answer + get_paid_usage_tail(next_count), quick_reply=qr)
             increment_ai_count(user_id, user.get("ai_count", 0), today, now_dt)
 
         elif not free_reply_used:

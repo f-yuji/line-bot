@@ -644,8 +644,14 @@ async def _fetch_rss_async(url: str, client: httpx.AsyncClient, max_retries: int
 
 
 async def _fetch_all_rss_async(urls: list) -> list:
-    async with httpx.AsyncClient(headers=_RSS_HEADERS) as client:
-        tasks = [_fetch_rss_async(url, client) for url in urls]
+    sem = asyncio.Semaphore(3)
+
+    async def fetch_with_limit(url, c):
+        async with sem:
+            return await _fetch_rss_async(url, c)
+
+    async with httpx.AsyncClient(headers=_RSS_HEADERS) as c:
+        tasks = [fetch_with_limit(url, c) for url in urls]
         return await asyncio.gather(*tasks, return_exceptions=True)
 
 
@@ -759,6 +765,50 @@ def _to_list(val) -> list:
     return []
 
 
+_NEWS_SUMMARY_SCHEMA = {
+    "type": "json_schema",
+    "json_schema": {
+        "name": "news_summary",
+        "strict": True,
+        "schema": {
+            "type": "object",
+            "properties": {
+                "articles": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "headline":       {"type": "string"},
+                            "reason":         {"type": "string"},
+                            "interpretation": {"type": "string"},
+                        },
+                        "required": ["headline", "reason", "interpretation"],
+                        "additionalProperties": False,
+                    },
+                },
+                "summary":       {"type": "array", "items": {"type": "string"}},
+                "summary_title": {"type": "string"},
+                "impact":        {"type": "array", "items": {"type": "string"}},
+                "topics": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "theme": {"type": "string"},
+                            "line":  {"type": "string"},
+                        },
+                        "required": ["theme", "line"],
+                        "additionalProperties": False,
+                    },
+                },
+            },
+            "required": ["articles", "summary", "summary_title", "impact", "topics"],
+            "additionalProperties": False,
+        },
+    },
+}
+
+
 def fallback_summary(news_list: List[Dict[str, str]]) -> Dict[str, Any]:
     """AI要約失敗時のタイトルベースフォールバック"""
     articles = [
@@ -826,12 +876,9 @@ def summarize(news_list: List[Dict[str, str]]) -> Dict[str, Any]:
             messages=[{"role": "user", "content": prompt}],
             temperature=0.3,
             timeout=15,
+            response_format=_NEWS_SUMMARY_SCHEMA,
         )
-        raw = res.choices[0].message.content.strip()
-        raw = re.sub(r"^```json\s*", "", raw)
-        raw = re.sub(r"\s*```$", "", raw)
-
-        data = json.loads(raw)
+        data = json.loads(res.choices[0].message.content)
         articles_raw = data.get("articles", [])
         return {
             "articles":      articles_raw if isinstance(articles_raw, list) else [],
