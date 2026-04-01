@@ -667,6 +667,40 @@ def _answer_url(question: str, news_items: list, extra_items: list = None) -> st
     return "\n".join(lines)
 
 
+def answer_single_news_item(item: dict, question: str, is_detail: bool) -> str:
+    news_text = (
+        f"{item['index']}. 【{item.get('category', '')}】{item['title']}"
+        f"（{item.get('reason', '')} / {item.get('interpretation', '')}）"
+    )
+    system_prompt = (
+        "お前はLINEでニュース解説するやつ\n"
+        "・敬語禁止\n"
+        "・結論から\n"
+        "・短く\n"
+        "・会話調\n"
+    )
+    mode = "詳細で答えろ" if is_detail else "短く答えろ"
+    user_prompt = (
+        f"ニュース:\n{news_text}\n\n"
+        f"質問:\n{question}\n\n"
+        f"{item['index']}番の記事として答えろ。番号は変えるな。{mode}"
+    )
+    try:
+        res = openai_client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            temperature=0.5,
+            max_tokens=220,
+        )
+        return res.choices[0].message.content.strip()
+    except Exception as e:
+        logger.error("単記事エラー: %s", e)
+        return "今ちょっと返せない"
+
+
 def answer_news_question(user_id: str, question: str) -> str:
     ctx = get_latest_news_context(user_id)
     if not ctx:
@@ -714,6 +748,17 @@ def answer_news_question(user_id: str, question: str) -> str:
                 break
         target_items = matched if matched else news_items
 
+    # 複数記事 → 1記事ずつGPTに投げて番号ズレを防ぐ
+    if len(target_items) >= 2:
+        logger.info("複数記事: %s", [n["index"] for n in target_items])
+        results = []
+        for item in target_items:
+            ans = answer_single_news_item(item, question, is_detail)
+            circle = _CIRCLED[item["index"] - 1] if 1 <= item["index"] <= len(_CIRCLED) else str(item["index"])
+            results.append(f"{circle} {ans}")
+        return "\n\n".join(results)
+
+    # 単一記事 → 従来通り
     news_text = "\n".join(
         f"{n['index']}. 【{n.get('category', '')}】{n['title']}（{n.get('reason', '')} / {n.get('interpretation', '')}）"
         for n in target_items
@@ -729,13 +774,8 @@ def answer_news_question(user_id: str, question: str) -> str:
         "・断定しすぎない（〜かも）\n\n"
         "ニュース文脈に沿って答えろ"
     )
-    if len(specified_nums) > 1:
-        mode = f"複数記事。指定番号 {specified_nums} をそのまま使って答えろ。番号は絶対に振り直すな。各記事1〜2文。"
-    elif is_detail:
-        mode = "詳細モードで答えろ。"
-    else:
-        mode = "通常モードで答えろ。"
-    number_rule = f"指定番号は {specified_nums}。必ずこの番号で返答しろ。①②のように振り直すな。\n\n" if specified_nums else ""
+    mode = "詳細モードで答えろ。" if is_detail else "通常モードで答えろ。"
+    number_rule = f"指定番号は {specified_nums}。必ずこの番号で返答しろ。\n\n" if specified_nums else ""
     user_prompt = (
         f"ニュース:\n{news_text}\n\n"
         f"{number_rule}"
