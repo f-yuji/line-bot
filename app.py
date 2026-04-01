@@ -157,7 +157,7 @@ def ensure_user(user_id: str):
     if not user:
         save_user(user_id, active=True, plan="free", genres=[])
         logger.info("新規ユーザー登録: %s", user_id)
-        return {"user_id": user_id, "active": True, "plan": "free", "genres": []}
+        return {"user_id": user_id, "active": True, "plan": "free", "genres": [], "extended_trial_ended_notified": False}
     user["plan"] = normalize_plan(user.get("plan", "free"))
     user.setdefault("night_delivery", True)
     user.setdefault("ai_count", 0)
@@ -166,6 +166,7 @@ def ensure_user(user_id: str):
     user.setdefault("trial_extended_until", None)
     user.setdefault("feedback_reward_used", False)
     user.setdefault("feedback_pending", False)
+    user.setdefault("extended_trial_ended_notified", False)
     return user
 
 
@@ -376,21 +377,19 @@ def is_link_request(text: str) -> bool:
     return False
 
 
-def _strip_duplicate_leading_number(text: str, expected_num: int) -> str:
-    """返答文頭の番号重複（例: '13 13. ...' / '13. 13. ...'）を正規化する"""
+def strip_leading_number(text: str) -> str:
+    """返答文頭の番号（例: '13.' / '13 ' / '13　'）を除去する（先頭のみ）"""
     import re
-    pattern = re.compile(
-        rf"^(?:[①-⑩]|{expected_num})[.．]?\s*{expected_num}[.．]\s*"
-    )
-    m = pattern.match(text)
-    if m:
-        return f"{expected_num}. " + text[m.end():]
-    # 「13 13. 」パターン
-    pattern2 = re.compile(rf"^{expected_num}\s+{expected_num}[.．]\s*")
-    m2 = pattern2.match(text)
-    if m2:
-        return f"{expected_num}. " + text[m2.end():]
-    return text
+    return re.sub(r"^\s*\d+[\.．\s　]+", "", text)
+
+
+def _strip_any_leading_number(text: str) -> str:
+    """返答文頭の番号（丸数字・半角数字どちらも）を1個除去する（先頭のみ、本文中は触らない）"""
+    import re
+    t = (text or "").strip()
+    t = re.sub(r"^\s*[①-⑩]\s*", "", t)
+    t = re.sub(r"^\s*\d+[\.．]?\s*", "", t)
+    return t.strip()
 _MAIN_MORE_KW = ["ほかに", "他にニュース", "もっとニュース", "追加ニュース"]
 _SUB_MORE_KW = ["ほか", "他に", "もっと", "追加", "それ以外", "他にも"]
 _FOLLOWUP_KW = ["他には", "別のニュース", "続き", "次"]
@@ -770,13 +769,15 @@ def answer_news_question(user_id: str, question: str) -> str:
         # 自然文：タイトル/reason/interpretationにキーワード一致で最大2件
         norm_q = _normalize_text(question)
         matched = []
-        for item in news_items:
+        for item in all_items:
             fields = item.get("title", "") + item.get("reason", "") + item.get("interpretation", "")
             if norm_q and any(_normalize_text(tok) in norm_q for tok in re.split(r"[　\s、。・,/\-（）「」\n]+", fields) if len(tok) >= 2):
                 matched.append(item)
             if len(matched) >= 2:
                 break
-        target_items = matched if matched else news_items
+        logger.info("自然文一致件数: %s", [n.get("index") for n in matched])
+        target_items = matched if matched else (news_items[:1] if news_items else [])
+        logger.info("自然文最終対象: %s", [n.get("index") for n in target_items])
 
     # 複数記事 → 1記事ずつGPTに投げて番号ズレを防ぐ
     if len(target_items) >= 2:
@@ -785,7 +786,7 @@ def answer_news_question(user_id: str, question: str) -> str:
         for item in target_items:
             ans = answer_single_news_item(item, question, is_detail)
             idx = item["index"]
-            ans = _strip_duplicate_leading_number(ans, idx)
+            ans = _strip_any_leading_number(ans)
             results.append(f"{idx}. {ans}")
         return "\n\n".join(results)
 
@@ -827,7 +828,7 @@ def answer_news_question(user_id: str, question: str) -> str:
         )
         raw = res.choices[0].message.content.strip()
         if len(specified_nums) == 1:
-            raw = _strip_duplicate_leading_number(raw, specified_nums[0])
+            raw = strip_leading_number(raw)
         return raw
     except Exception as e:
         logger.error("Q&A OpenAI エラー: %s", e)
@@ -1539,9 +1540,20 @@ def handle_message(event):
         return
 
     if text == "使い方":
-        _plan_text = "メンバーシップ" if normalize_plan(plan) != "free" else "無料（基本機能）"
-        _delivery_text = "オン" if active else "停止中"
         _genre_text = format_genres(genres) if genres else "未設定（すべて配信）"
+        if normalize_plan(plan) != "free":
+            _setting_lines = (
+                f"・プラン：メンバーシップ\n"
+                f"・昼配信：{'オン' if active else 'オフ'}\n"
+                f"・夜配信：{'オン' if user.get('night_delivery', True) else 'オフ'}\n"
+                f"・ジャンル：{_genre_text}"
+            )
+        else:
+            _setting_lines = (
+                f"・プラン：無料（基本機能）\n"
+                f"・配信：{'オン' if active else '停止中'}\n"
+                f"・ジャンル：{_genre_text}"
+            )
         reply_text(
             event.reply_token,
             "使い方\n\n"
@@ -1577,9 +1589,7 @@ def handle_message(event):
             "・「夜開始」→ 夜配信だけ再開\n\n"            
             "ーーー\n\n"
             "【現在の設定】\n"
-            f"・プラン：{_plan_text}\n"
-            f"・配信：{_delivery_text}\n"
-            f"・ジャンル：{_genre_text}\n\n"
+            f"{_setting_lines}\n\n"
             "ーーー\n\n"
             "そのままテキストを送れば操作できる",
             quick_reply=qr,
@@ -1896,7 +1906,10 @@ def handle_message(event):
                 pass
             return
         _ctx_payload = ctx.get("payload", {})
-        _all_link_items = _ctx_payload.get("news_items", []) + _ctx_payload.get("extra_items", [])
+        _news_items = _ctx_payload.get("news_items", [])
+        _extra_items = _ctx_payload.get("extra_items", [])
+        _visible_extra = _ctx_payload.get("extra_index", 0)
+        _all_link_items = _news_items + _extra_items[:_visible_extra]
         lines = ["まとめてどうぞ👇"]
         for item in _all_link_items:
             idx = item.get("index", 0)
