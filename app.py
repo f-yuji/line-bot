@@ -358,8 +358,39 @@ def build_genre_flex(current_genres: list) -> FlexMessage:
 
 
 # ─── Q&A ───
-_URL_KEYWORDS = ["URL", "url", "リンク", "記事"]
 _DETAIL_KEYWORDS = ["詳しく", "もう少し", "なんで", "なぜ", "具体的に", "仕組み"]
+
+
+def is_link_request(text: str) -> bool:
+    """リンク要求として自然な入力かどうか（部分一致の誤反応を防ぐ）"""
+    import re
+    t = (text or "").strip()
+    if t in {"リンク", "URL", "url", "記事リンク", "元記事"}:
+        return True
+    # 番号付きリンク要求（数字や丸数字を含み、「リンク」「URL」で終わる or 「のリンク」系）
+    if re.search(r"[0-9①-⑩]", t) and (
+        t.endswith("リンク") or t.endswith("URL") or t.endswith("url")
+        or "のリンク" in t or "のURL" in t or "のurl" in t
+    ):
+        return True
+    return False
+
+
+def _strip_duplicate_leading_number(text: str, expected_num: int) -> str:
+    """返答文頭の番号重複（例: '13 13. ...' / '13. 13. ...'）を正規化する"""
+    import re
+    pattern = re.compile(
+        rf"^(?:[①-⑩]|{expected_num})[.．]?\s*{expected_num}[.．]\s*"
+    )
+    m = pattern.match(text)
+    if m:
+        return f"{expected_num}. " + text[m.end():]
+    # 「13 13. 」パターン
+    pattern2 = re.compile(rf"^{expected_num}\s+{expected_num}[.．]\s*")
+    m2 = pattern2.match(text)
+    if m2:
+        return f"{expected_num}. " + text[m2.end():]
+    return text
 _MAIN_MORE_KW = ["ほかに", "他にニュース", "もっとニュース", "追加ニュース"]
 _SUB_MORE_KW = ["ほか", "他に", "もっと", "追加", "それ以外", "他にも"]
 _FOLLOWUP_KW = ["他には", "別のニュース", "続き", "次"]
@@ -568,7 +599,7 @@ def _looks_like_article_reference(text: str) -> bool:
 def _looks_like_question_or_command(text: str) -> bool:
     if parse_article_numbers(text, max_n=10):
         return True
-    if any(kw in text for kw in _URL_KEYWORDS):
+    if is_link_request(text):
         return True
     if any(kw in text for kw in _MAIN_MORE_KW + _SUB_MORE_KW):
         return True
@@ -621,20 +652,21 @@ def _answer_more_news(shown: list, display_start: int) -> str:
     lines = ["あとこれも出てる", ""]
     for i, n in enumerate(shown):
         num = display_start + i
-        circle = _CIRCLED[num - 1] if 0 < num <= len(_CIRCLED) else f"{num}."
-        lines.append(f"{circle} {n.get('title', '')}")
+        lines.append(f"{num}. {n.get('title', '')}")
         lines.append("")
 
     lines.append("気になるのあれば言って")
     return "\n".join(lines).rstrip()
 
 
-def _answer_url(question: str, news_items: list, extra_items: list = None) -> str:
+def _answer_url(question: str, news_items: list, extra_items: list = None, visible_extra: int = 0) -> str:
+    """visible_extra: 表示済みのextra件数。番号指定なし時はnews_items + その分だけ返す"""
     extra_items = extra_items or []
+    # 番号指定なし時の返却範囲（表示済み範囲）
+    visible_items = news_items + extra_items[:visible_extra]
     all_items = news_items + extra_items
     total = len(all_items)
 
-    # 全件インデックスで引けるマップ（index → item）
     index_map = {item.get("index", 0): item for item in all_items}
 
     nums = parse_article_numbers(question, max_n=total)
@@ -645,25 +677,22 @@ def _answer_url(question: str, news_items: list, extra_items: list = None) -> st
             if not item:
                 return f"{nums[0]}番目のニュースが見つからなかった"
             link = item.get("link", "")
-            circle = _CIRCLED[nums[0] - 1] if nums[0] <= len(_CIRCLED) else str(nums[0])
-            return f"{circle}の元記事\n{link}" if link else "この記事は元リンクが取れなかった"
+            return f"{nums[0]}. の元記事\n{link}" if link else "この記事は元リンクが取れなかった"
         lines = ["元記事リンク", ""]
         for n in nums:
             item = index_map.get(n)
             if not item:
                 continue
             link = item.get("link", "")
-            circle = _CIRCLED[n - 1] if n <= len(_CIRCLED) else str(n)
-            lines.append(f"{circle} {link}" if link else f"{circle} (リンクなし)")
+            lines.append(f"{n}. {link}" if link else f"{n}. (リンクなし)")
         return "\n".join(lines)
 
-    # 番号指定なし → 全件
+    # 番号指定なし → 表示済み範囲のみ
     lines = ["元記事リンク", ""]
-    for item in all_items:
+    for item in visible_items:
         idx = item.get("index", 0)
         link = item.get("link", "")
-        circle = _CIRCLED[idx - 1] if 0 < idx <= len(_CIRCLED) else str(idx)
-        lines.append(f"{circle} {link}" if link else f"{circle} (リンクなし)")
+        lines.append(f"{idx}. {link}" if link else f"{idx}. (リンクなし)")
     return "\n".join(lines)
 
 
@@ -710,8 +739,9 @@ def answer_news_question(user_id: str, question: str) -> str:
     news_items = payload.get("news_items", [])
     extra_items = payload.get("extra_items", [])
 
-    if any(kw in question for kw in _URL_KEYWORDS):
-        return _answer_url(question, news_items, extra_items)
+    if is_link_request(question):
+        visible_extra = payload.get("extra_index", 0)
+        return _answer_url(question, news_items, extra_items, visible_extra=visible_extra)
 
     is_more_news = (
         any(k in question for k in _MAIN_MORE_KW)
@@ -754,8 +784,9 @@ def answer_news_question(user_id: str, question: str) -> str:
         results = []
         for item in target_items:
             ans = answer_single_news_item(item, question, is_detail)
-            circle = _CIRCLED[item["index"] - 1] if 1 <= item["index"] <= len(_CIRCLED) else str(item["index"])
-            results.append(f"{circle} {ans}")
+            idx = item["index"]
+            ans = _strip_duplicate_leading_number(ans, idx)
+            results.append(f"{idx}. {ans}")
         return "\n\n".join(results)
 
     # 単一記事 → 従来通り
@@ -794,7 +825,10 @@ def answer_news_question(user_id: str, question: str) -> str:
             max_tokens=400,
             timeout=15,
         )
-        return res.choices[0].message.content.strip()
+        raw = res.choices[0].message.content.strip()
+        if len(specified_nums) == 1:
+            raw = _strip_duplicate_leading_number(raw, specified_nums[0])
+        return raw
     except Exception as e:
         logger.error("Q&A OpenAI エラー: %s", e)
         return "今ちょっと返答うまくいかない\n\nもう一回送るか\n「使い方」押してみて"
@@ -1278,12 +1312,16 @@ _STRONG_COMMANDS = (
 )
 
 
-def _plan_status_text(plan: str, active: bool, genres: list) -> str:
+def _plan_status_text(plan: str, active: bool, genres: list, night_delivery: bool = True) -> str:
     plan = normalize_plan(plan)
-    plan_label = "メンバーシップ" if plan != "free" else "無料プラン"
-    active_label = "配信オン" if active else "配信オフ"
     genre_label = f"ジャンル: {format_genres(genres)}" if genres else "ジャンル: 未設定（全部配信）"
-    return f"今こんな感じ\n\n{plan_label}\n{active_label}\n{genre_label}"
+    if plan != "free":
+        day_label = "昼配信オン" if active else "昼配信オフ"
+        night_label = "夜配信オン" if night_delivery else "夜配信オフ"
+        return f"今こんな感じ\n\nメンバーシップ\n{day_label}\n{night_label}\n{genre_label}"
+    else:
+        active_label = "配信オン" if active else "配信オフ"
+        return f"今こんな感じ\n\n無料プラン\n{active_label}\n{genre_label}"
 
 
 @handler.add(MessageEvent, message=TextMessageContent)
@@ -1388,7 +1426,7 @@ def handle_message(event):
             reply_text(
                 event.reply_token,
                 "ありがとう\n感想ちゃんと受け取った\n\n"
-                "このままでも使えるけど\n"
+                "freeでも使えるけど\n"
                 "メンバーシップで機能を開放してる\n\n"
                 "お礼であと1週間はこの状態で使えるようにした",
                 quick_reply=qr,
@@ -1428,6 +1466,13 @@ def handle_message(event):
         return
 
     if text in ["夜開始","夜再開", "夜オン"]:
+        if plan != "paid":
+            reply_text(event.reply_token, "夜配信はメンバーシップでやってる", quick_reply=qr)
+            try:
+                supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
+            except Exception:
+                pass
+            return
         try:
             supabase.table("users").update({"night_delivery": True, "last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
         except Exception:
@@ -1561,7 +1606,7 @@ def handle_message(event):
         return
 
     if text == "プラン":
-        reply_text(event.reply_token, _plan_status_text(plan, active, genres), quick_reply=qr)
+        reply_text(event.reply_token, _plan_status_text(plan, active, genres, night_delivery=user.get("night_delivery", True)), quick_reply=qr)
         try:
             supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
         except Exception:
@@ -1604,7 +1649,7 @@ def handle_message(event):
         return
 
     if text in _STATUS_WORDS:
-        reply_text(event.reply_token, _plan_status_text(plan, active, genres), quick_reply=qr)
+        reply_text(event.reply_token, _plan_status_text(plan, active, genres, night_delivery=user.get("night_delivery", True)), quick_reply=qr)
         try:
             supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
         except Exception:
@@ -1620,7 +1665,7 @@ def handle_message(event):
         reply_with_payment(
             event.reply_token,
             "トライアルはここまで\n\n"
-            "このままでもニュースは見れるけど\n"
+            "free会員でもニュースは見れるけど\n"
             "メンバーシップなら、会話ネタとか深掘りまで全部使える\n\n"
             "よければ感想もらえたら\n"
             "もう1週間トライアルが延長できる\n\n"
@@ -1670,7 +1715,7 @@ def handle_message(event):
             reply_with_payment(
                 event.reply_token,
                 "延長分はここまで\n\n"
-                "このままでもニュースは見れるけど\n"
+                "freeでもニュースは見れるけど\n"
                 "メンバーシップなら、会話ネタとか深掘りまで全部使える\n\n"
                 "よかったらこのまま続けてみて",
                 quick_reply=qr,
@@ -1683,7 +1728,7 @@ def handle_message(event):
             if not can_use_paid_ai(user, plan):
                 reply_text(
                     event.reply_token,
-                    "今日はここまでだな\nまた明日使えるようになってる",
+                    "今日はここまでにしよ\nまた明日使えるようになってる",
                     quick_reply=qr,
                 )
                 try:
@@ -1795,7 +1840,7 @@ def handle_message(event):
         count = payload.get("extra_count", 0)
 
         if plan == "free" and count >= 1:
-            reply_text(event.reply_token, "この先もう少し見れるようにしてる", quick_reply=qr)
+            reply_text(event.reply_token, "他の記事はメンバーシップで見れるようにしてる", quick_reply=qr)
             try:
                 supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
             except Exception:
@@ -1803,7 +1848,7 @@ def handle_message(event):
             return
 
         if plan == "paid" and count >= 3:
-            reply_text(event.reply_token, "まあめぼしいのはこの辺かな\n\n気になるやつあればそのまま聞いて", quick_reply=qr)
+            reply_text(event.reply_token, "とりあえずはこんなもんかな\n\n気になるやつあればそのまま聞いて", quick_reply=qr)
             try:
                 supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
             except Exception:
@@ -1855,8 +1900,7 @@ def handle_message(event):
         lines = ["まとめてどうぞ👇"]
         for item in _all_link_items:
             idx = item.get("index", 0)
-            circle = _CIRCLED[idx - 1] if 0 < idx <= len(_CIRCLED) else str(idx)
-            lines.append(f"{circle} {item.get('link', '')}")
+            lines.append(f"{idx}. {item.get('link', '')}")
         reply_text(event.reply_token, "\n".join(lines), quick_reply=qr)
         try:
             supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
