@@ -347,6 +347,32 @@ def normalize_plan(plan: str) -> str:
     return "free"
 
 
+def resolve_effective_plan(user: dict, now_dt) -> str:
+    """membership_status == active なら即 paid。それ以外はトライアル判定へ。"""
+    if user.get("membership_status", "none") == "active":
+        return "paid"
+
+    trial_started_at = user.get("trial_started_at")
+    if trial_started_at:
+        try:
+            trial_dt = datetime.fromisoformat(str(trial_started_at).replace("Z", "+00:00"))
+            if now_dt <= trial_dt + timedelta(days=7):
+                return "paid"
+        except Exception:
+            pass
+
+    extended_until = user.get("trial_extended_until")
+    if extended_until:
+        try:
+            ext_dt = datetime.fromisoformat(str(extended_until).replace("Z", "+00:00"))
+            if now_dt <= ext_dt:
+                return "paid"
+        except Exception:
+            pass
+
+    return "free"
+
+
 def plan_max_items(plan: str) -> int:
     plan = normalize_plan(plan)
     return {
@@ -460,6 +486,10 @@ def load_users() -> Dict[str, Any]:
                 "genres": row.get("genres", []) or [],
                 "max_items": plan_max_items(plan),
                 "night_delivery": row.get("night_delivery", True),
+                "membership_status": row.get("membership_status", "none"),
+                "membership_expires_at": row.get("membership_expires_at"),
+                "trial_started_at": row.get("trial_started_at"),
+                "trial_extended_until": row.get("trial_extended_until"),
             }
 
         logger.info("Supabaseユーザー読込: %d件", len(users))
@@ -1179,17 +1209,20 @@ def main(is_night: bool = False):
             logger.info("非アクティブのためスキップ: %s", user_id)
             continue
 
+        effective_plan = resolve_effective_plan(user, datetime.now(timezone.utc))
+        user["max_items"] = plan_max_items(effective_plan)
+
         # 夜配信は有料ユーザーかつ night_delivery=True のみ
         if is_night:
-            if normalize_plan(user.get("plan", "free")) == "free":
+            if effective_plan == "free":
                 logger.info("無料ユーザーのため夜配信スキップ: %s", user_id)
                 continue
             if not user.get("night_delivery", True):
                 logger.info("夜配信オフのためスキップ: %s", user_id)
                 continue
 
-        logger.info("ニュース配信開始 user=%s plan=%s genres=%s",
-                    user_id, user.get("plan"), user.get("genres"))
+        logger.info("ニュース配信開始 user=%s raw_plan=%s effective_plan=%s genres=%s",
+                    user_id, user.get("plan"), effective_plan, user.get("genres"))
         filtered = filter_news(news, user)
         logger.info("送信件数: user=%s %d件", user_id, len(filtered))
 
@@ -1242,32 +1275,53 @@ def send_news_to_user(user_id: str) -> None:
 
     plan = "free"
     genres: List[str] = []
+    res_data = None
+
     try:
-        res = supabase.table("users").select("plan,genres").eq("user_id", user_id).single().execute()
-        if res.data:
-            plan   = res.data.get("plan", "free") or "free"
-            genres = res.data.get("genres") or []
+        res = supabase.table("users").select(
+            "plan,genres,membership_status,membership_expires_at,trial_started_at,trial_extended_until"
+        ).eq("user_id", user_id).single().execute()
+        res_data = res.data
+        if res_data:
+            plan = res_data.get("plan", "free") or "free"
+            genres = res_data.get("genres") or []
     except Exception as e:
         logger.warning("send_news_to_user: ユーザー情報取得失敗、デフォルト使用: %s %s", user_id, e)
+
+    membership_status = res_data.get("membership_status", "none") if res_data else "none"
+    membership_expires_at = res_data.get("membership_expires_at") if res_data else None
+    trial_started_at = res_data.get("trial_started_at") if res_data else None
+    trial_extended_until = res_data.get("trial_extended_until") if res_data else None
+
     user = {
-        "user_id":   user_id,
-        "plan":      plan,
-        "genres":    genres,
-        "max_items": plan_max_items(plan),
+        "user_id": user_id,
+        "plan": plan,
+        "genres": genres,
+        "membership_status": membership_status,
+        "membership_expires_at": membership_expires_at,
+        "trial_started_at": trial_started_at,
+        "trial_extended_until": trial_extended_until,
     }
+
+    effective_plan = resolve_effective_plan(user, datetime.now(timezone.utc))
+    user["max_items"] = plan_max_items(effective_plan)
+
     filtered = filter_news(news, user)
     if not filtered:
         logger.warning("初回配信: フィルタ後0件のためスキップ: %s", user_id)
         return
 
-    ai_result  = summarize(filtered)
-    messages   = build_message(filtered, ai_result)
+    ai_result = summarize(filtered)
+    messages = build_message(filtered, ai_result)
     send(user_id, messages, with_quick_reply=True)
 
     sent_links = {n["link"] for n in filtered}
     extra_news = [n for n in news if n["link"] not in sent_links][:15]
     save_news_context(user_id, filtered, ai_result, messages, extra_news)
-    logger.info("初回配信完了: %s", user_id)
+    logger.info(
+        "初回配信完了: user=%s raw_plan=%s effective_plan=%s",
+        user_id, plan, effective_plan,
+    )
 
 
 if __name__ == "__main__":

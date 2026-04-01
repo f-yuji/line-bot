@@ -149,11 +149,6 @@ def save_user(user_id: str, active=True, plan="free", genres=None):
         "active": active,
         "plan": plan,
         "genres": genres,
-        "membership_status": "none",
-        "membership_expires_at": None,
-        "membership_plan_id": None,
-        "membership_last_event_type": None,
-        "membership_updated_at": None,
     }).execute()
 
     logger.info("Supabase保存: user=%s active=%s plan=%s genres=%s", user_id, active, plan, genres)
@@ -1290,15 +1285,31 @@ def callback():
     signature = request.headers.get("X-Line-Signature")
     if not signature:
         abort(400)
+
     body = request.get_data(as_text=True)
 
+    # 署名検証を最初に行う（LINE SDK側で検証）
+    try:
+        handler.handle(body, signature)
+    except InvalidSignatureError:
+        sig_head = (signature or "")[:10]
+        logger.warning(
+            "署名検証失敗 ip=%s method=%s path=%s ua=%s sig=%s",
+            request.remote_addr,
+            request.method,
+            request.path,
+            request.headers.get("User-Agent", ""),
+            sig_head,
+        )
+        abort(400)
+
+    # 署名検証通過後にmembershipイベントを処理
     try:
         payload = json.loads(body)
     except Exception:
         payload = {}
 
     events = payload.get("events", []) if isinstance(payload, dict) else []
-    normal_events = []
 
     for ev in events:
         if isinstance(ev, dict) and ("membership" in ev or ev.get("type") == "membership"):
@@ -1306,24 +1317,6 @@ def callback():
                 handle_membership_event(ev)
             except Exception as e:
                 logger.error("membership event処理失敗: %s", e)
-        else:
-            normal_events.append(ev)
-
-    if normal_events:
-        normal_body = json.dumps({"events": normal_events}, ensure_ascii=False)
-        try:
-            handler.handle(normal_body, signature)
-        except InvalidSignatureError:
-            sig_head = (signature or "")[:10]
-            logger.warning(
-                "署名検証失敗 ip=%s method=%s path=%s ua=%s sig=%s",
-                request.remote_addr,
-                request.method,
-                request.path,
-                request.headers.get("User-Agent", ""),
-                sig_head,
-            )
-            abort(400)
 
     return "OK"
 
