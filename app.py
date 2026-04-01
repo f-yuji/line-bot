@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import re
+import requests
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
@@ -43,6 +44,8 @@ LINE_CHANNEL_SECRET = os.environ["LINE_CHANNEL_SECRET"]
 OPENAI_API_KEY = os.environ["OPENAI_API_KEY"]
 ENV = os.getenv("ENV", "prod")
 PAYMENT_URL = os.getenv("PAYMENT_URL", "").strip()
+LINE_MEMBERSHIP_USE_API_SYNC = os.getenv("LINE_MEMBERSHIP_USE_API_SYNC", "true").lower() == "true"
+LINE_API_BASE = "https://api.line.me"
 
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 openai_client = OpenAI(api_key=OPENAI_API_KEY)
@@ -111,9 +114,8 @@ def normalize_plan(plan: str) -> str:
 
 
 def resolve_effective_plan(user: dict, now_dt) -> str:
-    """課金プラン or トライアル期間中なら "paid" を返す。"""
-    base_plan = normalize_plan(user.get("plan", "free"))
-    if base_plan == "paid":
+    """membership_status == active なら即 paid。それ以外はトライアル判定へ。"""
+    if user.get("membership_status", "none") == "active":
         return "paid"
 
     trial_started_at = user.get("trial_started_at")
@@ -147,6 +149,11 @@ def save_user(user_id: str, active=True, plan="free", genres=None):
         "active": active,
         "plan": plan,
         "genres": genres,
+        "membership_status": "none",
+        "membership_expires_at": None,
+        "membership_plan_id": None,
+        "membership_last_event_type": None,
+        "membership_updated_at": None,
     }).execute()
 
     logger.info("Supabase保存: user=%s active=%s plan=%s genres=%s", user_id, active, plan, genres)
@@ -157,7 +164,25 @@ def ensure_user(user_id: str):
     if not user:
         save_user(user_id, active=True, plan="free", genres=[])
         logger.info("新規ユーザー登録: %s", user_id)
-        return {"user_id": user_id, "active": True, "plan": "free", "genres": [], "extended_trial_ended_notified": False}
+        return {
+            "user_id": user_id,
+            "active": True,
+            "plan": "free",
+            "genres": [],
+            "extended_trial_ended_notified": False,
+            "night_delivery": True,
+            "ai_count": 0,
+            "pending_action": None,
+            "trial_started_at": None,
+            "trial_extended_until": None,
+            "feedback_reward_used": False,
+            "feedback_pending": False,
+            "membership_status": "none",
+            "membership_expires_at": None,
+            "membership_plan_id": None,
+            "membership_last_event_type": None,
+            "membership_updated_at": None,
+        }, True
     user["plan"] = normalize_plan(user.get("plan", "free"))
     user.setdefault("night_delivery", True)
     user.setdefault("ai_count", 0)
@@ -167,7 +192,141 @@ def ensure_user(user_id: str):
     user.setdefault("feedback_reward_used", False)
     user.setdefault("feedback_pending", False)
     user.setdefault("extended_trial_ended_notified", False)
-    return user
+    user.setdefault("membership_status", "none")
+    user.setdefault("membership_expires_at", None)
+    user.setdefault("membership_plan_id", None)
+    user.setdefault("membership_last_event_type", None)
+    user.setdefault("membership_updated_at", None)
+    return user, False
+
+
+# ─── LINEメンバーシップ ───
+def get_line_headers():
+    return {
+        "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}",
+        "Content-Type": "application/json",
+    }
+
+
+def get_membership_subscription_status(user_id):
+    url = f"{LINE_API_BASE}/v2/bot/membership/subscription/{user_id}"
+    try:
+        res = requests.get(url, headers=get_line_headers(), timeout=10)
+        if res.status_code == 404:
+            return None
+        res.raise_for_status()
+        return res.json()
+    except Exception as e:
+        logger.error("membership API失敗 user=%s %s", user_id, e)
+        return None
+
+
+def membership_state_from_api(data):
+    if not data:
+        return {
+            "membership_status": "none",
+            "membership_expires_at": None,
+            "membership_plan_id": None,
+        }
+    active = bool(data.get("active", False))
+    expires = (
+        data.get("endTime")
+        or data.get("expiredAt")
+        or data.get("expiresAt")
+        or data.get("membershipExpiresAt")
+    )
+    plan_id = (
+        data.get("planId")
+        or data.get("membershipPlanId")
+        or data.get("id")
+    )
+    return {
+        "membership_status": "active" if active else "none",
+        "membership_expires_at": expires,
+        "membership_plan_id": str(plan_id) if plan_id is not None else None,
+    }
+
+
+def membership_state_from_event(event):
+    source = event.get("membership") or event
+    event_type = (
+        event.get("type")
+        or source.get("type")
+        or source.get("eventType")
+        or source.get("membershipEventType")
+        or ""
+    )
+    plan_id = (
+        source.get("planId")
+        or source.get("membershipPlanId")
+        or source.get("id")
+    )
+    expires_at = (
+        source.get("endTime")
+        or source.get("expiredAt")
+        or source.get("expiresAt")
+        or source.get("membershipExpiresAt")
+    )
+    event_type_l = str(event_type).lower()
+    if any(k in event_type_l for k in ["join", "activate", "start", "renew"]):
+        status = "active"
+    else:
+        status = "none"
+    return {
+        "membership_status": status,
+        "membership_expires_at": expires_at,
+        "membership_plan_id": str(plan_id) if plan_id is not None else None,
+    }
+
+
+def apply_membership(user_id, state, event_type=None):
+    status = state.get("membership_status", "none")
+    update = {
+        "membership_status": status,
+        "membership_expires_at": state.get("membership_expires_at"),
+        "membership_plan_id": state.get("membership_plan_id"),
+        "membership_last_event_type": event_type,
+        "membership_updated_at": datetime.now(timezone.utc).isoformat(),
+        "plan": "paid" if status == "active" else "free",
+    }
+    try:
+        supabase.table("users").upsert({"user_id": user_id, **update}).execute()
+        logger.info(
+            "membership反映成功 user=%s status=%s plan=%s expires=%s plan_id=%s event=%s",
+            user_id, status, update["plan"],
+            state.get("membership_expires_at"),
+            state.get("membership_plan_id"),
+            event_type,
+        )
+    except Exception as e:
+        logger.error("membership反映失敗 user=%s %s", user_id, e)
+
+
+def sync_membership_from_api(user_id, event_type=None):
+    data = get_membership_subscription_status(user_id)
+    state = membership_state_from_api(data)
+    apply_membership(user_id, state, event_type=event_type)
+    return state
+
+
+def handle_membership_event(event):
+    user_id = event.get("source", {}).get("userId") or event.get("userId")
+    if not user_id:
+        logger.warning("membership event user_id不明: %s", event)
+        return
+    event_type = (
+        event.get("type")
+        or (event.get("membership") or {}).get("type")
+        or (event.get("membership") or {}).get("eventType")
+        or (event.get("membership") or {}).get("membershipEventType")
+        or "membership"
+    )
+    _, _ = ensure_user(user_id)
+    if LINE_MEMBERSHIP_USE_API_SYNC:
+        sync_membership_from_api(user_id, event_type=event_type)
+    else:
+        state = membership_state_from_event(event)
+        apply_membership(user_id, state, event_type=event_type)
 
 
 # ─── 補助 ───
@@ -1134,18 +1293,37 @@ def callback():
     body = request.get_data(as_text=True)
 
     try:
-        handler.handle(body, signature)
-    except InvalidSignatureError:
-        sig_head = (signature or "")[:10]
-        logger.warning(
-            "署名検証失敗 ip=%s method=%s path=%s ua=%s sig=%s",
-            request.remote_addr,
-            request.method,
-            request.path,
-            request.headers.get("User-Agent", ""),
-            sig_head,
-        )
-        abort(400)
+        payload = json.loads(body)
+    except Exception:
+        payload = {}
+
+    events = payload.get("events", []) if isinstance(payload, dict) else []
+    normal_events = []
+
+    for ev in events:
+        if isinstance(ev, dict) and ("membership" in ev or ev.get("type") == "membership"):
+            try:
+                handle_membership_event(ev)
+            except Exception as e:
+                logger.error("membership event処理失敗: %s", e)
+        else:
+            normal_events.append(ev)
+
+    if normal_events:
+        normal_body = json.dumps({"events": normal_events}, ensure_ascii=False)
+        try:
+            handler.handle(normal_body, signature)
+        except InvalidSignatureError:
+            sig_head = (signature or "")[:10]
+            logger.warning(
+                "署名検証失敗 ip=%s method=%s path=%s ua=%s sig=%s",
+                request.remote_addr,
+                request.method,
+                request.path,
+                request.headers.get("User-Agent", ""),
+                sig_head,
+            )
+            abort(400)
 
     return "OK"
 
@@ -1153,7 +1331,7 @@ def callback():
 @handler.add(FollowEvent)
 def handle_follow(event):
     user_id = event.source.user_id
-    user = ensure_user(user_id)
+    user, is_new_user = ensure_user(user_id)
 
     # トライアル開始日が未設定なら登録（新規ユーザー or システム導入前の既存ユーザー）
     if not user.get("trial_started_at"):
@@ -1181,10 +1359,11 @@ def handle_follow(event):
         quick_reply=main_quick_reply(),
     )
 
-    try:
-        send_news_to_user(user_id)
-    except Exception as e:
-        logger.error("初回配信失敗: user=%s %s", user_id, e)
+    if is_new_user:
+        try:
+            send_news_to_user(user_id)
+        except Exception as e:
+            logger.error("初回配信失敗: user=%s %s", user_id, e)
 
 
 _STOP_WORDS = {"停止", "止めて", "停止して", "配信止めて", "もういい", "オフ"}
@@ -1331,7 +1510,7 @@ def handle_message(event):
     text = normalize_user_text(event.message.text)
 
     logger.info("メッセージ受信: user=%s text=%s", user_id, text)
-    user = ensure_user(user_id)
+    user, _ = ensure_user(user_id)
 
     now_dt = datetime.now(timezone.utc)
 
@@ -1999,7 +2178,7 @@ def handle_postback(event):
 
     logger.info("Postback受信: user=%s data=%s", user_id, data)
 
-    user = ensure_user(user_id)
+    user, _ = ensure_user(user_id)
     genres = list(user.get("genres", []) or [])
 
     if data.startswith("toggle_display_genre:"):
