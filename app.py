@@ -574,7 +574,7 @@ _BLOCKLIST = [
 ]
 
 _REJECT_TEXT = "ニュースの内容で気になることあれば聞いて\n番号やリンクでもいけるよ"
-_BLOCKLIST_TEXT = "ニュースの話で聞いてくれな"
+_BLOCKLIST_TEXT = "ニュースの話で聞いてほしいな"
 
 _QUESTION_SIGNALS = [
     "？", "?", "って", "とは", "なに", "なぜ", "なんで",
@@ -1046,7 +1046,7 @@ def answer_news_question(user_id: str, question: str) -> tuple:
         )
         raw = res.choices[0].message.content.strip()
         if len(specified_nums) == 1:
-            raw = strip_leading_number(raw)
+            raw = _strip_any_leading_number(raw)
         return raw, targets
     except Exception as e:
         logger.error("Q&A OpenAI エラー: %s", e)
@@ -1752,7 +1752,9 @@ def handle_message(event):
                     "・ニュースを深掘りできる\n"
                     "・会話ネタの返しまで出せる\n"
                     "・相手に合わせた話題も出せる\n\n"
-                    "気になるならそのまま聞いてくれればOK"
+                    "気になるならそのまま聞いてくれればOK\n\n"
+                    "ちなみに\n"
+                    "メンバーシップはここから",
                 )
             reply_text(
                 event.reply_token,
@@ -1767,7 +1769,9 @@ def handle_message(event):
                 "・ニュースを深掘りできる\n"
                 "・会話ネタの返しまで出せる\n"
                 "・相手に合わせた話題も出せる\n\n"
-                "気になるならそのまま聞いてくれればOK",
+                "気になるならそのまま聞いてくれればOK\n\n"
+                "ちなみに\n"
+                "メンバーシップはここから",
                 quick_reply=qr,
             )
         try:
@@ -1795,7 +1799,8 @@ def handle_message(event):
             event.reply_token,
             "使い方\n\n"
             "【ニュースを見る】\n"
-            "・例えば、「1」や「1と2」と入力 → 詳しい解説を表示\n"
+            "・例えば、「1」や「1と2」と入力 → ニュースの要約を表示\n"
+            "・「1詳しく」や、要約を見た後に続けて「詳しく」で詳しい説明を表示\n"
             "・「1-3-5」みたいな複数指定OK\n"
             "・「リンク」→ 元記事のURLを表示\n\n"
             "【追加でニュースを見る】\n"
@@ -1818,6 +1823,7 @@ def handle_message(event):
             "・朝と夜の2回ニュースが届く\n"
             "・追加で見られるニュースが増える\n"
             "・会話ネタ、ニュースQ＆Aが上限数が増える\n\n"
+            "メンバーシップ加入はここから\n\n"
             "ーーー\n\n"
             "【配信の操作】\n"
             "・「止めて」→ 配信停止\n"
@@ -1861,7 +1867,7 @@ def handle_message(event):
         return
 
     if text == "設定":
-        reply_text(event.reply_token, "どうする？\nそのまま言ってもOK", quick_reply=qr)
+        reply_text(event.reply_token, "設定する？\n使い方見てみて", quick_reply=qr)
         try:
             supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
         except Exception:
@@ -2010,7 +2016,7 @@ def handle_message(event):
             if not can_use_paid_ai(user, plan):
                 reply_text(
                     event.reply_token,
-                    "今日はここまでだな\nまた明日使えるようになってる",
+                    "今日はここまでにしよ\nまた明日使えるようになってる",
                     quick_reply=qr,
                 )
                 try:
@@ -2027,7 +2033,7 @@ def handle_message(event):
             if user.get("free_chat_topic_used", False):
                 reply_text(
                     event.reply_token,
-                    "無料版の会話ネタは1日1回までにしてる\n\n続きはメンバーシップで使える",
+                    "free版の会話ネタは1日1回まで\n\n続きはメンバーシップで使える",
                     quick_reply=qr,
                 )
             else:
@@ -2055,7 +2061,7 @@ def handle_message(event):
             if not can_use_paid_ai(user, plan):
                 reply_text(
                     event.reply_token,
-                    "今日はここまでだな\nまた明日使えるようになってる",
+                    "今日はここまでにしよ\nまた明日使えるようになってる",
                     quick_reply=qr,
                 )
                 _clear_pending(user_id)
@@ -2096,7 +2102,7 @@ def handle_message(event):
             return
 
         if plan == "paid" and count >= 3:
-            reply_text(event.reply_token, "とりあえずはこんなもんかな\n\n気になるやつあればそのまま聞いて", quick_reply=qr)
+            reply_text(event.reply_token, "今のところはこんなもんかな\n\n気になるやつあればそのまま聞いて", quick_reply=qr)
             try:
                 supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
             except Exception:
@@ -2194,7 +2200,7 @@ def handle_message(event):
             if not can_use_paid_ai(user, plan):
                 reply_text(
                     event.reply_token,
-                    "今日はここまでだな\nまた明日使えるようになってる",
+                    "今日はここまでにしよ\nまた明日使えるようになってる",
                     quick_reply=qr,
                 )
                 try:
@@ -2231,7 +2237,7 @@ def handle_message(event):
         else:
             reply_text(
                 event.reply_token,
-                "無料版は1回だけ深掘り対応してる\nメンバーシップで続けられるよ",
+                "free版は1回だけ深掘り対応してる\nメンバーシップで続けられるよ",
                 quick_reply=qr,
             )
             try:
