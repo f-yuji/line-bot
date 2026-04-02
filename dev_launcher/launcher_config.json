@@ -1,0 +1,11 @@
+{
+  "project_root": "C:\\Users\\f-yuj\\dev\\line_bot",
+  "entry_file": "app.py",
+  "host": "0.0.0.0",
+  "port": 8000,
+  "watch_extensions": [".py", ".json", ".env"],
+  "ignore_dirs": ["venv", ".git", "__pycache__", ".vscode", "dev_launcher", "test"],
+  "python_executable": "C:\\Users\\f-yuj\\AppData\\Local\\Programs\\Python\\Python312\\python.exe",
+  "use_new_console": false,
+  "env_overrides": {}
+}

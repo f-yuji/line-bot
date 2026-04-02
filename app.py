@@ -64,10 +64,10 @@ logger = logging.getLogger(__name__)
 print("=== 起動確認 ===")
 print(f"環境: {ENV}")
 if ENV == "test":
-    print("🟢 テスト環境で実行中")
+    print("◎ テスト環境で実行中")
 elif ENV == "prod":
-    print("🔴 本番環境で実行中（注意）")
-    print("🔴 本番環境です。内容を確認してください")
+    print("！！ 本番環境で実行中（注意）")
+    print("！！ 本番環境です。内容を確認してください")
 
 # ─── ジャンル定義 ───
 DISPLAY_GENRE_MAP = {
@@ -1236,7 +1236,7 @@ def infer_tone_for_person(person_desc: str) -> str:
     ]
     casual_keywords = [
         "彼女", "彼氏", "好きな人", "気になる人",
-        "嫁", "妻", "旦那", "夫",
+        "嫁", "妻", "旦那", "夫","友達",
         "友達", "親友", "知人",
         "家族", "兄弟", "姉妹", "親", "母親", "父親",
     ]

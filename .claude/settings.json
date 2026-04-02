@@ -8,7 +8,9 @@
       "Read(//c/Users/f-yuj/AppData/**)",
       "Bash(ls c:/bot/line_bot/venv/Lib/site-packages/*.pth)",
       "Bash(python3 -c \" with open\\('C:/bot/line_bot/venv/Scripts/python.exe', 'rb'\\) as f: data = f.read\\(\\) import re strings = re.findall\\(b'[\\\\x20-\\\\x7e]{6,}', data\\) for s in strings[:30]: print\\(s\\) \")",
-      "Bash(powershell -Command ':*)"
+      "Bash(powershell -Command ':*)",
+      "Bash(mkdir -p c:/Users/f-yuj/dev/line_bot/dev_launcher)",
+      "Bash(mkdir -p c:/Users/f-yuj/dev/line_bot/.vscode)"
     ]
   }
 }

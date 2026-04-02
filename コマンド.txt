@@ -1,9 +1,11 @@
 # ===== 起動セット =====
-cd C:\bot\line_bot
+cd C:\Users\f-yuj\dev\line_bot
 venv\Scripts\activate
+Get-Content dev_launcher\target.log -Wait
 
 # ===== 実行（ターミナル①）=====
 python app.py
+python dev_launcher/watch_target.py
 
 # ===== 公開（ターミナル②）=====
 ngrok http 8000

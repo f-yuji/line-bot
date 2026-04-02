@@ -1337,10 +1337,10 @@ if __name__ == "__main__":
         print("=== 起動確認 ===")
         print(f"環境: {ENV}")
         if ENV == "test":
-            print("🟢 テスト環境で実行中")
+            print("◎ テスト環境で実行中")
         elif ENV == "prod":
-            print("🔴 本番環境で実行中（注意）")
-            print("🔴 本番環境です。内容を確認してください")
+            print("！！ 本番環境で実行中（注意）")
+            print("！！ 本番環境です。内容を確認してください")
         try:
             is_night = "--night" in sys.argv
             main(is_night=is_night)
