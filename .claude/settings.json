@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(schtasks /query /fo LIST /v)",
+      "Bash(schtasks /query /fo CSV)",
+      "Read(//c/Users/f-yuj/AppData/Local/Programs/Python/Python312/**)",
+      "Bash(powershell -Command 'Get-ScheduledTask | Where-Object {$_.Actions.Execute -match '\\\\''python'\\\\''} | Select-Object TaskName, @{Name='\\\\''Command'\\\\'';Expression={$_.Actions.Execute}}, @{Name='\\\\''Args'\\\\'';Expression={$_.Actions.Arguments}}')",
+      "Read(//c/Users/f-yuj/AppData/**)",
+      "Bash(ls c:/bot/line_bot/venv/Lib/site-packages/*.pth)",
+      "Bash(python3 -c \" with open\\('C:/bot/line_bot/venv/Scripts/python.exe', 'rb'\\) as f: data = f.read\\(\\) import re strings = re.findall\\(b'[\\\\x20-\\\\x7e]{6,}', data\\) for s in strings[:30]: print\\(s\\) \")",
+      "Bash(powershell -Command ':*)"
+    ]
+  }
+}

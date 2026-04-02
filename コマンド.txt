@@ -8,6 +8,9 @@ python app.py
 # ===== 公開（ターミナル②）=====
 ngrok http 8000
 
+# ===== タスクキル =====
+taskkill /IM python.exe /F
+
 # ===== ドライラン =====
 cd C:\bot\line_bot
 venv\Scripts\activate
