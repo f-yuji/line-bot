@@ -416,14 +416,14 @@ def reply_with_payment(reply_token: str, text: str, quick_reply: QuickReply = No
                     layout="vertical",
                     contents=[
                         FlexButton(
-                            action=URIAction(label="このまま続ける", uri=PAYMENT_URL),
+                            action=URIAction(label="機能を開放する", uri=PAYMENT_URL),
                             style="primary",
                             height="sm",
                         )
                     ],
                 )
             )
-            flex_msg = FlexMessage(alt_text="このまま続ける", contents=payment_bubble)
+            flex_msg = FlexMessage(alt_text="機能を開放する", contents=payment_bubble)
             if quick_reply:
                 flex_msg.quick_reply = quick_reply
             api.reply_message(
@@ -1091,7 +1091,6 @@ _CHAT_TOPIC_SYSTEM_BASE = """\
 お前はLINEで使える会話ネタを提案するやつ。
 
 【ルール】
-・敬語禁止
 ・会話調
 ・そのまま使える形で出す
 ・短すぎず薄くしない
@@ -1216,7 +1215,11 @@ _POLITE_TONE_RULE = (
     "【口調ルール】\n"
     "・会話文は自然な敬語にする\n"
     "・タメ語は禁止\n"
-    "・堅すぎるビジネス文書調も禁止\n"
+    "・先輩、上司、取引先、お客さん相手として不自然な軽さは禁止\n"
+    "・一人称は基本使わない\n"
+    "・『私』『あたし』は禁止\n"
+    "・日本人男性ユーザーがそのまま使って違和感のない自然な言い回しにする\n"
+    "・堅すぎるビジネス文書調は禁止\n"
     "・実際の雑談で使える、柔らかい丁寧語にする\n"
 )
 
@@ -1224,6 +1227,10 @@ _CASUAL_TONE_RULE = (
     "【口調ルール】\n"
     "・友達や恋人に話すような自然なくだけた口調でよい\n"
     "・ただし荒い口調は禁止\n"
+    "・一人称は基本使わない\n"
+    "・『私』『あたし』は禁止\n"
+    "・日本人男性ユーザーがそのまま使って違和感のない自然な言い回しにする\n"
+    "・馴れ馴れしすぎる作り物っぽいテンションは禁止\n"
 )
 
 
@@ -1244,7 +1251,7 @@ def infer_tone_for_person(person_desc: str) -> str:
         return "polite"
     if any(k in person_desc for k in casual_keywords):
         return "casual"
-    return "casual"
+    return "polite"
 
 
 def generate_chat_for_person(user_id: str, person_desc: str) -> str:
@@ -1259,6 +1266,15 @@ def generate_chat_for_person(user_id: str, person_desc: str) -> str:
     system_prompt = (
         _CHAT_TOPIC_SYSTEM_BASE
         + f"\n現在の季節：{season}\n\n"
+        "【最重要】\n"
+        "・出力するのは『ユーザー本人が相手に送るセリフ』として自然であること\n"
+        "・相手に合わせた口調を最優先すること\n"
+        "・彼女/友達向けなのに女口調にしない\n"
+        "・先輩/上司/取引先向けなのにタメ口にしない\n"
+        "・ユーザー側のセリフで『私』『あたし』は禁止\n"
+        "・日本人男性がそのまま使って違和感のない表現にする\n"
+        "・恋人向けでもベタすぎる作り物感は禁止\n"
+        "・先輩向けは敬語ベースだが、固すぎる文章は禁止\n\n"
         "【相手ごとの優先ジャンル】\n"
         "彼女・彼氏・家族・友達：日常、食べ物、休日、エンタメ、軽い流行、身近なニュースを優先。"
         "地政学・軍事・金利政策のような重い話題は基本避ける\n"
@@ -1272,7 +1288,10 @@ def generate_chat_for_person(user_id: str, person_desc: str) -> str:
         + tone_rule
     )
     user_prompt = (
-        f"話す相手: {person_desc}\n\n"
+        f"話す相手: {person_desc}\n"
+        "話す側: 日本人男性ユーザー\n"
+        "目的: その相手と自然に会話を始めて、返答が返しやすいネタを出す\n"
+        "絶対条件: 相手に失礼のない口調にする。彼女向けで女口調禁止。先輩向けでタメ口禁止。\n\n"
         + (f"参考ニュース（必要なら使っていい）:\n{news_text}\n\n" if news_text else "")
         + "この相手に使えそうな会話ネタを1つJSONで出せ。"
     )
@@ -1795,7 +1814,7 @@ def handle_message(event):
                 f"・配信：{'オン' if active else '停止中'}\n"
                 f"・ジャンル：{_genre_text}"
             )
-        reply_text(
+        reply_with_payment(
             event.reply_token,
             "使い方\n\n"
             "【ニュースを見る】\n"
@@ -1823,18 +1842,18 @@ def handle_message(event):
             "・朝と夜の2回ニュースが届く\n"
             "・追加で見られるニュースが増える\n"
             "・会話ネタ、ニュースQ＆Aが上限数が増える\n\n"
-            "メンバーシップ加入はここから\n\n"
             "ーーー\n\n"
             "【配信の操作】\n"
             "・「止めて」→ 配信停止\n"
             "・「再開」→ 配信再開\n"
             "・「夜停止」→ 夜配信だけ止める\n"
-            "・「夜開始」→ 夜配信だけ再開\n\n"            
+            "・「夜開始」→ 夜配信だけ再開\n\n"
             "ーーー\n\n"
             "【現在の設定】\n"
             f"{_setting_lines}\n\n"
-            "ーーー\n\n"
-            "そのままテキストを送れば操作できる",
+            "ーーー\n"
+            "そのままテキストを送れば操作できる\n\n"
+            "メンバーシップ登録は下のボタン",
             quick_reply=qr,
         )
         try:
