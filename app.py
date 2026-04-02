@@ -192,6 +192,9 @@ def ensure_user(user_id: str):
     user.setdefault("membership_plan_id", None)
     user.setdefault("membership_last_event_type", None)
     user.setdefault("membership_updated_at", None)
+    user.setdefault("last_news_question_targets", None)
+    user.setdefault("last_news_question_at", None)
+    user.setdefault("last_news_context_sent_at", None)
     return user, False
 
 
@@ -284,14 +287,21 @@ def apply_membership(user_id, state, event_type=None):
         "membership_updated_at": datetime.now(timezone.utc).isoformat(),
         "plan": "paid" if status == "active" else "free",
     }
+
+    if status == "active":
+        update["night_delivery"] = True
+
     try:
         supabase.table("users").upsert({"user_id": user_id, **update}).execute()
         logger.info(
-            "membership反映成功 user=%s status=%s plan=%s expires=%s plan_id=%s event=%s",
-            user_id, status, update["plan"],
+            "membership反映成功 user=%s status=%s plan=%s expires=%s plan_id=%s event=%s night_delivery=%s",
+            user_id,
+            status,
+            update["plan"],
             state.get("membership_expires_at"),
             state.get("membership_plan_id"),
             event_type,
+            update.get("night_delivery"),
         )
     except Exception as e:
         logger.error("membership反映失敗 user=%s %s", user_id, e)
@@ -589,6 +599,58 @@ def get_latest_news_context(user_id: str) -> Optional[dict]:
         return None
 
 
+def is_detail_only_request(text: str) -> bool:
+    t = (text or "").strip()
+    return t in {"詳しく", "もっと詳しく", "深掘り", "くわしく"}
+
+
+def save_last_news_question_targets(user_id: str, targets: list, ctx: dict) -> None:
+    if not targets:
+        return
+    try:
+        sent_at = ctx.get("sent_at") if ctx else None
+        supabase.table("users").update({
+            "last_news_question_targets": targets,
+            "last_news_question_at": datetime.now(timezone.utc).isoformat(),
+            "last_news_context_sent_at": sent_at,
+        }).eq("user_id", user_id).execute()
+    except Exception as e:
+        logger.error("last_news_question_targets保存失敗: %s", e)
+
+
+def get_reusable_last_news_targets(user: dict, ctx: dict) -> list:
+    targets = user.get("last_news_question_targets")
+    asked_at = user.get("last_news_question_at")
+    saved_ctx = user.get("last_news_context_sent_at")
+
+    if not targets or not ctx:
+        return []
+
+    if saved_ctx != ctx.get("sent_at"):
+        return []
+
+    if asked_at:
+        try:
+            asked_dt = datetime.fromisoformat(str(asked_at).replace("Z", "+00:00"))
+            if datetime.now(timezone.utc) - asked_dt > timedelta(minutes=10):
+                return []
+        except Exception:
+            return []
+
+    return [int(x) for x in targets if isinstance(x, int)]
+
+
+def clear_last_news_question_targets(user_id: str) -> None:
+    try:
+        supabase.table("users").update({
+            "last_news_question_targets": None,
+            "last_news_question_at": None,
+            "last_news_context_sent_at": None,
+        }).eq("user_id", user_id).execute()
+    except Exception:
+        pass
+
+
 def _normalize_text(text: str) -> str:
     return re.sub(r"\s+", "", (text or "").lower())
 
@@ -883,10 +945,10 @@ def answer_single_news_item(item: dict, question: str, is_detail: bool) -> str:
         return "今ちょっと返せない"
 
 
-def answer_news_question(user_id: str, question: str) -> str:
+def answer_news_question(user_id: str, question: str) -> tuple:
     ctx = get_latest_news_context(user_id)
     if not ctx:
-        return "まだニュース履歴がないから答えられないかも\n一度配信を受けてから聞いてみて"
+        return "まだニュース履歴がないから答えられないかも\n一度配信を受けてから聞いてみて", []
 
     payload = ctx.get("payload", {})
     news_items = payload.get("news_items", [])
@@ -894,7 +956,7 @@ def answer_news_question(user_id: str, question: str) -> str:
 
     if is_link_request(question):
         visible_extra = payload.get("extra_index", 0)
-        return _answer_url(question, news_items, extra_items, visible_extra=visible_extra)
+        return _answer_url(question, news_items, extra_items, visible_extra=visible_extra), []
 
     is_more_news = (
         any(k in question for k in _MAIN_MORE_KW)
@@ -905,7 +967,7 @@ def answer_news_question(user_id: str, question: str) -> str:
     if is_more_news:
         idx = payload.get("extra_index", 0)
         shown = extra_items[idx:idx + 5]
-        return _answer_more_news(shown, len(news_items) + idx + 1)
+        return _answer_more_news(shown, len(news_items) + idx + 1), []
 
     is_detail = any(k in question for k in _DETAIL_KEYWORDS)
 
@@ -933,16 +995,18 @@ def answer_news_question(user_id: str, question: str) -> str:
         target_items = matched if matched else (news_items[:1] if news_items else [])
         logger.info("自然文最終対象: %s", [n.get("index") for n in target_items])
 
+    targets = [item["index"] for item in target_items]
+
     # 複数記事 → 1記事ずつGPTに投げて番号ズレを防ぐ
     if len(target_items) >= 2:
-        logger.info("複数記事: %s", [n["index"] for n in target_items])
+        logger.info("複数記事: %s", targets)
         results = []
         for item in target_items:
             ans = answer_single_news_item(item, question, is_detail)
             idx = item["index"]
             ans = _strip_any_leading_number(ans)
             results.append(f"{idx}. {ans}")
-        return "\n\n".join(results)
+        return "\n\n".join(results), targets
 
     # 単一記事 → 従来通り
     news_text = "\n".join(
@@ -983,10 +1047,10 @@ def answer_news_question(user_id: str, question: str) -> str:
         raw = res.choices[0].message.content.strip()
         if len(specified_nums) == 1:
             raw = strip_leading_number(raw)
-        return raw
+        return raw, targets
     except Exception as e:
         logger.error("Q&A OpenAI エラー: %s", e)
-        return "今ちょっと返答うまくいかない\n\nもう一回送るか\n「使い方」押してみて"
+        return "今ちょっと返答うまくいかない\n\nもう一回送るか\n「使い方」押してみて", []
 
 
 _CHAT_TOPIC_FOLLOW_UP_FREE = (
@@ -1614,6 +1678,7 @@ def handle_message(event):
 
     if text in _STOP_WORDS:
         supabase.table("users").update({"active": False}).eq("user_id", user_id).execute()
+        clear_last_news_question_targets(user_id)
         reply_text(event.reply_token, "配信止めた\n再開したい時は「再開」って言って", quick_reply=qr)
         try:
             supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
@@ -1823,6 +1888,7 @@ def handle_message(event):
             return
 
         supabase.table("users").update({"genres": new_genres}).eq("user_id", user_id).execute()
+        clear_last_news_question_targets(user_id)
         reply_text(event.reply_token, f"ジャンル変えた: {format_genres(new_genres)}", quick_reply=qr)
         try:
             supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
@@ -2094,6 +2160,21 @@ def handle_message(event):
         return
 
     # ★7 ニュースQ&A（番号最優先＋文脈＋自然文）
+
+    # 「詳しく」単体 → 直前の対象記事に再発火（pending機能）
+    if is_detail_only_request(text):
+        _detail_ctx = get_latest_news_context(user_id)
+        _reuse = get_reusable_last_news_targets(user, _detail_ctx)
+        if _reuse:
+            text = "と".join(str(x) for x in _reuse) + "詳しく"
+        else:
+            reply_text(event.reply_token, "直前の質問が見つからない\n番号で指定してみて（例: 1詳しく）", quick_reply=qr)
+            try:
+                supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
+            except Exception:
+                pass
+            return
+
     _is_number_start = bool(re.match(r"^[①-⑩1-9]", text))
     _matched_by_ctx = is_related_to_news_context(user_id, text)
 
@@ -2125,14 +2206,16 @@ def handle_message(event):
                 _clear_pending(user_id)
                 user["pending_action"] = None
                 user["pending_count"] = None
-            answer = answer_news_question(user_id, text)
+            answer, _q_targets = answer_news_question(user_id, text)
             next_count = user.get("ai_count", 0) + 1
             reply_text(event.reply_token, answer + get_paid_usage_tail(next_count), quick_reply=qr)
             increment_ai_count(user_id, user.get("ai_count", 0), today, now_dt)
+            if _q_targets:
+                save_last_news_question_targets(user_id, _q_targets, get_latest_news_context(user_id))
 
         elif not free_reply_used:
-            answer = answer_news_question(user_id, text)
-            msg = f"詳しくはこんな感じ👇\n\n{answer}\n\nこの先はもう少し深く見れるようにしてる"
+            answer, _q_targets = answer_news_question(user_id, text)
+            msg = f"詳しくはこんな感じ👇\n\n{answer}\n\nこの先はもう少し深く見ることもできる"
             reply_text(event.reply_token, msg, quick_reply=qr)
             try:
                 supabase.table("users").update({
@@ -2142,6 +2225,8 @@ def handle_message(event):
                 user["free_reply_used"] = True
             except Exception:
                 pass
+            if _q_targets:
+                save_last_news_question_targets(user_id, _q_targets, get_latest_news_context(user_id))
 
         else:
             reply_text(
