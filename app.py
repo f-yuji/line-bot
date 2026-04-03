@@ -491,7 +491,7 @@ def build_genre_flex(current_genres: list) -> FlexMessage:
         header=FlexBox(
             layout="vertical",
             contents=[
-                FlexText(text="受け取るニュース", weight="bold", size="md"),
+                FlexText(text="受け取るニュース(次回の配信から適用)", weight="bold", size="md"),
                 FlexText(text=header_note, size="xs", color="#888888", wrap=True),
             ],
         ),
