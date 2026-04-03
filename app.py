@@ -566,7 +566,7 @@ _CONTEXT_TOKEN_STOPWORDS = {
 
 _CIRCLED = "①②③④⑤⑥⑦⑧⑨⑩"
 
-_CONTEXT_TTL_HOURS = 6
+_CONTEXT_TTL_HOURS = 24
 
 _BLOCKLIST = [
     "付き合", "好き",
@@ -1424,6 +1424,8 @@ def handle_follow(event):
     reply_text(
         event.reply_token,
         "追加ありがとう\n\n"
+        "今は無料トライアル中で、機能を全開放してる\n"
+        "トライアル後も無料でそのまま使える\n\n"
         "ニュースは朝起きる前に届く\n"
         "きっと寝てる間だからミュートでOK\n\n"
         "必要なジャンルに絞れるから\n"
@@ -1914,7 +1916,11 @@ def handle_message(event):
 
         supabase.table("users").update({"genres": new_genres}).eq("user_id", user_id).execute()
         clear_last_news_question_targets(user_id)
-        reply_text(event.reply_token, f"ジャンル変えた: {format_genres(new_genres)}", quick_reply=qr)
+        reply_text(
+            event.reply_token,
+            f"ジャンル変えた: {format_genres(new_genres)}\n\n次の配信から反映される",
+            quick_reply=qr,
+        )
         try:
             supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
         except Exception:
@@ -2100,7 +2106,7 @@ def handle_message(event):
     if is_followup(text):
         ctx = get_latest_news_context(user_id)
         if not ctx or not _is_context_alive(ctx):
-            reply_text(event.reply_token, "先に聞くでニュース出して", quick_reply=qr)
+            reply_text(event.reply_token, "直前のニュースがないからこの操作は使えない\n次の配信後にまた試して", quick_reply=qr)
             try:
                 supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
             except Exception:
@@ -2162,7 +2168,7 @@ def handle_message(event):
     if any(kw in text for kw in _ALL_LINK_KW) and not parse_article_numbers(text, max_n=10):
         ctx = get_latest_news_context(user_id)
         if not ctx or not _is_context_alive(ctx):
-            reply_text(event.reply_token, "先に聞くでニュース出して", quick_reply=qr)
+            reply_text(event.reply_token, "直前のニュースがないからこの操作は使えない\n次の配信後にまた試して", quick_reply=qr)
             try:
                 supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
             except Exception:
