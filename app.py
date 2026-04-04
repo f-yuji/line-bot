@@ -393,7 +393,6 @@ def main_quick_reply() -> QuickReply:
         QuickReplyItem(action=MessageAction(label="ニュース", text="ニュース")),
         QuickReplyItem(action=MessageAction(label="会話ネタ", text="会話ネタ")),
         QuickReplyItem(action=MessageAction(label="リンク", text="リンク")),
-        QuickReplyItem(action=MessageAction(label="ジャンル", text="ジャンル")),
         QuickReplyItem(action=MessageAction(label="使い方", text="使い方")),
     ])
 
@@ -1514,9 +1513,8 @@ def handle_follow(event):
     reply_text(
         event.reply_token,
         "追加ありがとう\n\n"
-        "まず「ジャンル」で見たい分野を選べる\n"
-        "選んだあとに「ニュース」で確認できる\n\n"
-        "詳しくは「使い方」で確認してみて",
+        "まず「使い方」を見てみて\n"
+        "ジャンルを選んで、ニュースで確認できる",
         quick_reply=main_quick_reply(),
     )
 
@@ -1854,11 +1852,8 @@ def handle_message(event):
         _status = "メンバーシップ" if plan == "paid" else "無料プラン"
         _delivery = "オン" if active else "オフ"
         _genre_text = format_genres(genres) if genres else "全ジャンル"
+        _intro = "まずジャンルを選べる\n選んだあとに「ニュース」で確認できる"
         _help_text = (
-            "まず「ジャンル」で見たい分野を選べる\n"
-            "選んだあとに「ニュース」で確認できる\n\n"
-            "ーーー\n\n"
-            "ジャンル → 見たい分野を選ぶ\n"
             "ニュース → 今日のニュースを見る\n"
             "会話ネタ → 話題に使えるネタを見る\n"
             "リンク → 直近ニュースのURLを見る\n\n"
@@ -1875,7 +1870,38 @@ def handle_message(event):
             f"配信：{_delivery}\n"
             f"ジャンル：{_genre_text}"
         )
-        reply_with_payment(event.reply_token, _help_text, quick_reply=qr)
+        # 1通目: 案内文 + ジャンルFlex, 2通目: 使い方本文 (+ 登録ボタン) — 1回のreplyにまとめる
+        try:
+            with ApiClient(configuration) as api_client:
+                api = MessagingApi(api_client)
+                _msgs_to_send = [
+                    TextMessage(text=_intro),
+                    build_genre_flex(genres),
+                    TextMessage(text=_help_text),
+                ]
+                if PAYMENT_URL:
+                    _payment_bubble = FlexBubble(
+                        body=FlexBox(
+                            layout="vertical",
+                            contents=[
+                                FlexButton(
+                                    action=URIAction(label="機能を開放する", uri=PAYMENT_URL),
+                                    style="primary",
+                                    height="sm",
+                                )
+                            ],
+                        )
+                    )
+                    _payment_flex = FlexMessage(alt_text="機能を開放する", contents=_payment_bubble)
+                    _payment_flex.quick_reply = qr
+                    _msgs_to_send.append(_payment_flex)
+                else:
+                    _msgs_to_send[-1].quick_reply = qr
+                api.reply_message(
+                    ReplyMessageRequest(reply_token=event.reply_token, messages=_msgs_to_send)
+                )
+        except Exception as e:
+            logger.error("使い方返信エラー: %s", e)
         try:
             supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
         except Exception:
@@ -1934,16 +1960,11 @@ def handle_message(event):
 
         supabase.table("users").update({"genres": new_genres}).eq("user_id", user_id).execute()
         clear_last_news_question_targets(user_id)
-        _old_batch = get_last_news_batch(user_id)
-        _exclude = {item.get("link") for item in (_old_batch or [])}
-        reply_text(event.reply_token, f"{format_genres(new_genres)}に変更した", quick_reply=qr)
+        reply_text(event.reply_token, f"{format_genres(new_genres)}に変更した\nニュースで確認できる", quick_reply=qr)
         try:
             supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
         except Exception:
             pass
-        _msgs, _ = fetch_news_for_reply(user_id, exclude_links=_exclude)
-        if _msgs:
-            _push_text(user_id, _msgs[0])
         return
 
     if text in _STATUS_WORDS:
@@ -2149,18 +2170,24 @@ def handle_message(event):
     # ★6 リンク
     if is_link_request(text):
         batch_items = get_last_news_batch(user_id)
-        if batch_items:  # Noneでも空リストでもない場合のみリンクを返す（本文再送なし）
+        if batch_items:
+            # items が1件以上ある場合はリンク一覧のみ返す（本文再送なし）
             reply_text(event.reply_token, _build_link_message(batch_items), quick_reply=qr)
         else:
-            # 未取得時: ニュース自動取得 → 本文reply + リンクpush
-            messages, _ = fetch_news_for_reply(user_id)
+            # last_news_batch が存在しない or items が空の初回のみ: 本文 → リンク
+            messages, news_filtered = fetch_news_for_reply(user_id)
             if not messages:
                 reply_text(event.reply_token, "今ちょっとニュース取れなかった\n少し時間おいてまた試して", quick_reply=qr)
             else:
                 reply_text(event.reply_token, messages[0], quick_reply=qr)
-                _batch = get_last_news_batch(user_id)
-                if _batch:
-                    _push_text(user_id, _build_link_message(_batch))
+                # save_last_news_batch は fetch_news_for_reply 内で済んでいるが、
+                # ここでは news_filtered を直接使いリンク一覧を push（DB再取得なし）
+                if news_filtered:
+                    _link_items = [
+                        {"index": i + 1, "title": n.get("title", ""), "link": n.get("link", "")}
+                        for i, n in enumerate(news_filtered)
+                    ]
+                    _push_text(user_id, _build_link_message(_link_items))
         try:
             supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
         except Exception:
@@ -2324,15 +2351,10 @@ def handle_postback(event):
         reply_flex(event.reply_token, build_genre_flex(genres))
 
     elif data == "confirm_genres":
-        # 決定ボタン: 設定を確定してニュース取得
+        # 決定ボタン: 完了メッセージのみ返す（ニュース取得はユーザーが「ニュース」で行う）
         qr = main_quick_reply()
         clear_last_news_question_targets(user_id)
-        _old_batch = get_last_news_batch(user_id)
-        _exclude = {item.get("link") for item in (_old_batch or [])}
         reply_text(event.reply_token, "ジャンル設定した\nニュースで確認できる", quick_reply=qr)
-        _msgs, _ = fetch_news_for_reply(user_id, exclude_links=_exclude)
-        if _msgs:
-            _push_text(user_id, _msgs[0])
 
     elif data == "clear_genres":
         supabase.table("users").update({"genres": []}).eq("user_id", user_id).execute()

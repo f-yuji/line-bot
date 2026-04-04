@@ -58,7 +58,6 @@ _NEWS_QUICK_REPLY = {
         {"type": "action", "action": {"type": "message", "label": "ニュース",  "text": "ニュース"}},
         {"type": "action", "action": {"type": "message", "label": "会話ネタ",  "text": "会話ネタ"}},
         {"type": "action", "action": {"type": "message", "label": "リンク",    "text": "リンク"}},
-        {"type": "action", "action": {"type": "message", "label": "ジャンル",  "text": "ジャンル"}},
         {"type": "action", "action": {"type": "message", "label": "使い方",    "text": "使い方"}},
     ]
 }
