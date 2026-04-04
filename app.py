@@ -32,7 +32,7 @@ from linebot.v3.messaging import (
 )
 from linebot.v3.webhooks import FollowEvent, MessageEvent, PostbackEvent, TextMessageContent
 
-from send_news import send_news_to_user
+from send_news import send_news_to_user, fetch_news_for_reply
 
 # ─── 初期設定 ───
 load_dotenv()
@@ -46,7 +46,7 @@ ENV = os.getenv("ENV", "prod")
 PAYMENT_URL = os.getenv("PAYMENT_URL", "").strip()
 LINE_MEMBERSHIP_USE_API_SYNC = os.getenv("LINE_MEMBERSHIP_USE_API_SYNC", "true").lower() == "true"
 LINE_API_BASE = "https://api.line.me"
-
+print("SUPABASE_URL =", SUPABASE_URL)
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 openai_client = OpenAI(api_key=OPENAI_API_KEY)
 
@@ -139,7 +139,22 @@ def resolve_effective_plan(user: dict, now_dt) -> str:
     return "free"
 
 
-def save_user(user_id: str, active=True, plan="free", genres=None):
+def get_line_profile(user_id: str) -> str:
+    """LINE APIからdisplay_nameを取得。失敗時は空文字を返す"""
+    try:
+        res = requests.get(
+            f"{LINE_API_BASE}/v2/bot/profile/{user_id}",
+            headers={"Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}"},
+            timeout=10,
+        )
+        if res.status_code == 200:
+            return res.json().get("displayName", "")
+    except Exception as e:
+        logger.error("LINEプロフィール取得失敗: user=%s %s", user_id, e)
+    return ""
+
+
+def save_user(user_id: str, active=True, plan="free", genres=None, display_name: str = ""):
     if genres is None:
         genres = []
     plan = normalize_plan(plan)
@@ -149,6 +164,7 @@ def save_user(user_id: str, active=True, plan="free", genres=None):
         "active": active,
         "plan": plan,
         "genres": genres,
+        "display_name": display_name,
     }).execute()
 
     logger.info("Supabase保存: user=%s active=%s plan=%s genres=%s", user_id, active, plan, genres)
@@ -157,8 +173,9 @@ def save_user(user_id: str, active=True, plan="free", genres=None):
 def ensure_user(user_id: str):
     user = get_user(user_id)
     if not user:
-        save_user(user_id, active=True, plan="free", genres=[])
-        logger.info("新規ユーザー登録: %s", user_id)
+        display_name = get_line_profile(user_id)
+        save_user(user_id, active=True, plan="free", genres=[], display_name=display_name)
+        logger.info("新規ユーザー登録: %s display_name=%s", user_id, display_name)
         return {
             "user_id": user_id,
             "active": True,
@@ -178,6 +195,14 @@ def ensure_user(user_id: str):
             "membership_last_event_type": None,
             "membership_updated_at": None,
         }, True
+    # 既存ユーザー: display_nameを更新
+    display_name = get_line_profile(user_id)
+    if display_name:
+        try:
+            supabase.table("users").update({"display_name": display_name}).eq("user_id", user_id).execute()
+        except Exception as e:
+            logger.error("display_name更新失敗: user=%s %s", user_id, e)
+
     user["plan"] = normalize_plan(user.get("plan", "free"))
     user.setdefault("night_delivery", True)
     user.setdefault("ai_count", 0)
@@ -371,9 +396,11 @@ def format_genres(genres):
 # ─── LINE UI ヘルパー ───
 def main_quick_reply() -> QuickReply:
     return QuickReply(items=[
-        QuickReplyItem(action=MessageAction(label="使い方", text="使い方")),
-        QuickReplyItem(action=MessageAction(label="停止", text="停止")),
+        QuickReplyItem(action=MessageAction(label="ニュース", text="ニュース")),
+        QuickReplyItem(action=MessageAction(label="会話ネタ", text="会話ネタ")),
+        QuickReplyItem(action=MessageAction(label="リンク", text="リンク")),
         QuickReplyItem(action=MessageAction(label="ジャンル", text="ジャンル")),
+        QuickReplyItem(action=MessageAction(label="使い方", text="使い方")),
     ])
 
 
@@ -541,12 +568,6 @@ def is_link_request(text: str) -> bool:
     return False
 
 
-def strip_leading_number(text: str) -> str:
-    """返答文頭の番号（例: '13.' / '13 ' / '13　'）を除去する（先頭のみ）"""
-    import re
-    return re.sub(r"^\s*\d+[\.．\s　]+", "", text)
-
-
 def _strip_any_leading_number(text: str) -> str:
     """返答文頭の番号（丸数字・半角数字どちらも）を1個除去する（先頭のみ、本文中は触らない）"""
     import re
@@ -554,9 +575,6 @@ def _strip_any_leading_number(text: str) -> str:
     t = re.sub(r"^\s*[①-⑩]\s*", "", t)
     t = re.sub(r"^\s*\d+[\.．]?\s*", "", t)
     return t.strip()
-_MAIN_MORE_KW = ["ほかに", "他にニュース", "もっとニュース", "追加ニュース"]
-_SUB_MORE_KW = ["ほか", "他に", "もっと", "追加", "それ以外", "他にも"]
-_FOLLOWUP_KW = ["他には", "別のニュース", "続き", "次"]
 
 _CONTEXT_TOKEN_STOPWORDS = {
     "経済", "金利", "影響", "理由", "内容", "状況",
@@ -597,6 +615,52 @@ def get_latest_news_context(user_id: str) -> Optional[dict]:
     except Exception as e:
         logger.error("ニュースコンテキスト取得失敗: %s", e)
         return None
+
+
+def get_last_news_batch(user_id: str) -> Optional[list]:
+    """last_news_batchから直近5件のアイテムを取得。未取得時はNone。"""
+    try:
+        res = (
+            supabase.table("last_news_batch")
+            .select("items")
+            .eq("user_id", user_id)
+            .single()
+            .execute()
+        )
+        if res.data:
+            return res.data.get("items") or []
+    except Exception as e:
+        logger.error("last_news_batch取得失敗: %s %s", user_id, e)
+    return None
+
+
+def _build_link_message(items: list) -> str:
+    """last_news_batchのitemsから①タイトル\nURL形式のリンク一覧を生成"""
+    lines = []
+    for item in items[:5]:
+        idx = item.get("index", 0)
+        title = str(item.get("title", "") or "")
+        if len(title) > 30:
+            title = title[:29] + "…"
+        link = item.get("link", "")
+        num = _CIRCLED[idx - 1] if 1 <= idx <= len(_CIRCLED) else f"{idx}."
+        lines.append(f"{num} {title}")
+        lines.append(link)
+        lines.append("")
+    return "\n".join(lines).strip()
+
+
+def _push_text(user_id: str, text: str) -> None:
+    """LINE push APIでテキストを送信"""
+    try:
+        requests.post(
+            f"{LINE_API_BASE}/v2/bot/message/push",
+            headers=get_line_headers(),
+            json={"to": user_id, "messages": [{"type": "text", "text": text}]},
+            timeout=10,
+        )
+    except Exception as e:
+        logger.error("push失敗: user=%s %s", user_id, e)
 
 
 def is_detail_only_request(text: str) -> bool:
@@ -716,24 +780,6 @@ def _collect_context_tokens(payload: dict) -> List[str]:
         add_text(item.get("reason", ""))
         add_text(item.get("interpretation", ""))
 
-    for item in payload.get("extra_items", []):
-        add_text(item.get("title", ""))
-        add_text(item.get("reason", ""))
-        add_text(item.get("interpretation", ""))
-
-    for s in payload.get("summary", []):
-        add_text(s)
-
-    for s in payload.get("impact", []):
-        add_text(s)
-
-    for t in payload.get("topics", []):
-        add_text(t.get("theme", ""))
-        add_text(t.get("line", ""))
-
-    add_text(payload.get("message_1", ""))
-    add_text(payload.get("message_2", ""))
-
     seen = set()
     uniq = []
     for t in tokens:
@@ -742,15 +788,6 @@ def _collect_context_tokens(payload: dict) -> List[str]:
             seen.add(key)
             uniq.append(t)
     return uniq
-
-
-def _parse_article_num(question: str, max_n: int = 5) -> Optional[int]:
-    nums = parse_article_numbers(question, max_n=max_n)
-    return nums[0] if len(nums) == 1 else None
-
-
-def extract_number(text: str) -> Optional[int]:
-    return _parse_article_num(text, max_n=10)
 
 
 def parse_article_numbers(text: str, max_n: int = 10) -> List[int]:
@@ -783,9 +820,6 @@ def parse_article_numbers(text: str, max_n: int = 10) -> List[int]:
     return sorted(found)
 
 
-def is_followup(text: str) -> bool:
-    return any(kw in text for kw in _FOLLOWUP_KW)
-
 
 def is_news_question(text: str) -> bool:
     keywords = [
@@ -805,8 +839,6 @@ def _looks_like_article_reference(text: str) -> bool:
         "これ", "それ", "さっきの", "今の", "例の",
         "リンク", "url", "記事",
         "詳しく", "なんで", "なぜ", "理由", "影響", "どういうこと",
-        "もっと", "追加ニュース", "他にニュース",
-        "全部", "全リンク", "リンク全部", "全部のリンク",
     ]
     return any(r in text for r in refs)
 
@@ -815,8 +847,6 @@ def _looks_like_question_or_command(text: str) -> bool:
     if parse_article_numbers(text, max_n=10):
         return True
     if is_link_request(text):
-        return True
-    if any(kw in text for kw in _MAIN_MORE_KW + _SUB_MORE_KW):
         return True
     if any(s in text for s in _QUESTION_SIGNALS):
         return True
@@ -859,56 +889,112 @@ def is_related_to_news_context(user_id: str, text: str) -> bool:
     return False
 
 
-def _answer_more_news(shown: list, display_start: int) -> str:
-    """shown: 表示対象記事リスト, display_start: 最初の記事の表示番号（1始まり）"""
-    if not shown:
-        return "一旦このへんかな\n\n気になるやつあれば聞いて\nこの先もう少し見れるようにしてる"
 
-    lines = ["あとこれも出てる", ""]
-    for i, n in enumerate(shown):
-        num = display_start + i
-        lines.append(f"{num}. {n.get('title', '')}")
-        lines.append("")
-
-    lines.append("気になるのあれば言って")
-    return "\n".join(lines).rstrip()
+def is_detail_request(text: str) -> bool:
+    """番号＋詳しく系のリクエスト判定（1詳しく, 1-3詳しく, ①詳しく等）"""
+    if not re.match(r"^[①-⑩1-9]", text or ""):
+        return False
+    return any(k in text for k in _DETAIL_KEYWORDS)
 
 
-def _answer_url(question: str, news_items: list, extra_items: list = None, visible_extra: int = 0) -> str:
-    """visible_extra: 表示済みのextra件数。番号指定なし時はnews_items + その分だけ返す"""
-    extra_items = extra_items or []
-    # 番号指定なし時の返却範囲（表示済み範囲）
-    visible_items = news_items + extra_items[:visible_extra]
-    all_items = news_items + extra_items
-    total = len(all_items)
+_DETAIL_NEW_SCHEMA = {
+    "type": "json_schema",
+    "json_schema": {
+        "name": "detail_articles",
+        "strict": True,
+        "schema": {
+            "type": "object",
+            "properties": {
+                "articles": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "index": {"type": "integer"},
+                            "body": {"type": "string"},
+                        },
+                        "required": ["index", "body"],
+                        "additionalProperties": False,
+                    },
+                },
+            },
+            "required": ["articles"],
+            "additionalProperties": False,
+        },
+    },
+}
 
-    index_map = {item.get("index", 0): item for item in all_items}
 
-    nums = parse_article_numbers(question, max_n=total)
+def answer_detail_new(user_id: str, nums: List[int]) -> str:
+    """新仕様の深掘り: 事実+背景+展開の3要素、150〜220文字程度"""
+    ctx = get_latest_news_context(user_id)
+    if not ctx:
+        return "まだニュース履歴がない\n一度配信を受けてから試して"
 
-    if nums:
-        if len(nums) == 1:
-            item = index_map.get(nums[0])
-            if not item:
-                return f"{nums[0]}番目のニュースが見つからなかった"
-            link = item.get("link", "")
-            return f"{nums[0]}. の元記事\n{link}" if link else "この記事は元リンクが取れなかった"
-        lines = ["元記事リンク", ""]
-        for n in nums:
-            item = index_map.get(n)
-            if not item:
-                continue
-            link = item.get("link", "")
-            lines.append(f"{n}. {link}" if link else f"{n}. (リンクなし)")
-        return "\n".join(lines)
+    payload = ctx.get("payload", {})
+    news_items = payload.get("news_items", [])
+    index_map = {item.get("index", 0): item for item in news_items}
 
-    # 番号指定なし → 表示済み範囲のみ
-    lines = ["元記事リンク", ""]
-    for item in visible_items:
-        idx = item.get("index", 0)
-        link = item.get("link", "")
-        lines.append(f"{idx}. {link}" if link else f"{idx}. (リンクなし)")
-    return "\n".join(lines)
+    target_items = sorted(
+        [index_map[n] for n in nums if n in index_map],
+        key=lambda x: x.get("index", 0),
+    )
+    if not target_items:
+        return "指定の番号が見つからなかった"
+
+    news_text = "\n".join(
+        f"{n['index']}. 【{n.get('category', '')}】{n['title']}"
+        f"（事実: {n.get('reason', '')} / 解釈: {n.get('interpretation', '')}）"
+        for n in target_items
+    )
+
+    system_prompt = (
+        "お前はニュース解説AI\n\n"
+        "各記事を以下の3要素で説明しろ:\n"
+        "① 事実: 何が起きたか、誰が何をしたか（1〜2文）\n"
+        "② 背景: なぜ起きたか、なぜ問題か（省略禁止）\n"
+        "③ 展開: 今後どうなるか、影響・見通し（曖昧な感想禁止）\n\n"
+        "ルール:\n"
+        "・1記事150〜220文字程度\n"
+        "・箇条書き禁止\n"
+        "・会話誘導禁止\n"
+        "・本文の単なる言い換え禁止\n"
+        "・敬語禁止\n"
+        "・会話調\n"
+    )
+    user_prompt = (
+        f"以下のニュース記事を深掘りしろ:\n{news_text}\n\n"
+        f"指定番号: {nums}\n"
+        "各記事のindexと本文をJSONで返せ。番号は元のindexを使え。"
+    )
+
+    try:
+        res = openai_client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            temperature=0.4,
+            max_tokens=600,
+            timeout=20,
+            response_format=_DETAIL_NEW_SCHEMA,
+        )
+        data = json.loads(res.choices[0].message.content)
+        articles = sorted(data.get("articles", []), key=lambda x: x.get("index", 0))
+
+        parts = []
+        for a in articles:
+            idx = a.get("index", 0)
+            body = a.get("body", "")
+            item = index_map.get(idx)
+            title = item.get("title", "") if item else ""
+            parts.append(f"{idx}. {title}\n\n{body}")
+
+        return "\n\n".join(parts)
+    except Exception as e:
+        logger.error("answer_detail_new エラー: %s", e)
+        return "今ちょっと返せない\nもう一回送ってみて"
 
 
 def answer_single_news_item(item: dict, question: str, is_detail: bool) -> str:
@@ -952,28 +1038,11 @@ def answer_news_question(user_id: str, question: str) -> tuple:
 
     payload = ctx.get("payload", {})
     news_items = payload.get("news_items", [])
-    extra_items = payload.get("extra_items", [])
-
-    if is_link_request(question):
-        visible_extra = payload.get("extra_index", 0)
-        return _answer_url(question, news_items, extra_items, visible_extra=visible_extra), []
-
-    is_more_news = (
-        any(k in question for k in _MAIN_MORE_KW)
-        or (any(k in question for k in _SUB_MORE_KW) and "ニュース" in question)
-    )
-    if is_more_news and any(g in question for g in ["影響", "意味", "問題", "理由", "なぜ", "なんで"]):
-        is_more_news = False
-    if is_more_news:
-        idx = payload.get("extra_index", 0)
-        shown = extra_items[idx:idx + 5]
-        return _answer_more_news(shown, len(news_items) + idx + 1), []
 
     is_detail = any(k in question for k in _DETAIL_KEYWORDS)
 
-    all_items = news_items + extra_items
-    total = len(all_items)
-    index_map = {item.get("index", 0): item for item in all_items}
+    total = len(news_items)
+    index_map = {item.get("index", 0): item for item in news_items}
 
     # 番号指定があれば対象記事だけに絞る
     specified_nums = parse_article_numbers(question, max_n=total)
@@ -985,7 +1054,7 @@ def answer_news_question(user_id: str, question: str) -> tuple:
         # 自然文：タイトル/reason/interpretationにキーワード一致で最大2件
         norm_q = _normalize_text(question)
         matched = []
-        for item in all_items:
+        for item in news_items:
             fields = item.get("title", "") + item.get("reason", "") + item.get("interpretation", "")
             if norm_q and any(_normalize_text(tok) in norm_q for tok in re.split(r"[　\s、。・,/\-（）「」\n]+", fields) if len(tok) >= 2):
                 matched.append(item)
@@ -1557,7 +1626,7 @@ def is_direct_person_chat_request(text: str) -> bool:
     return len(stripped.strip()) >= 4
 
 
-_ALL_LINK_KW = ["全部", "全て", "一覧", "まとめ", "全リンク", "リンク全部", "全部のリンク"]
+_NEWS_TRIGGER_KW = {"ニュース", "ニュースくれ", "最新"}
 
 # 強コマンド — pending を問答無用でスキップ・クリアする
 _STRONG_COMMANDS = (
@@ -1802,60 +1871,15 @@ def handle_message(event):
         return
 
     if text == "使い方":
-        _genre_text = format_genres(genres) if genres else "未設定（すべて配信）"
-        if normalize_plan(plan) != "free":
-            _setting_lines = (
-                f"・プラン：メンバーシップ\n"
-                f"・昼配信：{'オン' if active else 'オフ'}\n"
-                f"・夜配信：{'オン' if user.get('night_delivery', True) else 'オフ'}\n"
-                f"・ジャンル：{_genre_text}"
-            )
-        else:
-            _setting_lines = (
-                f"・プラン：無料（基本機能）\n"
-                f"・配信：{'オン' if active else '停止中'}\n"
-                f"・ジャンル：{_genre_text}"
-            )
-        reply_with_payment(
+        reply_text(
             event.reply_token,
             "使い方\n\n"
-            "【ニュースを見る】\n"
-            "・例えば、「1」や「1と2」と入力 → ニュースの要約を表示\n"
-            "・「1詳しく」や、要約を見た後に続けて「詳しく」で詳しい説明を表示\n"
-            "・「1-3-5」みたいな複数指定OK\n"
-            "・「リンク」→ 元記事のURLを表示\n\n"
-            "【追加でニュースを見る】\n"
-            "・「他には」→ 別のニュースを表示\n\n"
-            "【ニュースについて質問する】\n"
-            "・ニュースのタイトルやキーワードを送る → そのまま解説できる\n\n"
-            "ーーー\n\n"
-            "【会話ネタを使う】\n"
-            "・「会話」→ 会話で使える話題を表示\n\n"
-            "※メンバーシップの場合\n"
-            "・ニュースの理解に加えて、会話で使える「返し」まで出る\n"
-            "・誰と話すか入力すると相手に合わせた話題が出せる\n"
-            "例：彼女 / 上司 / お客さん など\n\n"
-            "→ そのまま会話で使えるレベルまで仕上がる\n"
-            "→ 登録は案内メッセージからそのまま進められる\n\n"
-            "ーーー\n\n"
-            "【プランについて】\n\n"
-            "無料でも基本機能は使える\n\n"
-            "メンバーシップでは\n"
-            "・朝と夜の2回ニュースが届く\n"
-            "・追加で見られるニュースが増える\n"
-            "・会話ネタ、ニュースQ＆Aが上限数が増える\n\n"
-            "ーーー\n\n"
-            "【配信の操作】\n"
-            "・「止めて」→ 配信停止\n"
-            "・「再開」→ 配信再開\n"
-            "・「夜停止」→ 夜配信だけ止める\n"
-            "・「夜開始」→ 夜配信だけ再開\n\n"
-            "ーーー\n\n"
-            "【現在の設定】\n"
-            f"{_setting_lines}\n\n"
-            "ーーー\n"
-            "そのままテキストを送れば操作できる\n\n"
-            "メンバーシップ登録は下のボタン",
+            "ニュース → 今日のニュースを見る\n"
+            "会話ネタ → 話題に使えるネタを見る\n"
+            "リンク → 直近ニュースのURLを見る\n"
+            "ジャンル → 見る分野を変える\n\n"
+            "気になる番号で入力\n"
+            "例：1詳しく",
             quick_reply=qr,
         )
         try:
@@ -1916,15 +1940,16 @@ def handle_message(event):
 
         supabase.table("users").update({"genres": new_genres}).eq("user_id", user_id).execute()
         clear_last_news_question_targets(user_id)
-        reply_text(
-            event.reply_token,
-            f"ジャンル変えた: {format_genres(new_genres)}\n\n次の配信から反映される",
-            quick_reply=qr,
-        )
+        _old_batch = get_last_news_batch(user_id)
+        _exclude = {item.get("link") for item in (_old_batch or [])}
+        reply_text(event.reply_token, f"{format_genres(new_genres)}に変更した", quick_reply=qr)
         try:
             supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
         except Exception:
             pass
+        _msgs, _ = fetch_news_for_reply(user_id, exclude_links=_exclude)
+        if _msgs:
+            _push_text(user_id, _msgs[0])
         return
 
     if text in _STATUS_WORDS:
@@ -2103,52 +2128,13 @@ def handle_message(event):
             return
         # _qa_would_fire の場合は ★7 Q&A 側でクリア
 
-    if is_followup(text):
-        ctx = get_latest_news_context(user_id)
-        if not ctx or not _is_context_alive(ctx):
-            reply_text(event.reply_token, "直前のニュースがないからこの操作は使えない\n次の配信後にまた試して", quick_reply=qr)
-            try:
-                supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
-            except Exception:
-                pass
-            return
-        payload = ctx.get("payload", {})
-        news_items = payload.get("news_items", [])
-        extra_items = payload.get("extra_items", [])
-        idx = payload.get("extra_index", 0)
-        count = payload.get("extra_count", 0)
-
-        if plan == "free" and count >= 1:
-            reply_text(event.reply_token, "他の記事はメンバーシップで見れるようにしてる", quick_reply=qr)
-            try:
-                supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
-            except Exception:
-                pass
-            return
-
-        if plan == "paid" and count >= 3:
-            reply_text(event.reply_token, "今のところはこんなもんかな\n\n気になるやつあればそのまま聞いて", quick_reply=qr)
-            try:
-                supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
-            except Exception:
-                pass
-            return
-
-        shown = extra_items[idx:idx + 5]
-
-        answer = _answer_more_news(shown, len(news_items) + idx + 1)
-        reply_text(event.reply_token, answer, quick_reply=qr)
-
-        if shown:
-            new_payload = {**payload, "extra_index": idx + len(shown), "extra_count": count + 1}
-            try:
-                supabase.table("news_contexts").insert({
-                    "user_id": user_id,
-                    "sent_at": now_dt.isoformat(),
-                    "payload": new_payload,
-                }).execute()
-            except Exception:
-                pass
+    # ★4 ニュース取得トリガー
+    if text in _NEWS_TRIGGER_KW:
+        messages, _ = fetch_news_for_reply(user_id)
+        if not messages:
+            reply_text(event.reply_token, "今ちょっとニュース取れなかった\n少し時間おいてまた試して", quick_reply=qr)
+        else:
+            reply_text(event.reply_token, messages[0], quick_reply=qr)
         try:
             supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
         except Exception:
@@ -2164,33 +2150,28 @@ def handle_message(event):
             pass
         return
 
-    # ★6 ALL_LINK（リンク一覧）
-    if any(kw in text for kw in _ALL_LINK_KW) and not parse_article_numbers(text, max_n=10):
-        ctx = get_latest_news_context(user_id)
-        if not ctx or not _is_context_alive(ctx):
-            reply_text(event.reply_token, "直前のニュースがないからこの操作は使えない\n次の配信後にまた試して", quick_reply=qr)
-            try:
-                supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
-            except Exception:
-                pass
-            return
-        _ctx_payload = ctx.get("payload", {})
-        _news_items = _ctx_payload.get("news_items", [])
-        _extra_items = _ctx_payload.get("extra_items", [])
-        _visible_extra = _ctx_payload.get("extra_index", 0)
-        _all_link_items = _news_items + _extra_items[:_visible_extra]
-        lines = ["まとめてどうぞ👇"]
-        for item in _all_link_items:
-            idx = item.get("index", 0)
-            lines.append(f"{idx}. {item.get('link', '')}")
-        reply_text(event.reply_token, "\n".join(lines), quick_reply=qr)
+    # ★6 リンク
+    if is_link_request(text):
+        batch_items = get_last_news_batch(user_id)
+        if batch_items is not None:
+            reply_text(event.reply_token, _build_link_message(batch_items), quick_reply=qr)
+        else:
+            # 未取得時: ニュース自動取得 → 本文reply + リンクpush
+            messages, _ = fetch_news_for_reply(user_id)
+            if not messages:
+                reply_text(event.reply_token, "今ちょっとニュース取れなかった\n少し時間おいてまた試して", quick_reply=qr)
+            else:
+                reply_text(event.reply_token, messages[0], quick_reply=qr)
+                _batch = get_last_news_batch(user_id)
+                if _batch:
+                    _push_text(user_id, _build_link_message(_batch))
         try:
             supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
         except Exception:
             pass
         return
 
-    # ★7 ニュースQ&A（番号最優先＋文脈＋自然文）
+    # ★7 ニュースQ&A
 
     # 「詳しく」単体 → 直前の対象記事に再発火（pending機能）
     if is_detail_only_request(text):
@@ -2206,12 +2187,62 @@ def handle_message(event):
                 pass
             return
 
-    _is_number_start = bool(re.match(r"^[①-⑩1-9]", text))
+    # ★7-a 新仕様深掘り（番号＋詳しく）
+    if is_detail_request(text):
+        _nums = parse_article_numbers(text, max_n=10)
+        if not _nums:
+            reply_text(event.reply_token, "番号が読み取れなかった\n「1詳しく」みたいに入力して", quick_reply=qr)
+            try:
+                supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
+            except Exception:
+                pass
+            return
+
+        free_reply_used = user.get("free_reply_used", False)
+
+        if plan == "paid":
+            if not can_use_paid_ai(user, plan):
+                reply_text(event.reply_token, "今日はここまでにしよ\nまた明日使えるようになってる", quick_reply=qr)
+                try:
+                    supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
+                except Exception:
+                    pass
+                return
+            if user.get("pending_action"):
+                _clear_pending(user_id)
+                user["pending_action"] = None
+                user["pending_count"] = None
+            answer = answer_detail_new(user_id, _nums)
+            next_count = user.get("ai_count", 0) + 1
+            reply_text(event.reply_token, answer + get_paid_usage_tail(next_count), quick_reply=qr)
+            increment_ai_count(user_id, user.get("ai_count", 0), today, now_dt)
+            save_last_news_question_targets(user_id, _nums, get_latest_news_context(user_id))
+        elif not free_reply_used:
+            answer = answer_detail_new(user_id, _nums)
+            msg = f"詳しくはこんな感じ👇\n\n{answer}\n\nこの先はもう少し深く見ることもできる"
+            reply_text(event.reply_token, msg, quick_reply=qr)
+            try:
+                supabase.table("users").update({
+                    "free_reply_used": True,
+                    "last_reply_time": now_dt.isoformat(),
+                }).eq("user_id", user_id).execute()
+                user["free_reply_used"] = True
+            except Exception:
+                pass
+            save_last_news_question_targets(user_id, _nums, get_latest_news_context(user_id))
+        else:
+            reply_text(event.reply_token, "free版は1回だけ深掘り対応してる\nメンバーシップで続けられるよ", quick_reply=qr)
+            try:
+                supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
+            except Exception:
+                pass
+        return
+
+    # ★7-b 自然文Q&A（番号だけの入力は非対応）
     _matched_by_ctx = is_related_to_news_context(user_id, text)
 
-    if _is_number_start or _matched_by_ctx:
-        # 文脈マッチのみ（番号でも質問語でもない）→ 弾く
-        if _matched_by_ctx and not _is_number_start and not is_news_question(text) and not _looks_like_question_or_command(text):
+    if _matched_by_ctx:
+        if not is_news_question(text) and not _looks_like_question_or_command(text):
             reply_text(event.reply_token, _REJECT_TEXT, quick_reply=qr)
             try:
                 supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
@@ -2223,11 +2254,7 @@ def handle_message(event):
 
         if plan == "paid":
             if not can_use_paid_ai(user, plan):
-                reply_text(
-                    event.reply_token,
-                    "今日はここまでにしよ\nまた明日使えるようになってる",
-                    quick_reply=qr,
-                )
+                reply_text(event.reply_token, "今日はここまでにしよ\nまた明日使えるようになってる", quick_reply=qr)
                 try:
                     supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
                 except Exception:
@@ -2243,7 +2270,6 @@ def handle_message(event):
             increment_ai_count(user_id, user.get("ai_count", 0), today, now_dt)
             if _q_targets:
                 save_last_news_question_targets(user_id, _q_targets, get_latest_news_context(user_id))
-
         elif not free_reply_used:
             answer, _q_targets = answer_news_question(user_id, text)
             msg = f"詳しくはこんな感じ👇\n\n{answer}\n\nこの先はもう少し深く見ることもできる"
@@ -2258,13 +2284,8 @@ def handle_message(event):
                 pass
             if _q_targets:
                 save_last_news_question_targets(user_id, _q_targets, get_latest_news_context(user_id))
-
         else:
-            reply_text(
-                event.reply_token,
-                "free版は1回だけ深掘り対応してる\nメンバーシップで続けられるよ",
-                quick_reply=qr,
-            )
+            reply_text(event.reply_token, "free版は1回だけ深掘り対応してる\nメンバーシップで続けられるよ", quick_reply=qr)
             try:
                 supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
             except Exception:
@@ -2293,16 +2314,26 @@ def handle_postback(event):
     if data.startswith("toggle_display_genre:"):
         display = data.split(":", 1)[1]
         internals = DISPLAY_GENRE_MAP.get(display, [])
+        qr = main_quick_reply()
 
-        if any(c in genres for c in internals):
+        was_selected = any(c in genres for c in internals)
+        if was_selected:
             genres = [c for c in genres if c not in internals]
+            _genre_msg = f"{display}をはずした"
         else:
             for cat in internals:
                 if cat not in genres:
                     genres.append(cat)
+            _genre_msg = f"{display}に切り替えた"
 
         supabase.table("users").update({"genres": genres}).eq("user_id", user_id).execute()
-        reply_flex(event.reply_token, build_genre_flex(genres))
+        clear_last_news_question_targets(user_id)
+        _old_batch = get_last_news_batch(user_id)
+        _exclude = {item.get("link") for item in (_old_batch or [])}
+        reply_text(event.reply_token, _genre_msg, quick_reply=qr)
+        _msgs, _ = fetch_news_for_reply(user_id, exclude_links=_exclude)
+        if _msgs:
+            _push_text(user_id, _msgs[0])
 
     elif data == "clear_genres":
         supabase.table("users").update({"genres": []}).eq("user_id", user_id).execute()

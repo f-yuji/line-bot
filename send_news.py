@@ -2,7 +2,6 @@ import asyncio
 import json
 import logging
 import os
-import random
 import re
 import time
 from datetime import datetime, timedelta, timezone
@@ -56,9 +55,11 @@ LINE_RETRY_MAX = 3
 
 _NEWS_QUICK_REPLY = {
     "items": [
-        {"type": "action", "action": {"type": "message", "label": "使い方", "text": "使い方"}},
-        {"type": "action", "action": {"type": "message", "label": "停止", "text": "停止"}},
-        {"type": "action", "action": {"type": "message", "label": "ジャンル", "text": "ジャンル"}},
+        {"type": "action", "action": {"type": "message", "label": "ニュース",  "text": "ニュース"}},
+        {"type": "action", "action": {"type": "message", "label": "会話ネタ",  "text": "会話ネタ"}},
+        {"type": "action", "action": {"type": "message", "label": "リンク",    "text": "リンク"}},
+        {"type": "action", "action": {"type": "message", "label": "ジャンル",  "text": "ジャンル"}},
+        {"type": "action", "action": {"type": "message", "label": "使い方",    "text": "使い方"}},
     ]
 }
 
@@ -418,46 +419,23 @@ def record_sent(news_list: List[Dict[str, str]]) -> None:
 def save_news_context(
     user_id: str,
     news: List[Dict[str, str]],
-    ai: Dict[str, Any],
-    messages: List[str],
-    extra_news: List[Dict[str, str]] = None,
+    summaries: Dict[str, Dict[str, str]],
 ) -> None:
-    """配信内容を履歴として保存（Q&A用コンテキスト）"""
-    articles_ai = ai.get("articles", [])
-
-    def _build_item(i, n, a):
+    """配信内容を履歴として保存（深掘り・Q&A用コンテキスト）"""
+    def _build_item(i, n):
+        link = n.get("link", "")
+        s = summaries.get(link, {})
         return {
-            "index": i + 1,
-            "category": CATEGORY_LABELS.get(n.get("category", "other"), "その他"),
-            "title": n["title"],
-            "link": n.get("link", ""),
-            "reason": a.get("reason", "") if isinstance(a, dict) else "",
-            "interpretation": a.get("interpretation", "") if isinstance(a, dict) else "",
-        }
-
-    news_items = [_build_item(i, n, articles_ai[i] if i < len(articles_ai) else {}) for i, n in enumerate(news)]
-    offset = len(news_items)
-    extra_items = [
-        {
-            "index":          offset + i + 1,
+            "index":          i + 1,
             "category":       CATEGORY_LABELS.get(n.get("category", "other"), "その他"),
             "title":          n["title"],
-            "link":           n.get("link", ""),
-            "reason":         "",
-            "interpretation": "",
+            "link":           link,
+            "reason":         s.get("fact", ""),
+            "interpretation": s.get("chat", ""),
         }
-        for i, n in enumerate(extra_news or [])
-    ]
 
-    payload = {
-        "news_items":  news_items,
-        "extra_items": extra_items,
-        "summary":     ai.get("summary", []),
-        "impact":      ai.get("impact", []),
-        "topics":      ai.get("topics", []),
-        "message_1":   messages[0] if len(messages) > 0 else "",
-        "message_2":   messages[1] if len(messages) > 1 else "",
-    }
+    news_items = [_build_item(i, n) for i, n in enumerate(news)]
+    payload = {"news_items": news_items}
 
     try:
         supabase.table("news_contexts").insert({
@@ -468,6 +446,23 @@ def save_news_context(
         logger.info("ニュース保存成功 user=%s 件数=%d", user_id, len(news))
     except Exception as e:
         logger.error("ニュースコンテキスト保存失敗: %s", e)
+
+
+def save_last_news_batch(user_id: str, news: List[Dict[str, str]]) -> None:
+    """リンク専用バッチをlast_news_batchにupsert（news_contextsとは分離）"""
+    items = [
+        {"index": i + 1, "title": n["title"], "link": n.get("link", "")}
+        for i, n in enumerate(news)
+    ]
+    try:
+        supabase.table("last_news_batch").upsert({
+            "user_id":  user_id,
+            "items":    items,
+            "saved_at": datetime.now(timezone.utc).isoformat(),
+        }, on_conflict="user_id").execute()
+        logger.info("last_news_batch保存: user=%s %d件", user_id, len(items))
+    except Exception as e:
+        logger.error("last_news_batch保存失敗: user=%s %s", user_id, e)
 
 
 def load_users() -> Dict[str, Any]:
@@ -786,19 +781,11 @@ def filter_news(
 # AI要約
 # =========================
 
-def _to_list(val) -> list:
-    """GPTが配列の代わりに文字列を返した場合に改行で分割してリスト化する"""
-    if isinstance(val, list):
-        return val
-    if isinstance(val, str):
-        return [v.strip() for v in val.split("\n") if v.strip()]
-    return []
 
-
-_NEWS_SUMMARY_SCHEMA = {
+_ARTICLE_SUMMARY_SCHEMA = {
     "type": "json_schema",
     "json_schema": {
-        "name": "news_summary",
+        "name": "article_summaries",
         "strict": True,
         "schema": {
             "type": "object",
@@ -808,122 +795,171 @@ _NEWS_SUMMARY_SCHEMA = {
                     "items": {
                         "type": "object",
                         "properties": {
-                            "headline":       {"type": "string"},
-                            "reason":         {"type": "string"},
-                            "interpretation": {"type": "string"},
+                            "fact": {"type": "string"},
+                            "chat": {"type": "string"},
                         },
-                        "required": ["headline", "reason", "interpretation"],
+                        "required": ["fact", "chat"],
                         "additionalProperties": False,
                     },
                 },
-                "summary":       {"type": "array", "items": {"type": "string"}},
-                "summary_title": {"type": "string"},
-                "impact":        {"type": "array", "items": {"type": "string"}},
-                "topics": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "theme": {"type": "string"},
-                            "line":  {"type": "string"},
-                        },
-                        "required": ["theme", "line"],
-                        "additionalProperties": False,
-                    },
-                },
+                "topic": {"type": "string"},
             },
-            "required": ["articles", "summary", "summary_title", "impact", "topics"],
+            "required": ["articles", "topic"],
             "additionalProperties": False,
         },
     },
 }
 
 
-def fallback_summary(news_list: List[Dict[str, str]]) -> Dict[str, Any]:
-    """AI要約失敗時のタイトルベースフォールバック"""
-    articles = [
-        {
-            "headline": n["title"][:25] if n.get("title") else "",
-            "reason": "要約取得失敗",
-            "interpretation": "詳細不明だが動きありそう",
-        }
+def get_cached_summaries(links: List[str]) -> Dict[str, str]:
+    """article_summariesから24時間以内のキャッシュを取得。{link: summary_short}を返す"""
+    if not links:
+        return {}
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
+    try:
+        res = (
+            supabase.table("article_summaries")
+            .select("link,summary_short")
+            .in_("link", links)
+            .gte("updated_at", cutoff)
+            .execute()
+        )
+        return {row["link"]: row["summary_short"] for row in (res.data or [])}
+    except Exception as e:
+        logger.error("article_summariesキャッシュ取得失敗: %s", e)
+        return {}
+
+
+def save_article_summaries(news_list: List[Dict[str, str]], new_summaries: Dict[str, str]) -> None:
+    """新規要約をarticle_summariesにupsert"""
+    rows = []
+    now = datetime.now(timezone.utc).isoformat()
+    for n in news_list:
+        link = n.get("link", "")
+        if link and link in new_summaries:
+            rows.append({
+                "link": link,
+                "title": n.get("title", ""),
+                "summary_short": new_summaries[link],
+                "updated_at": now,
+            })
+    if not rows:
+        return
+    try:
+        supabase.table("article_summaries").upsert(rows, on_conflict="link").execute()
+        logger.info("article_summaries保存: %d件", len(rows))
+    except Exception as e:
+        logger.error("article_summaries保存失敗: %s", e)
+
+
+def _generate_topic(news_list: List[Dict[str, str]]) -> str:
+    """ニュース全体から話題フレーズを1個AI生成"""
+    titles = "\n".join(
+        f"【{CATEGORY_LABELS.get(n.get('category', 'other'), 'その他')}】{n['title']}"
         for n in news_list
-    ]
-    return {"articles": articles, "summary": [], "summary_title": "", "impact": [], "topics": []}
-
-
-def summarize(news_list: List[Dict[str, str]]) -> Dict[str, Any]:
-    """
-    各記事の reason / interpretation と、全体の summary / impact / topics を返す。
-    戻り値: {
-        "articles": [{"reason": str, "interpretation": str}, ...],
-        "summary":  [str, str, str],
-        "impact":   [str, str, str],
-        "topics":   [{"theme": str, "line": str}, ...],
-    }
-    """
-    if not news_list:
-        return {"articles": [], "summary": [], "impact": [], "topics": []}
-
-    count = len(news_list)
-    titles = "\n".join(f"{i + 1}. {n['title']}" for i, n in enumerate(news_list))
-
+    )
     prompt = (
-        f"以下の{count}件のニュース見出しを、会話に使いやすい形でまとめてください。\n\n"
-        "【文体ルール（必須）】\n"
-        "・短く、会話調にする\n"
-        "・敬語禁止、1文短く、主語省略OK\n"
-        "・「〜そう」「〜かも」「〜っぽい」を適度に使う\n"
-        "・説明調・専門家コメント調にしない\n"
-        "・長い文は禁止\n\n"
-        "【articles】各記事ごとに：\n"
-        "・headline: 元の見出しを12〜25文字に再構成（「何が起きたか」含む、専門用語削る、体言止めOK）\n"
-        "  例：「日銀、追加利上げを決定」「円安が150円台に再突入」\n"
-        "・reason: 背景（10〜15文字、体言止め）\n"
-        "  例：「金利差の拡大が影響」\n"
-        "・interpretation: 読者視点（15〜25文字、〜そう/〜っぽい調）\n"
-        "  例：「輸入コスト上がりやすい」\n"
-        "  ※ 👉 は含めない\n\n"
-        "【summary】全体を2〜3行：\n"
-        "・各20文字以内、全体の流れを抽象的に一言\n"
-        "  例：「生活コストじわ上げ」「金利と物価が同時に効いてる」\n\n"
-        "【impact】3行：\n"
-        "・各20文字以内、短く具体的に\n"
-        "  例：「電気代じわ上げ」「ローンは慎重」「生活コスト全体に効く」\n\n"
-        "【summary_title】全体の流れを1行タイトルに（10〜15文字、体言止めOK）\n"
-        "  例：「市場の不安定感が増加中」「生活コストじわ上げ」\n\n"
-        "【topics】会話ネタを3つ（summary/impactと重複しすぎない話題で）：\n"
-        "・theme: テーマ（10文字以内）\n"
-        "・line: そのまま使える一言（です・ます調OK、30〜50文字）\n"
-        "  例：「最近ちょっと荒れてるらしいですね」\n\n"
-        "JSONのみ返してください。キー: articles, summary, summary_title, impact, topics\n\n"
+        "以下のニュース全体から、最も会話で使いやすい話題フレーズを1個だけ出してください。\n"
+        "・30〜50文字、そのまま口に出せる自然な一言\n"
+        "・「」は含めない\n"
+        "・JSONで {\"topic\": \"...\"} の形のみ返してください\n\n"
         f"{titles}"
     )
-
     try:
         res = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[{"role": "user", "content": prompt}],
-            temperature=0.3,
-            timeout=15,
-            response_format=_NEWS_SUMMARY_SCHEMA,
+            temperature=0.6,
+            max_tokens=100,
+            timeout=10,
+            response_format={"type": "json_object"},
         )
         data = json.loads(res.choices[0].message.content)
-        articles_raw = data.get("articles", [])
-        return {
-            "articles":      articles_raw if isinstance(articles_raw, list) else [],
-            "summary":       _to_list(data.get("summary", [])),
-            "summary_title": str(data.get("summary_title", "")),
-            "impact":        _to_list(data.get("impact", [])),
-            "topics":        _to_list(data.get("topics", [])),
+        return str(data.get("topic", "")).strip()
+    except Exception as e:
+        logger.error("話題フレーズ生成失敗: %s", e)
+        return ""
+
+
+def summarize_articles(news_list: List[Dict[str, str]]) -> tuple:
+    """
+    記事ごとの要約とトピックフレーズを返す。キャッシュがあれば再利用。
+    戻り値: (summaries, topic)
+      summaries: {link: {"fact": str, "chat": str}}
+      topic: str
+    """
+    if not news_list:
+        return {}, ""
+
+    links = [n.get("link", "") for n in news_list if n.get("link")]
+    cached_raw = get_cached_summaries(links)
+
+    # キャッシュをfact/chatに分解
+    summaries: Dict[str, Dict[str, str]] = {}
+    for link, summary_short in cached_raw.items():
+        parts = summary_short.split("\n", 1)
+        summaries[link] = {
+            "fact": parts[0] if parts else "",
+            "chat": parts[1] if len(parts) > 1 else "",
         }
 
-    except json.JSONDecodeError as e:
-        logger.error("AI要約失敗 fallback使用: JSONパース失敗 %s", e)
-        return fallback_summary(news_list)
-    except Exception as e:
-        logger.error("AI要約失敗 fallback使用: %s", e)
-        return fallback_summary(news_list)
+    uncached = [n for n in news_list if n.get("link", "") not in summaries]
+
+    if uncached:
+        all_titles = "\n".join(
+            f"{i+1}. 【{CATEGORY_LABELS.get(n.get('category', 'other'), 'その他')}】{n['title']}"
+            for i, n in enumerate(news_list)
+        )
+        prompt = (
+            "以下のニュース記事を要約してください。\n\n"
+            "【fact】事実要約（主語＋行動＋現状、1文完結、40〜50文字以内、接続詞1つまで、タイトルの言い換え禁止）\n"
+            "【chat】会話文（そのまま口に出せる、短く、軽いトーン、誰でも使いやすい）\n\n"
+            "【topic】全ニュースから最も会話で使いやすい話題フレーズを1個\n"
+            "・30〜50文字、そのまま口に出せる自然な一言、「」は含めない\n\n"
+            f"articlesの数は入力ニュース数（{len(news_list)}件）と一致させること。\n"
+            "JSONのみ返してください。\n\n"
+            f"{all_titles}"
+        )
+        try:
+            res = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.4,
+                max_tokens=700,
+                timeout=25,
+                response_format=_ARTICLE_SUMMARY_SCHEMA,
+            )
+            data = json.loads(res.choices[0].message.content)
+            articles_ai = data.get("articles", [])
+            topic = str(data.get("topic", "")).strip()
+
+            new_summaries: Dict[str, str] = {}
+            for i, n in enumerate(news_list):
+                link = n.get("link", "")
+                if link in summaries:
+                    continue  # キャッシュ済みはスキップ
+                a = articles_ai[i] if i < len(articles_ai) else {}
+                fact = str(a.get("fact", "")).strip() or n["title"][:40]
+                chat = str(a.get("chat", "")).strip() or "気になる動きかも"
+                summaries[link] = {"fact": fact, "chat": chat}
+                new_summaries[link] = fact + "\n" + chat
+
+            save_article_summaries(news_list, new_summaries)
+
+        except Exception as e:
+            logger.error("AI要約失敗、フォールバック使用: %s", e)
+            for n in uncached:
+                link = n.get("link", "")
+                summaries[link] = {
+                    "fact": n["title"][:40] if n.get("title") else "詳細不明",
+                    "chat": "気になる動きかも",
+                }
+            topic = _generate_topic(news_list)
+    else:
+        # 全記事キャッシュ済み → topicだけ生成
+        topic = _generate_topic(news_list)
+
+    return summaries, topic
 
 
 # =========================
@@ -958,181 +994,40 @@ def normalize_tone(text: str) -> str:
 
 
 # =========================
-# 会話フレーズ生成（テンプレ固定）
-# =========================
-
-_CATEGORY_PHRASES: Dict[str, List[tuple]] = {
-    "real_estate": [
-        ("不動産", "最近マンション価格すごいですよね。買い時ってどう思います？"),
-        ("住宅",   "家賃や住宅費って最近どうです？やっぱ高くなってます？"),
-    ],
-    "interest_rates": [
-        ("金利", "金利って最近また動いてますよね。住宅ローンとか気にしてます？"),
-        ("金融", "最近金利の話よく聞きますけど、預金とか見直してます？"),
-    ],
-    "energy": [
-        ("電気代", "電気代やガス代って最近どうです？やっぱ高いですよね。"),
-        ("光熱費", "光熱費って節約してます？最近じわじわ上がってて気になって。"),
-    ],
-    "ai": [
-        ("AI", "AIって最近どこでも聞きますけど、周りで使ってる人増えてません？"),
-        ("AI", "ChatGPTとか使ってます？最近かなり便利になってきてますよね。"),
-    ],
-    "sports": [
-        ("スポーツ", "最近スポーツのニュース多いですよね。何か注目してます？"),
-        ("スポーツ", "大谷とか日本人選手の話よく出てますよね。チェックしてます？"),
-    ],
-    "economy": [
-        ("物価", "最近なんでも高くないですか。買い物ちょっと迷いません？"),
-        ("景気", "景気の話よく出てますよね。周りどんな感じです？"),
-    ],
-    "business": [
-        ("ビジネス", "最近どこの会社も値上げしてますよね。仕事への影響とかあります？"),
-        ("企業",    "業界的にどんな感じですか？最近いろいろ変化多そうで。"),
-    ],
-    "tech": [
-        ("テック", "最近スマホとかアプリ、何か新しいの使ってます？"),
-        ("IT",    "システム障害とかセキュリティの話、最近多いですよね。"),
-    ],
-    "international": [
-        ("世界情勢", "海外のニュース最近多いですよね。なんか気になるやつあります？"),
-        ("国際",    "世界ちょっとざわついてますよね。影響感じたりしてます？"),
-    ],
-    "materials": [
-        ("食品",   "最近食費どうです？スーパー行くたびに値段変わってません？"),
-        ("日用品", "日用品もじわじわ高くなってますよね。節約とか工夫してます？"),
-    ],
-    "construction": [
-        ("建設", "工事費とか建材って最近すごい上がってるらしいですね。家の値段に影響しそうで。"),
-        ("建設", "どこでも工事してますよね。インフラ整備ってお金かかるなって感じません？"),
-    ],
-    "entertainment": [
-        ("エンタメ", "最近何か面白いドラマや映画とかあります？"),
-        ("エンタメ", "Netflixとかサブスク、何か見てます？最近話題多いですよね。"),
-    ],
-    "scandal": [
-        ("ニュース", "最近ちょっと騒がしいニュース多いですよね。気になったのあります？"),
-    ],
-    "other": [
-        ("ニュース", "最近気になったニュース、何かありました？"),
-        ("話題",    "最近周りで何か話題になってることありますか？"),
-    ],
-}
-
-_PHRASE_FALLBACKS = [
-    ("物価", "最近なんでも高くないですか。買い物ちょっと迷いません？"),
-    ("AI",   "AIって最近どこでも聞きますけど、周りで使ってる人増えてません？"),
-    ("金利", "金利って最近また動いてますよね。住宅ローンとか気にしてます？"),
-]
-
-
-def _generate_phrases(news: List[Dict[str, str]]) -> List[tuple]:
-    phrases: List[tuple] = []
-    used_cats: set = set()
-
-    for n in news:
-        if len(phrases) >= 3:
-            break
-        cat = n.get("category", "other")
-        if cat in used_cats:
-            continue
-        options = _CATEGORY_PHRASES.get(cat)
-        if not options:
-            continue
-        phrases.append(random.choice(options))
-        used_cats.add(cat)
-
-    for fb in _PHRASE_FALLBACKS:
-        if len(phrases) >= 3:
-            break
-        if fb not in phrases:
-            phrases.append(fb)
-
-    return phrases[:3]
-
-
-# =========================
 # メッセージ作成
 # =========================
 
-def _build_msg1(news_lines: list, summary_title: str, impact_lines: list) -> str:
-    """msg1をLINE文字数制限内に収める（優先度順削除: impact→summary_title→ニュースのみ）"""
-    def _assemble(title: str, imp: list) -> str:
-        parts = list(news_lines)
-        if title:
-            parts += ["要するにこんな感じ", "", f"【{title}】", ""]
-        if imp:
-            parts += ["影響あるとしたら", ""] + imp
-        return "\n".join(parts)
-
-    text = _assemble(summary_title, impact_lines)
-    if len(text) <= LINE_TEXT_SAFE_LIMIT:
-        return text
-
-    # impact を1行ずつ削る
-    imp = list(impact_lines)
-    while imp:
-        imp.pop()
-        text = _assemble(summary_title, imp)
-        if len(text) <= LINE_TEXT_SAFE_LIMIT:
-            return text
-
-    # summary_title を消す
-    text = _assemble("", [])
-    if len(text) > LINE_TEXT_SAFE_LIMIT:
-        text = text[:LINE_TEXT_SAFE_LIMIT] + "\n…(省略)"
-    return text
-
-
 def build_message(
     news: List[Dict[str, str]],
-    ai: Dict[str, Any],
+    summaries: Dict[str, Dict[str, str]],
+    topic: str,
 ) -> List[str]:
-    articles_ai   = ai.get("articles", [])
-    summary_title = str(ai.get("summary_title", ""))
-    impact        = _to_list(ai.get("impact", []))
-
-    # ── 1通目 ──
-    news_lines = ["今日のニュース、ここだけ。", ""]
+    """新フォーマットでpush本文を生成する"""
+    lines = ["今日のニュース、ここだけ", ""]
     for i, n in enumerate(news):
         num = CIRCLED[i] if i < len(CIRCLED) else f"{i + 1}."
-        cat = CATEGORY_LABELS.get(n.get("category", "other"), "その他")
-        a = articles_ai[i] if i < len(articles_ai) else {}
-        reason = normalize_tone(trim_text(a.get("reason", "")        if isinstance(a, dict) else "", 20))
-        interp = normalize_tone(trim_text(a.get("interpretation", "") if isinstance(a, dict) else "", 24))
-        if not interp:
-            interp = "気になる動きかも"
+        title = trim_text(n.get("title", ""), 30)
+        link = n.get("link", "")
+        s = summaries.get(link, {})
+        fact = s.get("fact", "") or n["title"][:40]
+        chat = s.get("chat", "") or "気になる動きかも"
+        lines.append(f"{num} {title}")
+        lines.append(f"👉 {fact}")
+        lines.append(chat)
+        lines.append("")
 
-        headline = trim_text((a.get("headline") or "") if isinstance(a, dict) else "", 25) or trim_text(n["title"], 25)
-        news_lines.append(f"{num}［{cat}］")
-        news_lines.append(headline)
-        if reason:
-            news_lines.append(f"→ {reason}")
-        news_lines.append(f"👉 {interp}")
-        news_lines.append("")
-
-    impact_lines = [
-        f"・{normalize_tone(trim_text(imp, 22))}"
-        for imp in impact[:3]
-        if normalize_tone(trim_text(imp, 22))
+    lines += [
+        "気になる番号をそのまま入力",
+        "例：1詳しく",
+        "",
+        "話題に困ったらこれで👇",
+        "",
+        f"「{topic}」" if topic else "",
     ]
-
-    msg1 = _build_msg1(news_lines, summary_title, impact_lines)
-
-    # ── 話題フレーズ ──
-    t_lines = ["⬇️話題に困ったらこれで⬇️", ""]
-    for label, phrase in _generate_phrases(news):
-        t_lines.append(label)
-        t_lines.append(f"「{phrase}」")
-        t_lines.append("")
-    t_lines.append("気になるニュース、このLINEで聞いてもらえれば👌\n記事のリンクほしいときも言って")
-    phrase_section = "\n".join(t_lines)
-
-    merged = msg1 + "\n\n" + phrase_section
-    if len(merged) > LINE_TEXT_SAFE_LIMIT:
-        merged = merged[:LINE_TEXT_SAFE_LIMIT] + "\n…(省略)"
-
-    return [merged]
+    text = "\n".join(lines).strip()
+    if len(text) > LINE_TEXT_SAFE_LIMIT:
+        text = text[:LINE_TEXT_SAFE_LIMIT] + "\n…(省略)"
+    return [text]
 
 
 # =========================
@@ -1226,15 +1121,15 @@ def main(is_night: bool = False):
         filtered = filter_news(news, user)
         logger.info("送信件数: user=%s %d件", user_id, len(filtered))
 
-        ai_result = summarize(filtered)
-        messages = build_message(filtered, ai_result)
+        summaries, topic = summarize_articles(filtered)
+        messages = build_message(filtered, summaries, topic)
         ok = send(user_id, messages, with_quick_reply=True)
 
-        sent_links = {n["link"] for n in filtered}
-        extra_news = [n for n in news if n["link"] not in sent_links][:15]
-        save_news_context(user_id, filtered, ai_result, messages, extra_news)
+        save_news_context(user_id, filtered, summaries)
+        save_last_news_batch(user_id, filtered)
 
         if ok:
+            sent_links = {n["link"] for n in filtered}
             successfully_sent.update(sent_links)
             sent_count += 1
             try:
@@ -1311,17 +1206,75 @@ def send_news_to_user(user_id: str) -> None:
         logger.warning("初回配信: フィルタ後0件のためスキップ: %s", user_id)
         return
 
-    ai_result = summarize(filtered)
-    messages = build_message(filtered, ai_result)
+    summaries, topic = summarize_articles(filtered)
+    messages = build_message(filtered, summaries, topic)
     send(user_id, messages, with_quick_reply=True)
 
-    sent_links = {n["link"] for n in filtered}
-    extra_news = [n for n in news if n["link"] not in sent_links][:15]
-    save_news_context(user_id, filtered, ai_result, messages, extra_news)
+    save_news_context(user_id, filtered, summaries)
+    save_last_news_batch(user_id, filtered)
     logger.info(
         "初回配信完了: user=%s raw_plan=%s effective_plan=%s",
         user_id, plan, effective_plan,
     )
+
+
+def fetch_news_for_reply(user_id: str, exclude_links: set = None) -> tuple:
+    """手動ニュース取得（reply用）。fetch+filter+summarize+save。(messages, filtered_news)を返す。送信はしない。"""
+    news = fetch_news()
+    if not news:
+        logger.warning("fetch_news_for_reply: ニュース0件: %s", user_id)
+        return [], []
+
+    plan = "free"
+    genres: List[str] = []
+    membership_status = "none"
+    membership_expires_at = None
+    trial_started_at = None
+    trial_extended_until = None
+    try:
+        res = supabase.table("users").select(
+            "plan,genres,membership_status,membership_expires_at,trial_started_at,trial_extended_until"
+        ).eq("user_id", user_id).single().execute()
+        if res.data:
+            plan = res.data.get("plan", "free") or "free"
+            genres = res.data.get("genres") or []
+            membership_status = res.data.get("membership_status", "none")
+            membership_expires_at = res.data.get("membership_expires_at")
+            trial_started_at = res.data.get("trial_started_at")
+            trial_extended_until = res.data.get("trial_extended_until")
+    except Exception as e:
+        logger.warning("fetch_news_for_reply: ユーザー情報取得失敗: %s %s", user_id, e)
+
+    user = {
+        "user_id": user_id,
+        "plan": plan,
+        "genres": genres,
+        "membership_status": membership_status,
+        "membership_expires_at": membership_expires_at,
+        "trial_started_at": trial_started_at,
+        "trial_extended_until": trial_extended_until,
+    }
+    effective_plan = resolve_effective_plan(user, datetime.now(timezone.utc))
+    user["max_items"] = plan_max_items(effective_plan)
+
+    filtered = filter_news(news, user)
+    if not filtered:
+        logger.warning("fetch_news_for_reply: フィルタ後0件: %s", user_id)
+        return [], []
+
+    # 重複回避: exclude_linksにない記事を優先
+    if exclude_links:
+        preferred = [n for n in filtered if n.get("link") not in exclude_links]
+        rest = [n for n in filtered if n.get("link") in exclude_links]
+        filtered = (preferred + rest)[:user["max_items"]]
+
+    summaries, topic = summarize_articles(filtered)
+    messages = build_message(filtered, summaries, topic)
+
+    save_news_context(user_id, filtered, summaries)
+    save_last_news_batch(user_id, filtered)
+
+    return messages, filtered
 
 
 if __name__ == "__main__":
@@ -1329,8 +1282,8 @@ if __name__ == "__main__":
     if "--dry-run" in sys.argv:
         news = fetch_news()
         news = news[:5]
-        ai_result = summarize(news)
-        msgs = build_message(news, ai_result)
+        summaries, topic = summarize_articles(news)
+        msgs = build_message(news, summaries, topic)
         for i, m in enumerate(msgs, 1):
             print(f"\n{'='*30}\n【{i}通目】\n{'='*30}\n{m}")
     else:
