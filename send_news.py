@@ -480,7 +480,6 @@ def load_users() -> Dict[str, Any]:
                 "active": row.get("active", True),
                 "genres": row.get("genres", []) or [],
                 "max_items": plan_max_items(plan),
-                "night_delivery": row.get("night_delivery", True),
                 "membership_status": row.get("membership_status", "none"),
                 "membership_expires_at": row.get("membership_expires_at"),
                 "trial_started_at": row.get("trial_started_at"),
@@ -1001,9 +1000,13 @@ def build_message(
     news: List[Dict[str, str]],
     summaries: Dict[str, Dict[str, str]],
     topic: str,
+    mode: str = "push",
 ) -> List[str]:
-    """新フォーマットでpush本文を生成する"""
-    lines = ["今日のニュース、ここだけ", ""]
+    """ニュース本文を生成する。
+    mode='push': 定期配信用（導入文・フッター付き）
+    mode='reply': 手動取得用（記事リストのみ、シンプル）
+    """
+    lines = [] if mode == "reply" else ["今日のニュース、ここだけ", ""]
     for i, n in enumerate(news):
         num = CIRCLED[i] if i < len(CIRCLED) else f"{i + 1}."
         title = trim_text(n.get("title", ""), 30)
@@ -1011,19 +1014,20 @@ def build_message(
         s = summaries.get(link, {})
         fact = s.get("fact", "") or n["title"][:40]
         chat = s.get("chat", "") or "気になる動きかも"
-        lines.append(f"{num} {title}")
+        lines.append(f"{num}［{title}］")
         lines.append(f"👉 {fact}")
         lines.append(chat)
         lines.append("")
 
-    lines += [
-        "気になる番号をそのまま入力",
-        "例：1詳しく",
-        "",
-        "話題に困ったらこれで👇",
-        "",
-        f"「{topic}」" if topic else "",
-    ]
+    if mode == "push":
+        lines += [
+            "気になる番号をそのまま入力",
+            "例：1詳しく",
+            "",
+            "話題に困ったらこれで👇",
+            "",
+            f"「{topic}」" if topic else "",
+        ]
     text = "\n".join(lines).strip()
     if len(text) > LINE_TEXT_SAFE_LIMIT:
         text = text[:LINE_TEXT_SAFE_LIMIT] + "\n…(省略)"
@@ -1077,7 +1081,7 @@ def send(user_id: str, messages: List[str], with_quick_reply: bool = False) -> b
 # 実行
 # =========================
 
-def main(is_night: bool = False):
+def main():
     users = load_users()
     if not users:
         logger.warning("配信対象ユーザーが0件です")
@@ -1107,22 +1111,13 @@ def main(is_night: bool = False):
         effective_plan = resolve_effective_plan(user, datetime.now(timezone.utc))
         user["max_items"] = plan_max_items(effective_plan)
 
-        # 夜配信は有料ユーザーかつ night_delivery=True のみ
-        if is_night:
-            if effective_plan == "free":
-                logger.info("無料ユーザーのため夜配信スキップ: %s", user_id)
-                continue
-            if not user.get("night_delivery", True):
-                logger.info("夜配信オフのためスキップ: %s", user_id)
-                continue
-
         logger.info("ニュース配信開始 user=%s raw_plan=%s effective_plan=%s genres=%s",
                     user_id, user.get("plan"), effective_plan, user.get("genres"))
         filtered = filter_news(news, user)
         logger.info("送信件数: user=%s %d件", user_id, len(filtered))
 
         summaries, topic = summarize_articles(filtered)
-        messages = build_message(filtered, summaries, topic)
+        messages = build_message(filtered, summaries, topic, mode="push")
         ok = send(user_id, messages, with_quick_reply=True)
 
         save_news_context(user_id, filtered, summaries)
@@ -1207,7 +1202,7 @@ def send_news_to_user(user_id: str) -> None:
         return
 
     summaries, topic = summarize_articles(filtered)
-    messages = build_message(filtered, summaries, topic)
+    messages = build_message(filtered, summaries, topic, mode="push")
     send(user_id, messages, with_quick_reply=True)
 
     save_news_context(user_id, filtered, summaries)
@@ -1255,21 +1250,31 @@ def fetch_news_for_reply(user_id: str, exclude_links: set = None) -> tuple:
         "trial_extended_until": trial_extended_until,
     }
     effective_plan = resolve_effective_plan(user, datetime.now(timezone.utc))
-    user["max_items"] = plan_max_items(effective_plan)
+    actual_max = plan_max_items(effective_plan)
+    # 重複除外前に十分な候補を確保するため、filter_news には大きめの上限を渡す
+    user["max_items"] = MAX_FETCH_ITEMS
 
     filtered = filter_news(news, user)
     if not filtered:
         logger.warning("fetch_news_for_reply: フィルタ後0件: %s", user_id)
         return [], []
 
-    # 重複回避: exclude_linksにない記事を優先
+    # 重複除外（ハード）: exclude_linksにある記事を完全除外してから件数調整
     if exclude_links:
-        preferred = [n for n in filtered if n.get("link") not in exclude_links]
-        rest = [n for n in filtered if n.get("link") in exclude_links]
-        filtered = (preferred + rest)[:user["max_items"]]
+        filtered = [n for n in filtered if n.get("link") not in exclude_links]
+        if not filtered:
+            logger.info("fetch_news_for_reply: 全記事が重複、フォールバックメッセージ返却: %s", user_id)
+            return ["今のところはこんなもんかな"], []
+
+    # 重複除外後に実際の上限を適用
+    filtered = filtered[:actual_max]
 
     summaries, topic = summarize_articles(filtered)
-    messages = build_message(filtered, summaries, topic)
+    messages = build_message(filtered, summaries, topic, mode="reply")
+
+    # 1〜4件の場合は末尾に補足を追記
+    if 0 < len(filtered) < 5:
+        messages = [messages[0] + "\n\n今のところはこんなもんかな"]
 
     save_news_context(user_id, filtered, summaries)
     save_last_news_batch(user_id, filtered)
@@ -1283,7 +1288,7 @@ if __name__ == "__main__":
         news = fetch_news()
         news = news[:5]
         summaries, topic = summarize_articles(news)
-        msgs = build_message(news, summaries, topic)
+        msgs = build_message(news, summaries, topic, mode="push")
         for i, m in enumerate(msgs, 1):
             print(f"\n{'='*30}\n【{i}通目】\n{'='*30}\n{m}")
     else:
@@ -1295,8 +1300,7 @@ if __name__ == "__main__":
             print("！！ 本番環境で実行中（注意）")
             print("！！ 本番環境です。内容を確認してください")
         try:
-            is_night = "--night" in sys.argv
-            main(is_night=is_night)
+            main()
         except Exception as e:
             logger.error("main()で予期しないエラー: %s", e)
             notify_owner(f"[send_news] エラー発生\n{type(e).__name__}: {e}")

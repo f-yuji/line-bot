@@ -32,7 +32,7 @@ from linebot.v3.messaging import (
 )
 from linebot.v3.webhooks import FollowEvent, MessageEvent, PostbackEvent, TextMessageContent
 
-from send_news import send_news_to_user, fetch_news_for_reply
+from send_news import fetch_news_for_reply
 
 # ─── 初期設定 ───
 load_dotenv()
@@ -182,7 +182,6 @@ def ensure_user(user_id: str):
             "plan": "free",
             "genres": [],
             "extended_trial_ended_notified": False,
-            "night_delivery": True,
             "ai_count": 0,
             "pending_action": None,
             "trial_started_at": None,
@@ -204,7 +203,6 @@ def ensure_user(user_id: str):
             logger.error("display_name更新失敗: user=%s %s", user_id, e)
 
     user["plan"] = normalize_plan(user.get("plan", "free"))
-    user.setdefault("night_delivery", True)
     user.setdefault("ai_count", 0)
     user.setdefault("pending_action", None)
     user.setdefault("trial_started_at", None)
@@ -313,20 +311,16 @@ def apply_membership(user_id, state, event_type=None):
         "plan": "paid" if status == "active" else "free",
     }
 
-    if status == "active":
-        update["night_delivery"] = True
-
     try:
         supabase.table("users").upsert({"user_id": user_id, **update}).execute()
         logger.info(
-            "membership反映成功 user=%s status=%s plan=%s expires=%s plan_id=%s event=%s night_delivery=%s",
+            "membership反映成功 user=%s status=%s plan=%s expires=%s plan_id=%s event=%s",
             user_id,
             status,
             update["plan"],
             state.get("membership_expires_at"),
             state.get("membership_plan_id"),
             event_type,
-            update.get("night_delivery"),
         )
     except Exception as e:
         logger.error("membership反映失敗 user=%s %s", user_id, e)
@@ -518,7 +512,7 @@ def build_genre_flex(current_genres: list) -> FlexMessage:
         header=FlexBox(
             layout="vertical",
             contents=[
-                FlexText(text="受け取るニュース(次回の配信から適用)", weight="bold", size="md"),
+                FlexText(text="受け取るニュース", weight="bold", size="md"),
                 FlexText(text=header_note, size="xs", color="#888888", wrap=True),
             ],
         ),
@@ -532,6 +526,15 @@ def build_genre_flex(current_genres: list) -> FlexMessage:
             contents=[
                 FlexButton(
                     action=PostbackAction(
+                        label="決定",
+                        data="confirm_genres",
+                        display_text="ジャンルを決定",
+                    ),
+                    style="primary",
+                    height="sm",
+                ),
+                FlexButton(
+                    action=PostbackAction(
                         label="すべて解除",
                         data="clear_genres",
                         display_text="クリア",
@@ -539,7 +542,7 @@ def build_genre_flex(current_genres: list) -> FlexMessage:
                     style="link",
                     height="sm",
                     color="#aaaaaa",
-                )
+                ),
             ],
         ),
     )
@@ -564,6 +567,11 @@ def is_link_request(text: str) -> bool:
         t.endswith("リンク") or t.endswith("URL") or t.endswith("url")
         or "のリンク" in t or "のURL" in t or "のurl" in t
     ):
+        return True
+    # 自然な短文要求: 「リンク」「URL」「url」を含む短い発話（20文字以内）
+    # 例: 「リンクちょうだい」「URLくれ」「リンク見せて」
+    _LINK_WORDS = ("リンク", "URL", "url")
+    if len(t) <= 20 and any(w in t for w in _LINK_WORDS):
         return True
     return False
 
@@ -637,7 +645,9 @@ def get_last_news_batch(user_id: str) -> Optional[list]:
 def _build_link_message(items: list) -> str:
     """last_news_batchのitemsから①タイトル\nURL形式のリンク一覧を生成"""
     lines = []
-    for item in items[:5]:
+    # index昇順でソートして①〜⑤の対応を本文と一致させる
+    sorted_items = sorted(items, key=lambda x: x.get("index", 0))
+    for item in sorted_items[:5]:
         idx = item.get("index", 0)
         title = str(item.get("title", "") or "")
         if len(title) > 30:
@@ -793,6 +803,12 @@ def _collect_context_tokens(payload: dict) -> List[str]:
 def parse_article_numbers(text: str, max_n: int = 10) -> List[int]:
     """テキスト中の記事番号を全て抽出して昇順リストで返す。
     「135」→[1,3,5]、「①③⑤」→[1,3,5]、「1と3と5」→[1,3,5] のように処理する。
+
+    【仕様メモ】
+    max_n を超える多桁数値（例: max_n=5 のとき「135」）は、
+    桁ごとに分解して記事番号の候補として扱う（135 → 1, 3, 5）。
+    これは「135」を記事1・3・5の同時指定とみなすUX上の意図的な仕様。
+    ロジックを変更する際はこの挙動が崩れないよう注意すること。
     """
     found: set = set()
     # 丸数字を抽出
@@ -812,7 +828,8 @@ def parse_article_numbers(text: str, max_n: int = 10) -> List[int]:
         if 1 <= n <= max_n:
             found.add(n)
         elif n > max_n:
-            # 桁ごとに分解: "135" → 1, 3, 5
+            # 2桁以上でmax_nを超える数値は桁ごとに分解して記事番号候補として扱う
+            # 例: max_n=5, "135" → [1, 3, 5]（記事1・3・5の同時指定とみなす）
             for ch in token:
                 d = int(ch)
                 if 1 <= d <= max_n:
@@ -1177,8 +1194,10 @@ _CHAT_TOPIC_SYSTEM_BASE = """\
 ※「お金」は使用禁止（生活関連に含める）
 
 【会話フレーズ】
-・質問形式を基本にする
-・ニュースや現実と軽く接続する
+・必ずニュース内容と具体的に接続する（「〇〇が〜したって聞いた？」「〇〇って影響出てきてるけど、どう思う？」のような形）
+・そのまま口に出せる自然な一文にする
+・問いかけ or 感想共有の形にする
+・抽象的な表現は禁止（「色々あるね」「最近多いよね」のような中身のない感想は使わない）
 
 【よくある返し】
 ・現実的な返答。短く自然
@@ -1198,6 +1217,8 @@ _CHAT_TOPIC_SYSTEM_BASE = """\
 ・長文
 ・季節ズレ
 ・中身のない雑談
+・「色々あるね」などの抽象的感想
+・ニュースと接続していない汎用フレーズ
 
 必ずJSON形式のみで出力すること。キー：genre / main / reply / next / point / trivia
 """
@@ -1476,7 +1497,7 @@ def callback():
 @handler.add(FollowEvent)
 def handle_follow(event):
     user_id = event.source.user_id
-    user, is_new_user = ensure_user(user_id)
+    user, _ = ensure_user(user_id)
 
     # トライアル開始日が未設定なら登録（新規ユーザー or システム導入前の既存ユーザー）
     if not user.get("trial_started_at"):
@@ -1493,24 +1514,11 @@ def handle_follow(event):
     reply_text(
         event.reply_token,
         "追加ありがとう\n\n"
-        "今は無料トライアル中で、機能を全開放してる\n"
-        "トライアル後も無料でそのまま使える\n\n"
-        "ニュースは朝起きる前に届く\n"
-        "きっと寝てる間だからミュートでOK\n\n"
-        "必要なジャンルに絞れるから\n"
-        "必要ならあとで変えればOK👌\n\n"
-        "とりあえず直近のニュース流すから、気になるやつあればそのまま質問して\n"
-        "番号でもいけるし、リンクも出せる\n"
-        "そのまま使える会話ネタもある\n"
+        "まず「ジャンル」で見たい分野を選べる\n"
+        "選んだあとに「ニュース」で確認できる\n\n"
         "詳しくは「使い方」で確認してみて",
         quick_reply=main_quick_reply(),
     )
-
-    if is_new_user:
-        try:
-            send_news_to_user(user_id)
-        except Exception as e:
-            logger.error("初回配信失敗: user=%s %s", user_id, e)
 
 
 _STOP_WORDS = {"停止", "止めて", "停止して", "配信止めて", "もういい", "オフ"}
@@ -1635,20 +1643,15 @@ _STRONG_COMMANDS = (
     | _GENRE_WORDS
     | _STATUS_WORDS
     | _HELP_WORDS
-    | {"夜停止", "夜いらない", "夜開始", "夜オン"}
 )
 
 
-def _plan_status_text(plan: str, active: bool, genres: list, night_delivery: bool = True) -> str:
+def _plan_status_text(plan: str, active: bool, genres: list) -> str:
     plan = normalize_plan(plan)
     genre_label = f"ジャンル: {format_genres(genres)}" if genres else "ジャンル: 未設定（全部配信）"
-    if plan != "free":
-        day_label = "昼配信オン" if active else "昼配信オフ"
-        night_label = "夜配信オン" if night_delivery else "夜配信オフ"
-        return f"今こんな感じ\n\nメンバーシップ\n{day_label}\n{night_label}\n{genre_label}"
-    else:
-        active_label = "配信オン" if active else "配信オフ"
-        return f"今こんな感じ\n\n無料プラン\n{active_label}\n{genre_label}"
+    plan_label = "メンバーシップ" if plan != "free" else "無料プラン"
+    active_label = "配信：オン" if active else "配信：オフ"
+    return f"今こんな感じ\n\n{plan_label}\n{active_label}\n{genre_label}"
 
 
 @handler.add(MessageEvent, message=TextMessageContent)
@@ -1785,29 +1788,6 @@ def handle_message(event):
             pass
         return
 
-    if text in ["夜停止", "夜いらない"]:
-        try:
-            supabase.table("users").update({"night_delivery": False, "last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
-        except Exception:
-            pass
-        reply_text(event.reply_token, "夜の配信止めた\n再開したいときは「夜再開」って言って", quick_reply=qr)
-        return
-
-    if text in ["夜開始","夜再開", "夜オン"]:
-        if plan != "paid":
-            reply_text(event.reply_token, "夜配信はメンバーシップでやってる", quick_reply=qr)
-            try:
-                supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
-            except Exception:
-                pass
-            return
-        try:
-            supabase.table("users").update({"night_delivery": True, "last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
-        except Exception:
-            pass
-        reply_text(event.reply_token, "夜の配信再開したよ", quick_reply=qr)
-        return
-
     if any(kw in text for kw in _MEMBERSHIP_KW):
         if any(w in text for w in ["いくら", "料金", "値段"]):
             reply_text(
@@ -1871,17 +1851,31 @@ def handle_message(event):
         return
 
     if text == "使い方":
-        reply_text(
-            event.reply_token,
-            "使い方\n\n"
+        _status = "メンバーシップ" if plan == "paid" else "無料プラン"
+        _delivery = "オン" if active else "オフ"
+        _genre_text = format_genres(genres) if genres else "全ジャンル"
+        _help_text = (
+            "まず「ジャンル」で見たい分野を選べる\n"
+            "選んだあとに「ニュース」で確認できる\n\n"
+            "ーーー\n\n"
+            "ジャンル → 見たい分野を選ぶ\n"
             "ニュース → 今日のニュースを見る\n"
             "会話ネタ → 話題に使えるネタを見る\n"
-            "リンク → 直近ニュースのURLを見る\n"
-            "ジャンル → 見る分野を変える\n\n"
-            "気になる番号で入力\n"
-            "例：1詳しく",
-            quick_reply=qr,
+            "リンク → 直近ニュースのURLを見る\n\n"
+            "気になる番号をそのまま入力\n"
+            "例：1詳しく\n\n"
+            "ーーー\n\n"
+            "メンバーシップでできること\n"
+            "・気になる記事を深掘り\n"
+            "・そのまま使える会話ネタ\n"
+            "・相手に合わせた話題を出せる\n\n"
+            "ーーー\n\n"
+            "今の状態\n"
+            f"プラン：{_status}\n"
+            f"配信：{_delivery}\n"
+            f"ジャンル：{_genre_text}"
         )
+        reply_with_payment(event.reply_token, _help_text, quick_reply=qr)
         try:
             supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
         except Exception:
@@ -1904,7 +1898,7 @@ def handle_message(event):
         return
 
     if text == "プラン":
-        reply_text(event.reply_token, _plan_status_text(plan, active, genres, night_delivery=user.get("night_delivery", True)), quick_reply=qr)
+        reply_text(event.reply_token, _plan_status_text(plan, active, genres), quick_reply=qr)
         try:
             supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
         except Exception:
@@ -1953,7 +1947,7 @@ def handle_message(event):
         return
 
     if text in _STATUS_WORDS:
-        reply_text(event.reply_token, _plan_status_text(plan, active, genres, night_delivery=user.get("night_delivery", True)), quick_reply=qr)
+        reply_text(event.reply_token, _plan_status_text(plan, active, genres), quick_reply=qr)
         try:
             supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
         except Exception:
@@ -2130,7 +2124,9 @@ def handle_message(event):
 
     # ★4 ニュース取得トリガー
     if text in _NEWS_TRIGGER_KW:
-        messages, _ = fetch_news_for_reply(user_id)
+        _last_batch = get_last_news_batch(user_id)
+        _exclude = {item.get("link") for item in (_last_batch or [])}
+        messages, _ = fetch_news_for_reply(user_id, exclude_links=_exclude)
         if not messages:
             reply_text(event.reply_token, "今ちょっとニュース取れなかった\n少し時間おいてまた試して", quick_reply=qr)
         else:
@@ -2153,7 +2149,7 @@ def handle_message(event):
     # ★6 リンク
     if is_link_request(text):
         batch_items = get_last_news_batch(user_id)
-        if batch_items is not None:
+        if batch_items:  # Noneでも空リストでもない場合のみリンクを返す（本文再送なし）
             reply_text(event.reply_token, _build_link_message(batch_items), quick_reply=qr)
         else:
             # 未取得時: ニュース自動取得 → 本文reply + リンクpush
@@ -2314,23 +2310,26 @@ def handle_postback(event):
     if data.startswith("toggle_display_genre:"):
         display = data.split(":", 1)[1]
         internals = DISPLAY_GENRE_MAP.get(display, [])
-        qr = main_quick_reply()
 
         was_selected = any(c in genres for c in internals)
         if was_selected:
             genres = [c for c in genres if c not in internals]
-            _genre_msg = f"{display}をはずした"
         else:
             for cat in internals:
                 if cat not in genres:
                     genres.append(cat)
-            _genre_msg = f"{display}に切り替えた"
 
         supabase.table("users").update({"genres": genres}).eq("user_id", user_id).execute()
+        # トグル時はニュース取得せず、画面更新のみ
+        reply_flex(event.reply_token, build_genre_flex(genres))
+
+    elif data == "confirm_genres":
+        # 決定ボタン: 設定を確定してニュース取得
+        qr = main_quick_reply()
         clear_last_news_question_targets(user_id)
         _old_batch = get_last_news_batch(user_id)
         _exclude = {item.get("link") for item in (_old_batch or [])}
-        reply_text(event.reply_token, _genre_msg, quick_reply=qr)
+        reply_text(event.reply_token, "ジャンル設定した\nニュースで確認できる", quick_reply=qr)
         _msgs, _ = fetch_news_for_reply(user_id, exclude_links=_exclude)
         if _msgs:
             _push_text(user_id, _msgs[0])
