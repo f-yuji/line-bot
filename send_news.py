@@ -487,7 +487,7 @@ def get_recent_sent_links(user_id: str, article_limit: int = 15) -> set:
             .select("payload")
             .eq("user_id", user_id)
             .order("sent_at", desc=True)
-            .limit(20)  # 20バッチ × 最大5件 = 最大100件。15件には十分
+            .limit(20)  # 20バッチ × 最大5件 = 最大100件。article_limit=30にも十分
             .execute()
         )
         links: set = set()
@@ -812,14 +812,16 @@ def filter_news(
 
     if genres:
         genre_matched = [n for n in filtered if n.get("category") in genres]
-        if genre_matched:
-            logger.info(
-                "ジャンル絞り込み: user=%s genres=%s → %d件",
-                user_id, genres, len(genre_matched),
-            )
-            filtered = genre_matched
+        logger.info(
+            "ジャンル絞り込み: user=%s genres=%s → genre_matched=%d件",
+            user_id, genres, len(genre_matched),
+        )
+        # genres 指定時は一致記事のみ使う。0件でもフォールバックしない
+        filtered = genre_matched
+        if not filtered:
+            logger.info("ジャンル絞り込み: 一致0件 → 0件扱い user=%s", user_id)
 
-    return filtered[:max_items] if filtered else news_list[:3]
+    return filtered[:max_items]
 
 
 # =========================
@@ -1313,7 +1315,11 @@ def fetch_news_for_reply(user_id: str, exclude_links: set = None) -> tuple:
         filtered = [n for n in filtered if n.get("link") not in exclude_links]
         logger.info("fetch_news_for_reply: 重複除外後=%d件 user=%s", len(filtered), user_id)
         if not filtered:
-            logger.info("fetch_news_for_reply: 全記事が重複、フォールバックメッセージ返却: %s", user_id)
+            logger.info("fetch_news_for_reply: 全記事が重複、0件保存して返却: %s", user_id)
+            # 枯渇事実を履歴に残す（次回取得時の除外範囲・状態を正しく進めるため）
+            save_news_context(user_id, [], {})
+            save_last_news_batch(user_id, [])
+            logger.info("fetch_news_for_reply: 0件保存完了 user=%s", user_id)
             return ["今のところはこんなもんかな"], []
     else:
         logger.info("fetch_news_for_reply: exclude_links未指定（除外なし） user=%s", user_id)

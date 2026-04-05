@@ -908,14 +908,25 @@ def is_related_to_news_context(user_id: str, text: str) -> bool:
 
 def parse_detail_request(text: str) -> List[int]:
     """番号系入力を深掘りリクエストとして判定し、記事番号リストを返す。
-    数字・丸数字で始まり parse_article_numbers が番号を抽出できれば深掘り確定。
-    「1」「135」「1詳しく」「1教えて」「1について」などすべて同一ルートに流す。
-    先頭が数字でない自然文（例: 「金利が3%…」）は [] を返してスルーする。
+    半角数字・全角数字・丸数字に対応。
     """
-    if not re.match(r"^[①-⑩1-9]", text or ""):
+    raw = (text or "").strip()
+    if not raw:
         return []
-    nums = parse_article_numbers(text, max_n=10)
-    logger.info("parse_detail_request: input=%r → nums=%s", text, nums)
+
+    # 全角→半角変換
+    normalized = raw.translate(str.maketrans("１２３４５６７８９０", "1234567890"))
+
+    # 先頭が数字 or 丸数字でなければスルー
+    if not re.match(r"^[①-⑩1-9]", normalized):
+        return []
+
+    nums = parse_article_numbers(normalized, max_n=10)
+
+    logger.info(
+        "parse_detail_request: input=%r normalized=%r → nums=%s",
+        text, normalized, nums
+    )
     return nums
 
 
@@ -933,9 +944,12 @@ _DETAIL_NEW_SCHEMA = {
                         "type": "object",
                         "properties": {
                             "index": {"type": "integer"},
-                            "body": {"type": "string"},
+                            "headline": {"type": "string"},
+                            "p1": {"type": "string"},
+                            "p2": {"type": "string"},
+                            "p3": {"type": "string"},
                         },
-                        "required": ["index", "body"],
+                        "required": ["index", "headline", "p1", "p2", "p3"],
                         "additionalProperties": False,
                     },
                 },
@@ -971,23 +985,31 @@ def answer_detail_new(user_id: str, nums: List[int]) -> str:
     )
 
     system_prompt = (
-        "お前はニュース解説AI\n\n"
-        "各記事を以下の3要素で説明しろ:\n"
-        "① 事実: 何が起きたか、誰が何をしたか（1〜2文）\n"
-        "② 背景: なぜ起きたか、なぜ問題か（省略禁止）\n"
-        "③ 展開: 今後どうなるか、影響・見通し（曖昧な感想禁止）\n\n"
+        "お前はLINEでニュースを読みやすく解説するやつ\n\n"
+        "各記事を以下の構成で書け:\n"
+        "headline: 内容の核心を一言で\n"
+        "p1: 何が起きているか（要点＋評価）\n"
+        "p2: なぜそうなっているか（背景・構造）\n"
+        "p3: 今後どうなるか（予測・影響）\n\n"
         "ルール:\n"
-        "・1記事150〜220文字程度\n"
-        "・箇条書き禁止\n"
-        "・会話誘導禁止\n"
-        "・本文の単なる言い換え禁止\n"
+        "・各段落2文程度\n"
+        "・情報を削るな\n"
+        "・言い換えだけは禁止\n"
+        "・本文コピペ禁止\n"
         "・敬語禁止\n"
-        "・会話調\n"
+        "・抽象論禁止\n"
+        "・具体的に書け\n"
+        "・会話誘導禁止\n"
+        "・予測は断定せず『〜可能性』『〜になりそう』で書く\n"
+        "・全記事について必ず全フィールドを埋めろ（欠損禁止）\n"
+        "・1件でも欠けたら不正とみなす\n"
     )
     user_prompt = (
         f"以下のニュース記事を深掘りしろ:\n{news_text}\n\n"
         f"指定番号: {nums}\n"
-        "各記事のindexと本文をJSONで返せ。番号は元のindexを使え。"
+        "全記事について必ず headline / p1 / p2 / p3 を埋めろ。\n"
+        "1件でも欠けたら失敗。\n"
+        "JSONで返せ。"
     )
 
     try:
@@ -998,22 +1020,50 @@ def answer_detail_new(user_id: str, nums: List[int]) -> str:
                 {"role": "user", "content": user_prompt},
             ],
             temperature=0.4,
-            max_tokens=600,
+            max_tokens=900,
             timeout=20,
             response_format=_DETAIL_NEW_SCHEMA,
         )
         data = json.loads(res.choices[0].message.content)
-        articles = sorted(data.get("articles", []), key=lambda x: x.get("index", 0))
+        raw_articles = data.get("articles", [])
+        for a in raw_articles:
+            logger.info("AI出力 index=%s keys=%s", a.get("index"), list(a.keys()))
+        article_map = {a.get("index"): a for a in raw_articles}
+
+        articles = []
+        for idx in nums:
+            if idx in article_map:
+                articles.append(article_map[idx])
 
         parts = []
         for a in articles:
             idx = a.get("index", 0)
-            body = a.get("body", "")
             item = index_map.get(idx)
             title = item.get("title", "") if item else ""
-            parts.append(f"{idx}. {title}\n\n{body}")
+            headline = (a.get("headline") or "").strip()
+            p1 = (a.get("p1") or "").strip()
+            p2 = (a.get("p2") or "").strip()
+            p3 = (a.get("p3") or "").strip()
 
-        return "\n\n".join(parts)
+            if not headline:
+                headline = title[:40]
+            if not p1:
+                p1 = f"{title}が話題になっていて、状況に影響している。単なる一時的な動きではなく流れを変える要因になっている。"
+            if not p2:
+                p2 = "背景としては最近の動向や周囲の評価が積み上がっていて、全体にも影響が出ている。単体の結果以上に構造的に効いている状態。"
+            if not p3:
+                p3 = "この流れが続けば影響はさらに広がる可能性があるが、止まれば一気にバランスが崩れるリスクもある。"
+
+            block = (
+                f"{idx}. {title}\n\n"
+                f"[{headline}]\n\n"
+                f"{p1}\n\n"
+                f"{p2}\n\n"
+                f"{p3}"
+            )
+            parts.append(block)
+
+        return "\n\nーーーーー\n\n".join(parts)
     except Exception as e:
         logger.error("answer_detail_new エラー: %s", e)
         return "今ちょっと返せない\nもう一回送ってみて"
@@ -2158,7 +2208,7 @@ def handle_message(event):
 
     # ★4 ニュース取得トリガー
     if text in _NEWS_TRIGGER_KW:
-        _exclude = get_recent_sent_links(user_id, article_limit=15)
+        _exclude = get_recent_sent_links(user_id, article_limit=30)
         messages, _ = fetch_news_for_reply(user_id, exclude_links=_exclude)
         if not messages:
             reply_text(event.reply_token, "今ちょっとニュース取れなかった\n少し時間おいてまた試して", quick_reply=qr)
@@ -2251,7 +2301,7 @@ def handle_message(event):
             save_last_news_question_targets(user_id, _nums, get_latest_news_context(user_id))
         elif not free_reply_used:
             answer = answer_detail_new(user_id, _nums)
-            msg = f"詳しくはこんな感じ👇\n\n{answer}\n\nこの先はもう少し深く見ることもできる"
+            msg = f"詳しく見るとこんな感じ\n\n{answer}\n\n続きはメンバーシップで見れる"
             reply_text(event.reply_token, msg, quick_reply=qr)
             try:
                 supabase.table("users").update({
@@ -2304,7 +2354,7 @@ def handle_message(event):
                 save_last_news_question_targets(user_id, _q_targets, get_latest_news_context(user_id))
         elif not free_reply_used:
             answer, _q_targets = answer_news_question(user_id, text)
-            msg = f"詳しくはこんな感じ👇\n\n{answer}\n\nこの先はもう少し深く見ることもできる"
+            msg = f"詳しく見るとこんな感じ\n\n{answer}\n\n続きはメンバーシップで見れる"
             reply_text(event.reply_token, msg, quick_reply=qr)
             try:
                 supabase.table("users").update({
