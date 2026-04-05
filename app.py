@@ -906,11 +906,17 @@ def is_related_to_news_context(user_id: str, text: str) -> bool:
 
 
 
-def is_detail_request(text: str) -> bool:
-    """番号＋詳しく系のリクエスト判定（1詳しく, 1-3詳しく, ①詳しく等）"""
+def parse_detail_request(text: str) -> List[int]:
+    """番号系入力を深掘りリクエストとして判定し、記事番号リストを返す。
+    数字・丸数字で始まり parse_article_numbers が番号を抽出できれば深掘り確定。
+    「1」「135」「1詳しく」「1教えて」「1について」などすべて同一ルートに流す。
+    先頭が数字でない自然文（例: 「金利が3%…」）は [] を返してスルーする。
+    """
     if not re.match(r"^[①-⑩1-9]", text or ""):
-        return False
-    return any(k in text for k in _DETAIL_KEYWORDS)
+        return []
+    nums = parse_article_numbers(text, max_n=10)
+    logger.info("parse_detail_request: input=%r → nums=%s", text, nums)
+    return nums
 
 
 _DETAIL_NEW_SCHEMA = {
@@ -1864,7 +1870,7 @@ def handle_message(event):
             "会話ネタ → 話題に使えるネタを見る\n"
             "リンク → 直近ニュースのURLを見る\n\n"
             "気になる番号をそのまま入力\n"
-            "例：1詳しく\n\n"
+            "例：1\n\n"
             "ーーー\n\n"
             "メンバーシップでできること\n"
             "・気になる記事を深掘り\n"
@@ -2152,7 +2158,7 @@ def handle_message(event):
 
     # ★4 ニュース取得トリガー
     if text in _NEWS_TRIGGER_KW:
-        _exclude = get_recent_sent_links(user_id, n=2)
+        _exclude = get_recent_sent_links(user_id, article_limit=15)
         messages, _ = fetch_news_for_reply(user_id, exclude_links=_exclude)
         if not messages:
             reply_text(event.reply_token, "今ちょっとニュース取れなかった\n少し時間おいてまた試して", quick_reply=qr)
@@ -2220,16 +2226,9 @@ def handle_message(event):
                 pass
             return
 
-    # ★7-a 新仕様深掘り（番号＋詳しく）
-    if is_detail_request(text):
-        _nums = parse_article_numbers(text, max_n=10)
-        if not _nums:
-            reply_text(event.reply_token, "番号が読み取れなかった\n「1詳しく」みたいに入力して", quick_reply=qr)
-            try:
-                supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
-            except Exception:
-                pass
-            return
+    # ★7-a 番号入力はすべて深掘りに統一（単体番号・番号+キーワード 問わず）
+    _nums = parse_detail_request(text)
+    if _nums:
 
         free_reply_used = user.get("free_reply_used", False)
 
@@ -2271,7 +2270,7 @@ def handle_message(event):
                 pass
         return
 
-    # ★7-b 自然文Q&A（番号だけの入力は非対応）
+    # ★7-b 自然文Q&A（番号系入力は ★7-a で処理済み）
     _matched_by_ctx = is_related_to_news_context(user_id, text)
 
     if _matched_by_ctx:

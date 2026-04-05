@@ -479,27 +479,31 @@ def save_last_news_batch(user_id: str, news: List[Dict[str, str]]) -> None:
         )
 
 
-def get_recent_sent_links(user_id: str, n: int = 2) -> set:
-    """news_contextsから直近nバッチ分の配信済みlinkをまとめて返す（重複除外用）"""
+def get_recent_sent_links(user_id: str, article_limit: int = 15) -> set:
+    """news_contextsを新しい順に辿り、直近article_limit記事分のlinkをsetで返す（重複除外用）"""
     try:
         res = (
             supabase.table("news_contexts")
             .select("payload")
             .eq("user_id", user_id)
             .order("sent_at", desc=True)
-            .limit(n)
+            .limit(20)  # 20バッチ × 最大5件 = 最大100件。15件には十分
             .execute()
         )
         links: set = set()
         for row in (res.data or []):
+            if len(links) >= article_limit:
+                break
             news_items = (row.get("payload") or {}).get("news_items", [])
             for item in news_items:
+                if len(links) >= article_limit:
+                    break
                 link = item.get("link")
                 if link:
                     links.add(link)
         logger.info(
-            "get_recent_sent_links: user=%s 直近%dバッチ → %d件のlink取得",
-            user_id, n, len(links),
+            "get_recent_sent_links: user=%s article_limit=%d → %d件のlink取得",
+            user_id, article_limit, len(links),
         )
         return links
     except Exception as e:
