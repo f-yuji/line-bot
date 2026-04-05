@@ -453,15 +453,58 @@ def save_last_news_batch(user_id: str, news: List[Dict[str, str]]) -> None:
         {"index": i + 1, "title": n["title"], "link": n.get("link", "")}
         for i, n in enumerate(news)
     ]
+    saved_at = datetime.now(timezone.utc).isoformat()
+    if not items:
+        logger.warning("save_last_news_batch: 空itemsで保存しようとした user=%s", user_id)
+    else:
+        for it in items:
+            logger.info(
+                "save_last_news_batch item: user=%s index=%s title=%s link=%s",
+                user_id, it["index"], it["title"], it["link"],
+            )
     try:
         supabase.table("last_news_batch").upsert({
             "user_id":  user_id,
             "items":    items,
-            "saved_at": datetime.now(timezone.utc).isoformat(),
+            "saved_at": saved_at,
         }, on_conflict="user_id").execute()
-        logger.info("last_news_batch保存: user=%s %d件", user_id, len(items))
+        logger.info(
+            "last_news_batch保存成功: user=%s 件数=%d saved_at=%s",
+            user_id, len(items), saved_at,
+        )
     except Exception as e:
-        logger.error("last_news_batch保存失敗: user=%s %s", user_id, e)
+        logger.error(
+            "last_news_batch保存失敗: user=%s 試行件数=%d error=%s",
+            user_id, len(items), e,
+        )
+
+
+def get_recent_sent_links(user_id: str, n: int = 2) -> set:
+    """news_contextsから直近nバッチ分の配信済みlinkをまとめて返す（重複除外用）"""
+    try:
+        res = (
+            supabase.table("news_contexts")
+            .select("payload")
+            .eq("user_id", user_id)
+            .order("sent_at", desc=True)
+            .limit(n)
+            .execute()
+        )
+        links: set = set()
+        for row in (res.data or []):
+            news_items = (row.get("payload") or {}).get("news_items", [])
+            for item in news_items:
+                link = item.get("link")
+                if link:
+                    links.add(link)
+        logger.info(
+            "get_recent_sent_links: user=%s 直近%dバッチ → %d件のlink取得",
+            user_id, n, len(links),
+        )
+        return links
+    except Exception as e:
+        logger.error("get_recent_sent_links: 取得失敗 user=%s %s", user_id, e)
+        return set()
 
 
 def load_users() -> Dict[str, Any]:
@@ -1253,20 +1296,27 @@ def fetch_news_for_reply(user_id: str, exclude_links: set = None) -> tuple:
     # 重複除外前に十分な候補を確保するため、filter_news には大きめの上限を渡す
     user["max_items"] = MAX_FETCH_ITEMS
 
+    logger.info("fetch_news_for_reply: 候補取得数=%d user=%s", len(news), user_id)
     filtered = filter_news(news, user)
+    logger.info("fetch_news_for_reply: filter_news後=%d件 user=%s", len(filtered), user_id)
     if not filtered:
         logger.warning("fetch_news_for_reply: フィルタ後0件: %s", user_id)
         return [], []
 
     # 重複除外（ハード）: exclude_linksにある記事を完全除外してから件数調整
     if exclude_links:
+        logger.info("fetch_news_for_reply: exclude_links件数=%d user=%s", len(exclude_links), user_id)
         filtered = [n for n in filtered if n.get("link") not in exclude_links]
+        logger.info("fetch_news_for_reply: 重複除外後=%d件 user=%s", len(filtered), user_id)
         if not filtered:
             logger.info("fetch_news_for_reply: 全記事が重複、フォールバックメッセージ返却: %s", user_id)
             return ["今のところはこんなもんかな"], []
+    else:
+        logger.info("fetch_news_for_reply: exclude_links未指定（除外なし） user=%s", user_id)
 
     # 重複除外後に実際の上限を適用
     filtered = filtered[:actual_max]
+    logger.info("fetch_news_for_reply: 最終採用=%d件 user=%s", len(filtered), user_id)
 
     summaries, topic = summarize_articles(filtered)
     messages = build_message(filtered, summaries, topic, mode="reply")

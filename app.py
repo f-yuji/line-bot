@@ -32,7 +32,7 @@ from linebot.v3.messaging import (
 )
 from linebot.v3.webhooks import FollowEvent, MessageEvent, PostbackEvent, TextMessageContent
 
-from send_news import fetch_news_for_reply
+from send_news import fetch_news_for_reply, get_recent_sent_links
 
 # ─── 初期設定 ───
 load_dotenv()
@@ -1513,8 +1513,14 @@ def handle_follow(event):
     reply_text(
         event.reply_token,
         "追加ありがとう\n\n"
-        "まず「使い方」を見てみて\n"
-        "ジャンルを選んで、ニュースで確認できる",
+        "ニュースは朝起きる前に届く\n"
+        "寝てる間だからミュートでOK\n\n"
+        "必要なジャンルに絞れるから\n"
+        "必要ならあとで変えればOK\n\n"
+        "気になるやつはそのまま質問できる\n"
+        "番号でもいけるし、リンクも出せる\n"
+        "そのまま使える会話ネタもある\n\n"
+        "詳しくは「使い方」で確認してみて",
         quick_reply=main_quick_reply(),
     )
 
@@ -1879,7 +1885,8 @@ def handle_message(event):
                     build_genre_flex(genres),
                     TextMessage(text=_help_text),
                 ]
-                if PAYMENT_URL:
+                # 課金ボタンは free ユーザーかつ PAYMENT_URL が設定されている時のみ表示
+                if PAYMENT_URL and plan != "paid":
                     _payment_bubble = FlexBubble(
                         body=FlexBox(
                             layout="vertical",
@@ -2145,8 +2152,7 @@ def handle_message(event):
 
     # ★4 ニュース取得トリガー
     if text in _NEWS_TRIGGER_KW:
-        _last_batch = get_last_news_batch(user_id)
-        _exclude = {item.get("link") for item in (_last_batch or [])}
+        _exclude = get_recent_sent_links(user_id, n=2)
         messages, _ = fetch_news_for_reply(user_id, exclude_links=_exclude)
         if not messages:
             reply_text(event.reply_token, "今ちょっとニュース取れなかった\n少し時間おいてまた試して", quick_reply=qr)
@@ -2171,9 +2177,12 @@ def handle_message(event):
     if is_link_request(text):
         batch_items = get_last_news_batch(user_id)
         if batch_items:
+            logger.info("★6リンク: last_news_batch取得済み items=%d件 user=%s", len(batch_items), user_id)
             # items が1件以上ある場合はリンク一覧のみ返す（本文再送なし）
             reply_text(event.reply_token, _build_link_message(batch_items), quick_reply=qr)
+            logger.info("★6リンク: リンク一覧返却ルート user=%s", user_id)
         else:
+            logger.info("★6リンク: last_news_batch未取得(None or 空) user=%s → 本文返却ルート", user_id)
             # last_news_batch が存在しない or items が空の初回のみ: 本文 → リンク
             messages, news_filtered = fetch_news_for_reply(user_id)
             if not messages:
@@ -2187,6 +2196,7 @@ def handle_message(event):
                         {"index": i + 1, "title": n.get("title", ""), "link": n.get("link", "")}
                         for i, n in enumerate(news_filtered)
                     ]
+                    logger.info("★6リンク: 本文後リンク push items=%d件 user=%s", len(_link_items), user_id)
                     _push_text(user_id, _build_link_message(_link_items))
         try:
             supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
