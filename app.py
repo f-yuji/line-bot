@@ -963,6 +963,7 @@ _DETAIL_NEW_SCHEMA = {
 
 def answer_detail_new(user_id: str, nums: List[int]) -> str:
     """新仕様の深掘り: 事実+背景+展開の3要素、150〜220文字程度"""
+    logger.info("answer_detail_new 実行: user=%s nums=%s", user_id, nums)
     ctx = get_latest_news_context(user_id)
     if not ctx:
         return "まだニュース履歴がない\n一度配信を受けてから試して"
@@ -1104,6 +1105,11 @@ def answer_single_news_item(item: dict, question: str, is_detail: bool) -> str:
 
 
 def answer_news_question(user_id: str, question: str) -> tuple:
+    # 番号入力は深掘りルートで処理するので、ここには来ない想定
+    if parse_detail_request(question):
+        logger.info("answer_news_question: 番号入力は対象外 question=%r", question)
+        return "番号指定は深掘りルートで処理する", []
+
     ctx = get_latest_news_context(user_id)
     if not ctx:
         return "まだニュース履歴がないから答えられないかも\n一度配信を受けてから聞いてみて", []
@@ -1113,28 +1119,18 @@ def answer_news_question(user_id: str, question: str) -> tuple:
 
     is_detail = any(k in question for k in _DETAIL_KEYWORDS)
 
-    total = len(news_items)
-    index_map = {item.get("index", 0): item for item in news_items}
-
-    # 番号指定があれば対象記事だけに絞る
-    specified_nums = parse_article_numbers(question, max_n=total)
-    logger.info("抽出番号: %s", specified_nums)
-    if specified_nums:
-        target_items = [index_map[n] for n in specified_nums if n in index_map]
-        logger.info("対象: %s", [n.get("index") for n in target_items])
-    else:
-        # 自然文：タイトル/reason/interpretationにキーワード一致で最大2件
-        norm_q = _normalize_text(question)
-        matched = []
-        for item in news_items:
-            fields = item.get("title", "") + item.get("reason", "") + item.get("interpretation", "")
-            if norm_q and any(_normalize_text(tok) in norm_q for tok in re.split(r"[　\s、。・,/\-（）「」\n]+", fields) if len(tok) >= 2):
-                matched.append(item)
-            if len(matched) >= 2:
-                break
-        logger.info("自然文一致件数: %s", [n.get("index") for n in matched])
-        target_items = matched if matched else (news_items[:1] if news_items else [])
-        logger.info("自然文最終対象: %s", [n.get("index") for n in target_items])
+    # 自然文：タイトル/reason/interpretationにキーワード一致で最大2件
+    norm_q = _normalize_text(question)
+    matched = []
+    for item in news_items:
+        fields = item.get("title", "") + item.get("reason", "") + item.get("interpretation", "")
+        if norm_q and any(_normalize_text(tok) in norm_q for tok in re.split(r"[　\s、。・,/\-（）「」\n]+", fields) if len(tok) >= 2):
+            matched.append(item)
+        if len(matched) >= 2:
+            break
+    logger.info("自然文一致件数: %s", [n.get("index") for n in matched])
+    target_items = matched if matched else (news_items[:1] if news_items else [])
+    logger.info("自然文最終対象: %s", [n.get("index") for n in target_items])
 
     targets = [item["index"] for item in target_items]
 
@@ -1149,7 +1145,7 @@ def answer_news_question(user_id: str, question: str) -> tuple:
             results.append(f"{idx}. {ans}")
         return "\n\n".join(results), targets
 
-    # 単一記事 → 従来通り
+    # 単一記事
     news_text = "\n".join(
         f"{n['index']}. 【{n.get('category', '')}】{n['title']}（{n.get('reason', '')} / {n.get('interpretation', '')}）"
         for n in target_items
@@ -1166,10 +1162,8 @@ def answer_news_question(user_id: str, question: str) -> tuple:
         "ニュース文脈に沿って答えろ"
     )
     mode = "詳細モードで答えろ。" if is_detail else "通常モードで答えろ。"
-    number_rule = f"指定番号は {specified_nums}。必ずこの番号で返答しろ。\n\n" if specified_nums else ""
     user_prompt = (
         f"ニュース:\n{news_text}\n\n"
-        f"{number_rule}"
         f"質問:\n{question}\n\n"
         f"{mode}短く答えろ。"
     )
@@ -1186,8 +1180,6 @@ def answer_news_question(user_id: str, question: str) -> tuple:
             timeout=15,
         )
         raw = res.choices[0].message.content.strip()
-        if len(specified_nums) == 1:
-            raw = _strip_any_leading_number(raw)
         return raw, targets
     except Exception as e:
         logger.error("Q&A OpenAI エラー: %s", e)
@@ -2279,6 +2271,7 @@ def handle_message(event):
     # ★7-a 番号入力はすべて深掘りに統一（単体番号・番号+キーワード 問わず）
     _nums = parse_detail_request(text)
     if _nums:
+        logger.info("★7-a 深掘り新仕様ルート: user=%s nums=%s text=%r", user_id, _nums, text)
 
         free_reply_used = user.get("free_reply_used", False)
 
@@ -2321,6 +2314,7 @@ def handle_message(event):
         return
 
     # ★7-b 自然文Q&A（番号系入力は ★7-a で処理済み）
+    logger.info("★7-b 自然文Q&Aルート: user=%s text=%r", user_id, text)
     _matched_by_ctx = is_related_to_news_context(user_id, text)
 
     if _matched_by_ctx:
