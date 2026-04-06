@@ -1922,7 +1922,6 @@ def handle_message(event):
         _status = "メンバーシップ" if plan == "paid" else "無料プラン"
         _delivery = "オン" if active else "オフ"
         _genre_text = format_genres(genres) if genres else "全ジャンル"
-        _intro = "使い方はこんな感じ"
         _help_text = (
             "ニュース → 今日のニュースを見る\n"
             "会話ネタ → 話題に使えるネタを見る\n"
@@ -1940,12 +1939,11 @@ def handle_message(event):
             f"配信：{_delivery}\n"
             f"ジャンル：{_genre_text}"
         )
-        # 1通目: 案内文 + ジャンルFlex, 2通目: 使い方本文 (+ 登録ボタン) — 1回のreplyにまとめる
+        # ジャンルFlexと使い方本文 (+ 登録ボタン) を1回のreplyにまとめる
         try:
             with ApiClient(configuration) as api_client:
                 api = MessagingApi(api_client)
                 _msgs_to_send = [
-                    TextMessage(text=_intro),
                     build_genre_flex(genres),
                     TextMessage(text=_help_text),
                 ]
