@@ -1,4 +1,5 @@
 import asyncio
+import html
 import json
 import logging
 import os
@@ -717,11 +718,58 @@ async def _resolve_urls_batch_async(urls: List[str]) -> Dict[str, str]:
     """Google News URLを並列解決。{元URL: 解決済みURL}を返す。失敗時は元URLをそのまま返す"""
     sem = asyncio.Semaphore(20)
 
+    async def _decode_google_news_url(url: str, c: httpx.AsyncClient) -> str:
+        article_id = urlparse(url).path.rstrip("/").split("/")[-1]
+        if not article_id:
+            return url
+
+        page = await c.get(url, timeout=3.0, follow_redirects=True)
+        page.raise_for_status()
+        body = page.text
+
+        ts_match = re.search(r'data-n-a-ts="(\d+)"', body)
+        sg_match = re.search(r'data-n-a-sg="([^"]+)"', body)
+        if not ts_match or not sg_match:
+            logger.info("Google Newsデコード用トークン未検出: %s", url)
+            return str(page.url)
+
+        ts = ts_match.group(1)
+        sg = html.unescape(sg_match.group(1))
+        article_id_json = json.dumps(article_id, ensure_ascii=False)
+        payload_inner = (
+            '["garturlreq",[["en-US","US",["FINANCE_TOP_INDICES","WEB_TEST_1_0_0"],'
+            f'null,null,1,1,"US:en",null,180,null,null,null,null,null,0,null,null,[{ts},723341000]],'
+            f'"en-US","US",1,[2,3,4,8],1,0,"655000234",0,0,null,0],{article_id_json},{ts},"{sg}"]'
+        )
+        f_req = json.dumps([[[
+            "Fbv4je",
+            payload_inner,
+            None,
+            "generic",
+        ]]], ensure_ascii=False, separators=(",", ":"))
+
+        res = await c.post(
+            "https://news.google.com/_/DotsSplashUi/data/batchexecute?rpcids=Fbv4je",
+            data={"f.req": f_req},
+            headers={"Content-Type": "application/x-www-form-urlencoded;charset=utf-8"},
+            timeout=3.0,
+        )
+        res.raise_for_status()
+
+        match = re.search(r'\[\\"garturlres\\",\\"(https?://.+?)\\",', res.text)
+        if not match:
+            logger.info("Google Newsデコード結果未検出: %s", url)
+            return str(page.url)
+
+        resolved = json.loads(f'"{match.group(1)}"')
+        if "\\u" in resolved:
+            resolved = resolved.encode("utf-8").decode("unicode_escape")
+        return html.unescape(resolved)
+
     async def _resolve_one(url: str, c: httpx.AsyncClient) -> tuple:
         async with sem:
             try:
-                res = await c.get(url, timeout=3.0, follow_redirects=True)
-                resolved = str(res.url)
+                resolved = await _decode_google_news_url(url, c)
                 if resolved != url:
                     logger.info("URL解決成功: %s → %s", url, resolved)
                 else:
@@ -731,7 +779,7 @@ async def _resolve_urls_batch_async(urls: List[str]) -> Dict[str, str]:
                 logger.warning("URL解決失敗(フォールバック使用): %s %s", url, e)
                 return url, url
 
-    async with httpx.AsyncClient() as c:
+    async with httpx.AsyncClient(headers=_RSS_HEADERS) as c:
         tasks = [_resolve_one(url, c) for url in urls]
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
