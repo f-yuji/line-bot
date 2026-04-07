@@ -713,6 +713,37 @@ async def _fetch_rss_async(url: str, client: httpx.AsyncClient, max_retries: int
     return feedparser.FeedParserDict(entries=[])
 
 
+async def _resolve_urls_batch_async(urls: List[str]) -> Dict[str, str]:
+    """Google News URLを並列解決。{元URL: 解決済みURL}を返す。失敗時は元URLをそのまま返す"""
+    sem = asyncio.Semaphore(20)
+
+    async def _resolve_one(url: str, c: httpx.AsyncClient) -> tuple:
+        async with sem:
+            try:
+                res = await c.get(url, timeout=3.0, follow_redirects=True)
+                resolved = str(res.url)
+                if resolved != url:
+                    logger.info("URL解決成功: %s → %s", url, resolved)
+                else:
+                    logger.info("URL解決: リダイレクトなし %s", url)
+                return url, resolved
+            except Exception as e:
+                logger.warning("URL解決失敗(フォールバック使用): %s %s", url, e)
+                return url, url
+
+    async with httpx.AsyncClient() as c:
+        tasks = [_resolve_one(url, c) for url in urls]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+    url_map: Dict[str, str] = {}
+    for result in results:
+        if isinstance(result, Exception):
+            continue
+        orig, resolved = result
+        url_map[orig] = resolved
+    return url_map
+
+
 async def _fetch_all_rss_async(urls: list) -> list:
     sem = asyncio.Semaphore(3)
 
@@ -776,6 +807,26 @@ def fetch_news() -> List[Dict[str, str]]:
         news.append(article)
 
     logger.info("重複除外後記事数: %d件", len(news))
+
+    # Google News URLを元記事URLに変換
+    google_urls = [n["link"] for n in news if "news.google.com" in n["link"]]
+    if google_urls:
+        logger.info("Google News URL解決開始: %d件", len(google_urls))
+        url_map = asyncio.run(_resolve_urls_batch_async(google_urls))
+        resolved_links: set = set()
+        resolved_news = []
+        for n in news:
+            orig = n["link"]
+            if orig in url_map:
+                n["link"] = url_map[orig]
+                n["source"] = extract_source_name(n["link"])
+            # 解決後URLで重複チェック（異なるGoogle News URLが同一記事を指す場合の除外）
+            if n["link"] not in resolved_links:
+                resolved_links.add(n["link"])
+                resolved_news.append(n)
+        news = resolved_news
+        logger.info("URL解決後記事数: %d件", len(news))
+
     logger.info("ニュース取得: %d件", len(news))
     return news
 
