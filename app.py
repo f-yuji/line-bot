@@ -406,6 +406,7 @@ def main_quick_reply() -> QuickReply:
         QuickReplyItem(action=MessageAction(label="会話ネタ", text="会話ネタ")),
         QuickReplyItem(action=MessageAction(label="リンク", text="リンク")),
         QuickReplyItem(action=MessageAction(label="使い方", text="使い方")),
+        QuickReplyItem(action=MessageAction(label="停止", text="停止")),
     ])
 
 
@@ -1840,7 +1841,7 @@ def handle_message(event):
     if text in _STOP_WORDS:
         supabase.table("users").update({"active": False}).eq("user_id", user_id).execute()
         clear_last_news_question_targets(user_id)
-        reply_text(event.reply_token, "配信止めた\n再開したい時は「再開」って言って", quick_reply=qr)
+        reply_text(event.reply_token, "配信を停止した", quick_reply=qr)
         try:
             supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
         except Exception:
@@ -1925,9 +1926,14 @@ def handle_message(event):
         _help_text = (
             "ニュース → 今日のニュースを見る\n"
             "会話ネタ → 話題に使えるネタを見る\n"
-            "リンク → 直近ニュースのURLを見る\n\n"
-            "気になる番号をそのまま入力\n"
-            "例：1\n\n"
+            "リンク → 直近ニュースのURLを見る\n"
+            "停止 → 配信を止める（再開は「再開」と入力）\n\n"
+            "ーーー\n\n"
+            "記事の解説が欲しいときは\n"
+            "番号を入力\n"
+            "例：1 / 1と2\n\n"
+            "記事内の言葉が分からないときは\n"
+            "「〇〇ってなに？」と聞いてOK\n\n"
             "ーーー\n\n"
             "メンバーシップでできること\n"
             "・気になる記事を深掘り\n"
