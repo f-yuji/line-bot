@@ -4,7 +4,7 @@ import os
 import re
 from html import escape
 import requests
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit, urlunsplit, parse_qsl
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
@@ -388,14 +388,36 @@ def stripe_is_enabled() -> bool:
     return bool(stripe and STRIPE_SECRET_KEY and STRIPE_PRICE_ID and APP_BASE_URL)
 
 
+def _append_query_params(base_url: str, params: dict[str, str]) -> str:
+    parsed = urlsplit(base_url)
+    existing = dict(parse_qsl(parsed.query, keep_blank_values=True))
+    for key, value in params.items():
+        if value is None:
+            continue
+        existing[key] = value
+    return urlunsplit(parsed._replace(query=urlencode(existing)))
+
+
 def build_payment_url(user_id: Optional[str] = None) -> str:
     cache_bust = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S%f")
 
+    if PAYMENT_URL and user_id and "{user_id}" in PAYMENT_URL:
+        return (
+            PAYMENT_URL
+            .replace("{user_id}", user_id)
+            .replace("{cache_bust}", cache_bust)
+            .replace("{billing_base}", APP_BASE_URL)
+        )
+
+    if PAYMENT_URL and user_id:
+        return _append_query_params(PAYMENT_URL, {
+            "user_id": user_id,
+            "billing_base": APP_BASE_URL,
+            "_cb": cache_bust,
+        })
+
     if stripe_is_enabled() and user_id:
         return f"{APP_BASE_URL}/billing?{urlencode({'user_id': user_id, '_cb': cache_bust})}"
-
-    if PAYMENT_URL and user_id and "{user_id}" in PAYMENT_URL:
-        return PAYMENT_URL.replace("{user_id}", user_id).replace("{cache_bust}", cache_bust)
 
     if PAYMENT_URL:
         joiner = "&" if "?" in PAYMENT_URL else "?"
@@ -413,9 +435,35 @@ def _stripe_timestamp_to_iso(value) -> Optional[str]:
         return None
 
 
+def _stripe_to_dict(value):
+    if isinstance(value, dict):
+        return {k: _stripe_to_dict(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_stripe_to_dict(v) for v in value]
+    if hasattr(value, "_data"):
+        return _stripe_to_dict(getattr(value, "_data"))
+    if hasattr(value, "to_dict_recursive"):
+        try:
+            return value.to_dict_recursive()
+        except Exception:
+            pass
+    return value
+
+
+def _stripe_customer_id_from_subscription(subscription_id: str) -> str:
+    if not stripe or not subscription_id:
+        return ""
+    subscription = stripe.Subscription.retrieve(subscription_id)
+    subscription_data = _stripe_to_dict(subscription) or {}
+    customer_id = subscription_data.get("customer")
+    return str(customer_id or "")
+
+
 def _membership_state_from_stripe_subscription(subscription) -> dict:
+    subscription = _stripe_to_dict(subscription) or {}
     sub_status = str(subscription.get("status", "")).lower()
-    is_active = sub_status in {"trialing", "active", "past_due"}
+    cancel_requested = bool(subscription.get("cancel_at_period_end")) or bool(subscription.get("canceled_at"))
+    is_active = sub_status in {"trialing", "active", "past_due"} and not cancel_requested
     return {
         "membership_status": "active" if is_active else "none",
         "membership_expires_at": _stripe_timestamp_to_iso(subscription.get("current_period_end")),
@@ -424,8 +472,15 @@ def _membership_state_from_stripe_subscription(subscription) -> dict:
 
 
 def _resolve_user_id_from_checkout_session(session) -> str:
+    session = _stripe_to_dict(session) or {}
     metadata = session.get("metadata") or {}
     return metadata.get("line_user_id") or session.get("client_reference_id") or ""
+
+
+def build_billing_manage_url(user_id: str) -> str:
+    if not APP_BASE_URL or not user_id:
+        return ""
+    return f"{APP_BASE_URL}/billing/manage?{urlencode({'user_id': user_id})}"
 
 
 def _billing_page_html(user_id: str, canceled: bool = False) -> str:
@@ -546,6 +601,90 @@ def _billing_page_html(user_id: str, canceled: bool = False) -> str:
 </html>"""
 
 
+def _billing_already_active_html(user_id: str) -> str:
+    safe_user_id = escape(user_id)
+    return f"""<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>すでに有効です</title>
+  <style>
+    body {{
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      padding: 24px;
+      font-family: "Yu Gothic UI", "Hiragino Sans", sans-serif;
+      background: linear-gradient(135deg, #effaf4, #eef6ff);
+      color: #1f2937;
+    }}
+    .card {{
+      width: min(100%, 520px);
+      background: rgba(255,255,255,0.94);
+      border-radius: 28px;
+      padding: 32px 24px;
+      box-shadow: 0 18px 48px rgba(15, 23, 42, 0.12);
+      text-align: center;
+    }}
+    h1 {{ margin: 0 0 12px; font-size: 30px; }}
+    p {{ line-height: 1.8; }}
+    .sub {{ color: #5b6472; font-size: 14px; }}
+  </style>
+</head>
+<body>
+  <main class="card">
+    <h1>すでにメンバーシップ有効中</h1>
+    <p>このLINEアカウントでは、すでに有料機能を使える状態になっています。LINEに戻ってそのまま使ってOKです。</p>
+    <p class="sub">LINE user: {safe_user_id}</p>
+  </main>
+</body>
+</html>"""
+
+
+def _billing_manage_done_html(user_id: str) -> str:
+    safe_user_id = escape(user_id)
+    return f"""<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>手続き完了</title>
+  <style>
+    body {{
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      padding: 24px;
+      font-family: "Yu Gothic UI", "Hiragino Sans", sans-serif;
+      background: linear-gradient(135deg, #f8fafc, #eef6ff);
+      color: #1f2937;
+    }}
+    .card {{
+      width: min(100%, 520px);
+      background: rgba(255,255,255,0.94);
+      border-radius: 28px;
+      padding: 32px 24px;
+      box-shadow: 0 18px 48px rgba(15, 23, 42, 0.12);
+      text-align: center;
+    }}
+    h1 {{ margin: 0 0 12px; font-size: 30px; }}
+    p {{ line-height: 1.8; }}
+    .sub {{ color: #5b6472; font-size: 14px; }}
+  </style>
+</head>
+<body>
+  <main class="card">
+    <h1>手続きページを閉じてOK</h1>
+    <p>Stripe上の手続きが終わったら、この画面を閉じてLINEに戻ってくれ。状態反映には少しだけ時間がかかることがある。</p>
+    <p class="sub">LINE user: {safe_user_id}</p>
+  </main>
+</body>
+</html>"""
+
+
 @app.route("/billing", methods=["GET"])
 def billing_page():
     user_id = (request.args.get("user_id") or "").strip()
@@ -560,7 +699,11 @@ def billing_page():
             return redirect(fallback_url, code=302)
         return "Stripe is not configured", 503
 
-    ensure_user(user_id)
+    user, _ = ensure_user(user_id)
+    effective_plan = resolve_effective_plan(user, datetime.now(timezone.utc))
+    if effective_plan == "paid":
+        return _billing_already_active_html(user_id)
+
     return _billing_page_html(user_id, canceled=canceled)
 
 
@@ -573,7 +716,11 @@ def create_checkout_session():
     if not user_id:
         return "user_id is required", 400
 
-    ensure_user(user_id)
+    user, _ = ensure_user(user_id)
+    effective_plan = resolve_effective_plan(user, datetime.now(timezone.utc))
+    if effective_plan == "paid":
+        return "already active", 409
+
     success_url = f"{APP_BASE_URL}/billing/success?session_id={{CHECKOUT_SESSION_ID}}"
     cancel_url = f"{APP_BASE_URL}/billing?{urlencode({'user_id': user_id, 'canceled': '1'})}"
 
@@ -603,8 +750,9 @@ def billing_success():
     if stripe_is_enabled() and session_id:
         try:
             session = stripe.checkout.Session.retrieve(session_id, expand=["subscription"])
+            session_data = _stripe_to_dict(session) or {}
             user_id = _resolve_user_id_from_checkout_session(session)
-            subscription = session.get("subscription")
+            subscription = session_data.get("subscription")
             if user_id and subscription:
                 apply_membership(
                     user_id,
@@ -655,6 +803,46 @@ def billing_success():
 </html>"""
 
 
+@app.route("/billing/manage", methods=["GET"])
+def billing_manage():
+    user_id = (request.args.get("user_id") or "").strip()
+    if not user_id:
+        return "user_id is required", 400
+
+    if not stripe_is_enabled():
+        return "Stripe is not configured", 503
+
+    user, _ = ensure_user(user_id)
+    effective_plan = resolve_effective_plan(user, datetime.now(timezone.utc))
+    if effective_plan != "paid":
+        return "membership is not active", 409
+
+    subscription_id = str(user.get("membership_plan_id") or "")
+    if not subscription_id:
+        return "subscription is not linked", 409
+
+    try:
+        customer_id = _stripe_customer_id_from_subscription(subscription_id)
+        if not customer_id:
+            return "customer is not linked", 409
+
+        session = stripe.billing_portal.Session.create(
+            customer=customer_id,
+            return_url=f"{APP_BASE_URL}/billing/manage/done?{urlencode({'user_id': user_id})}",
+        )
+    except Exception as e:
+        logger.error("Stripe portal session error user=%s %s", user_id, e)
+        return "Failed to create portal session", 500
+
+    return redirect(session.url, code=303)
+
+
+@app.route("/billing/manage/done", methods=["GET"])
+def billing_manage_done():
+    user_id = (request.args.get("user_id") or "").strip()
+    return _billing_manage_done_html(user_id)
+
+
 @app.route("/stripe/webhook", methods=["POST"])
 def stripe_webhook():
     if not stripe or not STRIPE_WEBHOOK_SECRET:
@@ -670,8 +858,9 @@ def stripe_webhook():
     except stripe.error.SignatureVerificationError:
         abort(400)
 
-    event_type = event.get("type", "")
-    data_object = (event.get("data") or {}).get("object") or {}
+    event_data = _stripe_to_dict(event) or {}
+    event_type = event_data.get("type", "")
+    data_object = (event_data.get("data") or {}).get("object") or {}
 
     try:
         if event_type == "checkout.session.completed":
@@ -1977,6 +2166,7 @@ _MEMBERSHIP_KW = [
     "入り方", "登録",
     "何できる", "何ができる",
 ]
+_MEMBERSHIP_CANCEL_WORDS = {"解約", "キャンセル", "退会"}
 
 
 def normalize_user_text(text: str) -> str:
@@ -2243,6 +2433,35 @@ def handle_message(event):
             pass
         return
 
+    if any(w in text for w in _MEMBERSHIP_CANCEL_WORDS):
+        if plan != "paid":
+            reply_text(
+                event.reply_token,
+                "いま有効な課金はないよ\n\n必要になったらまた「登録」で始めればOK",
+                quick_reply=qr,
+            )
+        else:
+            manage_url = build_billing_manage_url(user_id)
+            if not manage_url:
+                reply_text(
+                    event.reply_token,
+                    "解約ページのURLがまだ作れない状態\n\n.env の APP_BASE_URL を確認してくれ",
+                    quick_reply=qr,
+                )
+            else:
+                reply_text(
+                    event.reply_token,
+                    "解約はこのページからできる\n"
+                    "完了したらこのbotでは即時freeに戻す\n\n"
+                    f"{manage_url}",
+                    quick_reply=qr,
+                )
+        try:
+            supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
+        except Exception:
+            pass
+        return
+
     if any(kw in text for kw in _MEMBERSHIP_KW):
         if any(w in text for w in ["いくら", "料金", "値段"]):
             reply_text(
@@ -2255,6 +2474,13 @@ def handle_message(event):
                 quick_reply=qr,
             )
         elif any(w in text for w in ["入り方", "登録"]):
+            if plan == "paid":
+                reply_text(
+                    event.reply_token,
+                    "すでにメンバーシップ有効中\n\nLINEに戻ってそのまま使ってOK",
+                    quick_reply=qr,
+                )
+                return
             payment_url = build_payment_url(user_id)
             _reg_url = f"\n\n👇ここから入れる\n{payment_url}" if payment_url else ""
             reply_with_payment_for_user(
