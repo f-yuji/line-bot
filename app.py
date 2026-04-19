@@ -462,8 +462,10 @@ def _stripe_customer_id_from_subscription(subscription_id: str) -> str:
 def _membership_state_from_stripe_subscription(subscription) -> dict:
     subscription = _stripe_to_dict(subscription) or {}
     sub_status = str(subscription.get("status", "")).lower()
-    cancel_requested = bool(subscription.get("cancel_at_period_end")) or bool(subscription.get("canceled_at"))
-    is_active = sub_status in {"trialing", "active", "past_due"} and not cancel_requested
+    # cancel_at_period_end / canceled_at は見ない。
+    # status が終了系（canceled / unpaid / incomplete_expired 等）になって初めて none へ落とす。
+    # 解約予約中（cancel_at_period_end=true）でも current_period_end までは paid を維持する。
+    is_active = sub_status in {"trialing", "active", "past_due"}
     return {
         "membership_status": "active" if is_active else "none",
         "membership_expires_at": _stripe_timestamp_to_iso(subscription.get("current_period_end")),
@@ -826,6 +828,8 @@ def billing_manage():
         if not customer_id:
             return "customer is not linked", 409
 
+        # Billing Portal の解約操作は「期間終了時に解約」(cancel_at_period_end) 前提。
+        # 即時解約ではなく current_period_end まで有料機能を使える。
         session = stripe.billing_portal.Session.create(
             customer=customer_id,
             return_url=f"{APP_BASE_URL}/billing/manage/done?{urlencode({'user_id': user_id})}",
@@ -2283,12 +2287,18 @@ _STRONG_COMMANDS = (
 )
 
 
-def _plan_status_text(plan: str, active: bool, genres: list) -> str:
-    plan = normalize_plan(plan)
+def _plan_label(plan: str, membership_status: str) -> str:
+    if membership_status == "active":
+        return "本会員"
+    if normalize_plan(plan) == "paid":
+        return "トライアル中"
+    return "無料プラン"
+
+
+def _plan_status_text(plan: str, active: bool, genres: list, membership_status: str = "none") -> str:
     genre_label = f"ジャンル: {format_genres(genres)}" if genres else "ジャンル: 未設定（全部配信）"
-    plan_label = "メンバーシップ" if plan != "free" else "無料プラン"
     active_label = "配信：オン" if active else "配信：オフ"
-    return f"今こんな感じ\n\n{plan_label}\n{active_label}\n{genre_label}"
+    return f"今こんな感じ\n\n{_plan_label(plan, membership_status)}\n{active_label}\n{genre_label}"
 
 
 @handler.add(MessageEvent, message=TextMessageContent)
@@ -2534,7 +2544,7 @@ def handle_message(event):
         return
 
     if text == "使い方":
-        _status = "メンバーシップ" if plan == "paid" else "無料プラン"
+        _status = _plan_label(plan, user.get("membership_status", "none"))
         _delivery = "オン" if active else "オフ"
         _genre_text = format_genres(genres) if genres else "全ジャンル"
         _help_text = (
@@ -2609,7 +2619,7 @@ def handle_message(event):
         return
 
     if text == "プラン":
-        reply_text(event.reply_token, _plan_status_text(plan, active, genres), quick_reply=qr)
+        reply_text(event.reply_token, _plan_status_text(plan, active, genres, user.get("membership_status", "none")), quick_reply=qr)
         try:
             supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
         except Exception:
@@ -2653,7 +2663,7 @@ def handle_message(event):
         return
 
     if text in _STATUS_WORDS:
-        reply_text(event.reply_token, _plan_status_text(plan, active, genres), quick_reply=qr)
+        reply_text(event.reply_token, _plan_status_text(plan, active, genres, user.get("membership_status", "none")), quick_reply=qr)
         try:
             supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
         except Exception:
@@ -2686,7 +2696,6 @@ def handle_message(event):
         try:
             supabase.table("users").update({
                 "feedback_pending": True,
-                "last_reply_time": now_dt.isoformat(),
             }).eq("user_id", user_id).execute()
         except Exception:
             pass
