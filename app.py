@@ -2,14 +2,21 @@ import json
 import logging
 import os
 import re
+from html import escape
 import requests
+from urllib.parse import urlencode
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
 from dotenv import load_dotenv
-from flask import Flask, request, abort
+from flask import Flask, request, abort, redirect
 from openai import OpenAI
 from supabase import create_client
+
+try:
+    import stripe
+except ImportError:
+    stripe = None
 
 from linebot.v3 import WebhookHandler
 from linebot.v3.exceptions import InvalidSignatureError
@@ -44,11 +51,17 @@ LINE_CHANNEL_SECRET = os.environ["LINE_CHANNEL_SECRET"]
 OPENAI_API_KEY = os.environ["OPENAI_API_KEY"]
 ENV = os.getenv("ENV", "prod")
 PAYMENT_URL = os.getenv("PAYMENT_URL", "").strip()
+APP_BASE_URL = os.getenv("APP_BASE_URL", "").strip().rstrip("/")
+STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY", "").strip()
+STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET", "").strip()
+STRIPE_PRICE_ID = os.getenv("STRIPE_PRICE_ID", "").strip()
 LINE_MEMBERSHIP_USE_API_SYNC = os.getenv("LINE_MEMBERSHIP_USE_API_SYNC", "true").lower() == "true"
 LINE_API_BASE = "https://api.line.me"
 print("SUPABASE_URL =", SUPABASE_URL)
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 openai_client = OpenAI(api_key=OPENAI_API_KEY)
+if stripe and STRIPE_SECRET_KEY:
+    stripe.api_key = STRIPE_SECRET_KEY
 
 app = Flask(__name__)
 configuration = Configuration(access_token=LINE_CHANNEL_ACCESS_TOKEN)
@@ -345,6 +358,317 @@ def sync_membership_from_api(user_id, event_type=None):
     return state
 
 
+def stripe_is_enabled() -> bool:
+    return bool(stripe and STRIPE_SECRET_KEY and STRIPE_PRICE_ID and APP_BASE_URL)
+
+
+def build_payment_url(user_id: Optional[str] = None) -> str:
+    if stripe_is_enabled() and user_id:
+        return f"{APP_BASE_URL}/billing?{urlencode({'user_id': user_id})}"
+
+    if PAYMENT_URL and user_id and "{user_id}" in PAYMENT_URL:
+        return PAYMENT_URL.replace("{user_id}", user_id)
+
+    return PAYMENT_URL
+
+
+def _stripe_timestamp_to_iso(value) -> Optional[str]:
+    if value in (None, ""):
+        return None
+    try:
+        return datetime.fromtimestamp(int(value), tz=timezone.utc).isoformat()
+    except Exception:
+        return None
+
+
+def _membership_state_from_stripe_subscription(subscription) -> dict:
+    sub_status = str(subscription.get("status", "")).lower()
+    is_active = sub_status in {"trialing", "active", "past_due"}
+    return {
+        "membership_status": "active" if is_active else "none",
+        "membership_expires_at": _stripe_timestamp_to_iso(subscription.get("current_period_end")),
+        "membership_plan_id": subscription.get("id"),
+    }
+
+
+def _resolve_user_id_from_checkout_session(session) -> str:
+    metadata = session.get("metadata") or {}
+    return metadata.get("line_user_id") or session.get("client_reference_id") or ""
+
+
+def _billing_page_html(user_id: str, canceled: bool = False) -> str:
+    safe_user_id = escape(user_id)
+    cancel_message = ""
+    if canceled:
+        cancel_message = (
+            "<p class='notice'>決済はキャンセルされました。準備ができたらもう一度進めてOKです。</p>"
+        )
+
+    return f"""<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>メンバーシップ登録</title>
+  <style>
+    :root {{
+      color-scheme: light;
+      --bg1: #fff8ef;
+      --bg2: #f5fbff;
+      --card: rgba(255, 255, 255, 0.92);
+      --text: #1f2937;
+      --muted: #5b6472;
+      --accent: #ff6b35;
+      --border: rgba(31, 41, 55, 0.08);
+      --shadow: 0 18px 48px rgba(15, 23, 42, 0.12);
+    }}
+    * {{ box-sizing: border-box; }}
+    body {{
+      margin: 0;
+      font-family: "Yu Gothic UI", "Hiragino Sans", sans-serif;
+      color: var(--text);
+      background:
+        radial-gradient(circle at top left, #ffe3cf 0, transparent 36%),
+        radial-gradient(circle at bottom right, #d8f3ff 0, transparent 32%),
+        linear-gradient(135deg, var(--bg1), var(--bg2));
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      padding: 24px;
+    }}
+    .card {{
+      width: min(100%, 560px);
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 28px;
+      box-shadow: var(--shadow);
+      padding: 32px 24px;
+      backdrop-filter: blur(8px);
+    }}
+    h1 {{
+      font-size: 30px;
+      line-height: 1.2;
+      margin: 0 0 12px;
+    }}
+    p {{
+      margin: 0 0 16px;
+      line-height: 1.7;
+    }}
+    .sub {{
+      color: var(--muted);
+      font-size: 14px;
+    }}
+    .box {{
+      margin: 20px 0;
+      padding: 16px;
+      border-radius: 18px;
+      background: #fff;
+      border: 1px solid var(--border);
+    }}
+    .notice {{
+      color: #9a3412;
+      background: #fff7ed;
+      border: 1px solid #fed7aa;
+      padding: 12px 14px;
+      border-radius: 14px;
+    }}
+    button {{
+      width: 100%;
+      border: 0;
+      border-radius: 999px;
+      padding: 16px 20px;
+      font-size: 16px;
+      font-weight: 700;
+      cursor: pointer;
+      color: #fff;
+      background: linear-gradient(135deg, var(--accent), #ff8a5b);
+      box-shadow: 0 12px 24px rgba(255, 107, 53, 0.28);
+    }}
+    ul {{
+      padding-left: 20px;
+      margin: 0;
+      color: var(--muted);
+    }}
+  </style>
+</head>
+<body>
+  <main class="card">
+    <p class="sub">LINE user: {safe_user_id}</p>
+    <h1>メンバーシップを開始</h1>
+    <p>Stripeの安全な決済画面に移動します。登録が完了すると、有料機能を順次使えるようになります。</p>
+    {cancel_message}
+    <div class="box">
+      <ul>
+        <li>最新ニュースを深掘りで読める</li>
+        <li>人物トピックの会話機能を開放</li>
+        <li>より広い範囲の質問に対応</li>
+      </ul>
+    </div>
+    <form method="post" action="/stripe/create-checkout-session">
+      <input type="hidden" name="user_id" value="{safe_user_id}">
+      <button type="submit">Stripeで登録する</button>
+    </form>
+    <p class="sub" style="margin-top:14px;">登録後はこの画面を閉じて、LINEに戻って使い始めてください。</p>
+  </main>
+</body>
+</html>"""
+
+
+@app.route("/billing", methods=["GET"])
+def billing_page():
+    user_id = (request.args.get("user_id") or "").strip()
+    canceled = request.args.get("canceled") == "1"
+
+    if not user_id:
+        return "user_id is required", 400
+
+    if not stripe_is_enabled():
+        fallback_url = build_payment_url()
+        if fallback_url:
+            return redirect(fallback_url, code=302)
+        return "Stripe is not configured", 503
+
+    ensure_user(user_id)
+    return _billing_page_html(user_id, canceled=canceled)
+
+
+@app.route("/stripe/create-checkout-session", methods=["POST"])
+def create_checkout_session():
+    if not stripe_is_enabled():
+        return "Stripe is not configured", 503
+
+    user_id = (request.form.get("user_id") or request.args.get("user_id") or "").strip()
+    if not user_id:
+        return "user_id is required", 400
+
+    ensure_user(user_id)
+    success_url = f"{APP_BASE_URL}/billing/success?session_id={{CHECKOUT_SESSION_ID}}"
+    cancel_url = f"{APP_BASE_URL}/billing?{urlencode({'user_id': user_id, 'canceled': '1'})}"
+
+    try:
+        session = stripe.checkout.Session.create(
+            mode="subscription",
+            line_items=[{"price": STRIPE_PRICE_ID, "quantity": 1}],
+            success_url=success_url,
+            cancel_url=cancel_url,
+            client_reference_id=user_id,
+            allow_promotion_codes=True,
+            metadata={"line_user_id": user_id},
+            subscription_data={"metadata": {"line_user_id": user_id}},
+        )
+    except Exception as e:
+        logger.error("Stripe checkout session error user=%s %s", user_id, e)
+        return "Failed to create Stripe session", 500
+
+    return redirect(session.url, code=303)
+
+
+@app.route("/billing/success", methods=["GET"])
+def billing_success():
+    session_id = (request.args.get("session_id") or "").strip()
+    user_id = ""
+
+    if stripe_is_enabled() and session_id:
+        try:
+            session = stripe.checkout.Session.retrieve(session_id, expand=["subscription"])
+            user_id = _resolve_user_id_from_checkout_session(session)
+            subscription = session.get("subscription")
+            if user_id and subscription:
+                apply_membership(
+                    user_id,
+                    _membership_state_from_stripe_subscription(subscription),
+                    event_type="stripe.checkout.session.completed",
+                )
+        except Exception as e:
+            logger.error("Stripe success lookup error session=%s %s", session_id, e)
+
+    safe_user_id = escape(user_id or "確認中")
+    return f"""<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>登録完了</title>
+  <style>
+    body {{
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      padding: 24px;
+      font-family: "Yu Gothic UI", "Hiragino Sans", sans-serif;
+      background: linear-gradient(135deg, #f7fee7, #ecfeff);
+      color: #1f2937;
+    }}
+    .card {{
+      width: min(100%, 520px);
+      background: rgba(255,255,255,0.94);
+      border-radius: 28px;
+      padding: 32px 24px;
+      box-shadow: 0 18px 48px rgba(15, 23, 42, 0.12);
+      text-align: center;
+    }}
+    h1 {{ margin: 0 0 12px; font-size: 30px; }}
+    p {{ line-height: 1.7; }}
+    .sub {{ color: #5b6472; font-size: 14px; }}
+  </style>
+</head>
+<body>
+  <main class="card">
+    <h1>登録ありがとうございます</h1>
+    <p>決済完了を受け付けました。LINEに戻って、ニュースや会話機能をそのまま使ってみてください。</p>
+    <p class="sub">LINE user: {safe_user_id}</p>
+  </main>
+</body>
+</html>"""
+
+
+@app.route("/stripe/webhook", methods=["POST"])
+def stripe_webhook():
+    if not stripe or not STRIPE_WEBHOOK_SECRET:
+        return "Stripe webhook is not configured", 503
+
+    payload = request.get_data()
+    signature = request.headers.get("Stripe-Signature", "")
+
+    try:
+        event = stripe.Webhook.construct_event(payload, signature, STRIPE_WEBHOOK_SECRET)
+    except ValueError:
+        abort(400)
+    except stripe.error.SignatureVerificationError:
+        abort(400)
+
+    event_type = event.get("type", "")
+    data_object = (event.get("data") or {}).get("object") or {}
+
+    try:
+        if event_type == "checkout.session.completed":
+            user_id = _resolve_user_id_from_checkout_session(data_object)
+            if user_id:
+                apply_membership(
+                    user_id,
+                    {
+                        "membership_status": "active",
+                        "membership_expires_at": None,
+                        "membership_plan_id": data_object.get("subscription"),
+                    },
+                    event_type=event_type,
+                )
+        elif event_type in {"customer.subscription.created", "customer.subscription.updated", "customer.subscription.deleted"}:
+            user_id = (data_object.get("metadata") or {}).get("line_user_id")
+            if user_id:
+                apply_membership(
+                    user_id,
+                    _membership_state_from_stripe_subscription(data_object),
+                    event_type=event_type,
+                )
+    except Exception as e:
+        logger.error("Stripe webhook handler error type=%s %s", event_type, e)
+        return "webhook handler error", 500
+
+    return "ok", 200
+
+
 def handle_membership_event(event):
     user_id = event.get("source", {}).get("userId") or event.get("userId")
     if not user_id:
@@ -449,6 +773,37 @@ def reply_with_payment(reply_token: str, text: str, quick_reply: QuickReply = No
                     contents=[
                         FlexButton(
                             action=URIAction(label="機能を開放する", uri=PAYMENT_URL),
+                            style="primary",
+                            height="sm",
+                        )
+                    ],
+                )
+            )
+            flex_msg = FlexMessage(alt_text="機能を開放する", contents=payment_bubble)
+            if quick_reply:
+                flex_msg.quick_reply = quick_reply
+            api.reply_message(
+                ReplyMessageRequest(reply_token=reply_token, messages=[text_msg, flex_msg])
+            )
+    except Exception as e:
+        logger.error("LINE課金ボタン返信エラー: %s", e)
+
+
+def reply_with_payment_for_user(reply_token: str, user_id: str, text: str, quick_reply: QuickReply = None) -> None:
+    payment_url = build_payment_url(user_id)
+    if not payment_url:
+        reply_text(reply_token, text, quick_reply)
+        return
+    try:
+        with ApiClient(configuration) as api_client:
+            api = MessagingApi(api_client)
+            text_msg = TextMessage(text=text)
+            payment_bubble = FlexBubble(
+                body=FlexBox(
+                    layout="vertical",
+                    contents=[
+                        FlexButton(
+                            action=URIAction(label="機能を開放する", uri=payment_url),
                             style="primary",
                             height="sm",
                         )
@@ -1869,8 +2224,9 @@ def handle_message(event):
             )
         elif any(w in text for w in ["入り方", "登録"]):
             _reg_url = f"\n\n👇ここから入れる\n{PAYMENT_URL}" if PAYMENT_URL else ""
-            reply_with_payment(
+            reply_with_payment_for_user(
                 event.reply_token,
+                user_id,
                 "メンバーシップってやつで見れるようにしてる" + _reg_url,
                 quick_reply=qr,
             )
@@ -1948,13 +2304,14 @@ def handle_message(event):
                     TextMessage(text=_help_text),
                 ]
                 # 課金ボタンは free ユーザーかつ PAYMENT_URL が設定されている時のみ表示
-                if PAYMENT_URL and plan != "paid":
+                payment_url = build_payment_url(user_id)
+                if payment_url and plan != "paid":
                     _payment_bubble = FlexBubble(
                         body=FlexBox(
                             layout="vertical",
                             contents=[
                                 FlexButton(
-                                    action=URIAction(label="機能を開放する", uri=PAYMENT_URL),
+                                    action=URIAction(label="機能を開放する", uri=payment_url),
                                     style="primary",
                                     height="sm",
                                 )
@@ -2050,8 +2407,9 @@ def handle_message(event):
             and user.get("trial_started_at")
             and not user.get("feedback_pending")
             and not user.get("feedback_reward_used")):
-        reply_with_payment(
+        reply_with_payment_for_user(
             event.reply_token,
+            user_id,
             "トライアルはここまで\n\n"
             "free会員でもニュースは見れるけど\n"
             "メンバーシップなら、会話ネタとか深掘りまで全部使える\n\n"
@@ -2100,8 +2458,9 @@ def handle_message(event):
 
             user["extended_trial_ended_notified"] = True
 
-            reply_with_payment(
+            reply_with_payment_for_user(
                 event.reply_token,
+                user_id,
                 "延長分はここまで\n\n"
                 "freeでもニュースは見れるけど\n"
                 "メンバーシップなら、会話ネタとか深掘りまで全部使える\n\n"
