@@ -44,10 +44,33 @@ from send_news import fetch_news_for_reply, get_recent_sent_links
 # ─── 初期設定 ───
 load_dotenv()
 
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY")
-LINE_CHANNEL_ACCESS_TOKEN = os.environ["LINE_CHANNEL_ACCESS_TOKEN"]
-LINE_CHANNEL_SECRET = os.environ["LINE_CHANNEL_SECRET"]
+
+def _get_optional_env(name: str) -> str:
+    return os.getenv(name, "").strip()
+
+
+def _get_mode_env(base_name: str, mode: str, *, required: bool = False) -> str:
+    candidates = []
+    normalized_mode = (mode or "").strip().upper()
+    if normalized_mode:
+        candidates.append(f"{base_name}_{normalized_mode}")
+    candidates.append(base_name)
+
+    for candidate in candidates:
+        value = _get_optional_env(candidate)
+        if value:
+            return value
+
+    if required:
+        raise KeyError(candidates[0])
+    return ""
+
+SUPABASE_MODE = _get_optional_env("SUPABASE_MODE") or _get_optional_env("ENV")
+SUPABASE_URL = _get_mode_env("SUPABASE_URL", SUPABASE_MODE, required=True)
+SUPABASE_KEY = _get_mode_env("SUPABASE_KEY", SUPABASE_MODE, required=True)
+LINE_MODE = _get_optional_env("LINE_MODE")
+LINE_CHANNEL_ACCESS_TOKEN = _get_mode_env("LINE_CHANNEL_ACCESS_TOKEN", LINE_MODE, required=True)
+LINE_CHANNEL_SECRET = _get_mode_env("LINE_CHANNEL_SECRET", LINE_MODE, required=True)
 OPENAI_API_KEY = os.environ["OPENAI_API_KEY"]
 ENV = os.getenv("ENV", "prod")
 PAYMENT_URL = os.getenv("PAYMENT_URL", "").strip()
@@ -55,6 +78,7 @@ APP_BASE_URL = os.getenv("APP_BASE_URL", "").strip().rstrip("/")
 STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY", "").strip()
 STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET", "").strip()
 STRIPE_PRICE_ID = os.getenv("STRIPE_PRICE_ID", "").strip()
+OWNER_LINE_USER_ID = _get_mode_env("OWNER_LINE_USER_ID", LINE_MODE)
 LINE_MEMBERSHIP_USE_API_SYNC = os.getenv("LINE_MEMBERSHIP_USE_API_SYNC", "true").lower() == "true"
 LINE_API_BASE = "https://api.line.me"
 print("SUPABASE_URL =", SUPABASE_URL)
@@ -76,6 +100,8 @@ logger = logging.getLogger(__name__)
 
 print("=== 起動確認 ===")
 print(f"環境: {ENV}")
+print(f"SUPABASE_MODE: {SUPABASE_MODE or 'legacy'}")
+print(f"LINE_MODE: {LINE_MODE or 'legacy'}")
 if ENV == "test":
     print("◎ テスト環境で実行中")
 elif ENV == "prod":
@@ -363,11 +389,17 @@ def stripe_is_enabled() -> bool:
 
 
 def build_payment_url(user_id: Optional[str] = None) -> str:
+    cache_bust = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S%f")
+
     if stripe_is_enabled() and user_id:
-        return f"{APP_BASE_URL}/billing?{urlencode({'user_id': user_id})}"
+        return f"{APP_BASE_URL}/billing?{urlencode({'user_id': user_id, '_cb': cache_bust})}"
 
     if PAYMENT_URL and user_id and "{user_id}" in PAYMENT_URL:
-        return PAYMENT_URL.replace("{user_id}", user_id)
+        return PAYMENT_URL.replace("{user_id}", user_id).replace("{cache_bust}", cache_bust)
+
+    if PAYMENT_URL:
+        joiner = "&" if "?" in PAYMENT_URL else "?"
+        return f"{PAYMENT_URL}{joiner}_cb={cache_bust}"
 
     return PAYMENT_URL
 
@@ -2223,7 +2255,8 @@ def handle_message(event):
                 quick_reply=qr,
             )
         elif any(w in text for w in ["入り方", "登録"]):
-            _reg_url = f"\n\n👇ここから入れる\n{PAYMENT_URL}" if PAYMENT_URL else ""
+            payment_url = build_payment_url(user_id)
+            _reg_url = f"\n\n👇ここから入れる\n{payment_url}" if payment_url else ""
             reply_with_payment_for_user(
                 event.reply_token,
                 user_id,

@@ -18,6 +18,27 @@ from supabase import create_client
 # 環境変数読み込み
 load_dotenv()
 
+
+def _get_optional_env(name: str) -> str:
+    return os.getenv(name, "").strip()
+
+
+def _get_mode_env(base_name: str, mode: str, *, required: bool = False) -> str:
+    candidates = []
+    normalized_mode = (mode or "").strip().upper()
+    if normalized_mode:
+        candidates.append(f"{base_name}_{normalized_mode}")
+    candidates.append(base_name)
+
+    for candidate in candidates:
+        value = _get_optional_env(candidate)
+        if value:
+            return value
+
+    if required:
+        raise KeyError(candidates[0])
+    return ""
+
 # ─── ログ設定 ───
 logging.basicConfig(
     level=logging.INFO,
@@ -26,11 +47,13 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ─── 環境変数 ───
-LINE_CHANNEL_ACCESS_TOKEN = os.environ["LINE_CHANNEL_ACCESS_TOKEN"]
+SUPABASE_MODE = _get_optional_env("SUPABASE_MODE") or _get_optional_env("ENV")
+LINE_MODE = _get_optional_env("LINE_MODE")
+LINE_CHANNEL_ACCESS_TOKEN = _get_mode_env("LINE_CHANNEL_ACCESS_TOKEN", LINE_MODE, required=True)
 OPENAI_API_KEY = os.environ["OPENAI_API_KEY"]
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY")
-OWNER_LINE_USER_ID = os.getenv("OWNER_LINE_USER_ID")
+SUPABASE_URL = _get_mode_env("SUPABASE_URL", SUPABASE_MODE, required=True)
+SUPABASE_KEY = _get_mode_env("SUPABASE_KEY", SUPABASE_MODE, required=True)
+OWNER_LINE_USER_ID = _get_mode_env("OWNER_LINE_USER_ID", LINE_MODE)
 ENV = os.getenv("ENV", "prod")
 
 # ─── クライアント ───
