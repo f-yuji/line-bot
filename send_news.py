@@ -71,6 +71,16 @@ RSS_SOURCES = [
     "https://assets.wor.jp/rss/rdf/nikkei/news.rdf",
 ]
 
+# 海外ニュース用RSSソース（国名タグ付き）
+OVERSEAS_RSS_SOURCES = [
+    ("米国", "https://news.yahoo.com/rss/world"),
+    ("英国", "https://feeds.bbci.co.uk/news/world/rss.xml"),
+    ("韓国", "https://www.koreatimes.co.kr/www/rss/rss.xml"),
+    ("アジア", "https://www.channelnewsasia.com/rssfeeds/8395744"),
+    ("インド", "https://timesofindia.indiatimes.com/rssfeeds/296589292.cms"),
+]
+OVERSEAS_MAX_PER_SOURCE = 5
+
 MAX_FETCH_ITEMS = 40
 DEFAULT_MAX_ITEMS = 5
 LINE_MAX_MESSAGE_OBJECTS = 5
@@ -325,6 +335,7 @@ CATEGORY_LABELS: Dict[str, str] = {
     "materials":      "生活",
     "scandal":        "話題",
     "entertainment":  "芸能",
+    "overseas":       "海外",
     "other":          "その他",
 }
 
@@ -592,6 +603,7 @@ CATEGORY_WEIGHTS: Dict[str, int] = {
     "sports":         2,
     "materials":      2,
     "entertainment":  2,
+    "overseas":       3,
     "other":          1,
 }
 
@@ -630,6 +642,10 @@ def classify_category(article: Dict[str, str]) -> str:
 
 
 def score_article(article: Dict[str, str], user_genres: List[str]) -> int:
+    # 海外ニュースはキーワードスコアリング不要。ジャンル選択時のみ通す
+    if article.get("category") == "overseas":
+        return (SCORE_THRESHOLD + 1) if (user_genres and "overseas" in user_genres) else 0
+
     text = f"{article['title']} {article.get('summary', '')}"
     score = 0
 
@@ -827,6 +843,99 @@ async def _fetch_all_rss_async(urls: list) -> list:
         return await asyncio.gather(*tasks, return_exceptions=True)
 
 
+def _translate_overseas_titles(articles: List[Dict]) -> List[Dict]:
+    """海外記事タイトルを一括翻訳して [国名] 日本語タイトル 形式にする。失敗時は英語タイトルにフォールバック"""
+    if not articles:
+        return articles
+
+    # フォールバック: 翻訳失敗時は [国名] 英語タイトルのまま
+    for a in articles:
+        a["title"] = f"[{a['_country']}] {a['title']}"
+
+    titles_text = "\n".join(
+        f"{i+1}. [{a['_country']}] {a['_orig_title']}"
+        for i, a in enumerate(articles)
+    )
+    prompt = (
+        "以下の英語ニュースタイトルを日本語に翻訳してください。\n"
+        "- 各行を「番号. [国名] 日本語タイトル」の形式で返す\n"
+        "- 国名はそのまま維持\n"
+        "- 番号も維持\n"
+        "- 余計な説明は不要\n\n"
+        + titles_text
+    )
+    try:
+        res = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.3,
+        )
+        for line in res.choices[0].message.content.strip().split("\n"):
+            m = re.match(r"(\d+)\.\s*(.+)", line.strip())
+            if m:
+                idx = int(m.group(1)) - 1
+                if 0 <= idx < len(articles):
+                    articles[idx]["title"] = m.group(2).strip()
+        logger.info("海外ニュースタイトル翻訳完了: %d件", len(articles))
+    except Exception as e:
+        logger.error("海外ニュースタイトル翻訳失敗（英語タイトルで代替）: %s", e)
+
+    # 作業用キーを削除
+    for a in articles:
+        a.pop("_country", None)
+        a.pop("_orig_title", None)
+
+    return articles
+
+
+def fetch_overseas_news() -> List[Dict[str, str]]:
+    """海外RSSを取得・翻訳して overseas カテゴリの記事リストを返す"""
+    urls = [url for _, url in OVERSEAS_RSS_SOURCES]
+    country_map = {url: country for country, url in OVERSEAS_RSS_SOURCES}
+
+    results = asyncio.run(_fetch_all_rss_async(urls))
+
+    raw_articles = []
+    seen_titles: set = set()
+
+    for i, result in enumerate(results):
+        url = urls[i]
+        country = country_map[url]
+        if isinstance(result, Exception):
+            logger.warning("海外RSSソース失敗: %s → %s", url, result)
+            continue
+        if not result.entries:
+            logger.warning("海外RSSソース失敗（0件）: %s", url)
+            continue
+
+        count = 0
+        for entry in result.entries:
+            if count >= OVERSEAS_MAX_PER_SOURCE:
+                break
+            title = clean_text(entry.get("title", ""))
+            link = entry.get("link", "")
+            if not title or not link:
+                continue
+            # 同一タイトルの重複排除（異なるソースが同じニュースを配信するケース）
+            norm = re.sub(r"\s+", "", title.lower())
+            if norm in seen_titles:
+                continue
+            seen_titles.add(norm)
+            raw_articles.append({
+                "title": title,
+                "_orig_title": title,
+                "_country": country,
+                "link": link,
+                "summary": strip_html(entry.get("summary", entry.get("description", ""))),
+                "source": extract_source_name(link),
+                "category": "overseas",
+            })
+            count += 1
+
+    logger.info("海外ニュース取得: %d件", len(raw_articles))
+    return _translate_overseas_titles(raw_articles)
+
+
 def fetch_news() -> List[Dict[str, str]]:
     """複数RSSソースを並列取得してマージして返す"""
     all_entries: List[Any] = []
@@ -897,6 +1006,11 @@ def fetch_news() -> List[Dict[str, str]]:
                 resolved_news.append(n)
         news = resolved_news
         logger.info("URL解決後記事数: %d件", len(news))
+
+    # 海外ニュースをマージ
+    overseas = fetch_overseas_news()
+    news.extend(overseas)
+    logger.info("海外ニュースマージ後: %d件（海外 %d件）", len(news), len(overseas))
 
     logger.info("ニュース取得: %d件", len(news))
     return news

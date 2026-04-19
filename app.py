@@ -117,6 +117,7 @@ DISPLAY_GENRE_MAP = {
     "暮らし": ["energy", "materials"],
     "話題": ["entertainment", "scandal", "other"],
     "スポーツ": ["sports"],
+    "海外": ["overseas"],
 }
 
 INTERNAL_TO_DISPLAY = {
@@ -137,6 +138,8 @@ DISPLAY_GENRE_ALIASES: dict = {
     "芸能": "話題",
     "エンタメ": "話題",
     "生活": "暮らし",
+    "海外ニュース": "海外",
+    "world": "海外",
 }
 
 
@@ -1054,6 +1057,7 @@ GENRE_DESC = {
     "暮らし": "医療・教育・生活",
     "話題": "芸能・SNS・流行",
     "スポーツ": "メジャー・マイナー",
+    "海外": "米・英・韓・亜・印の現地ニュース",
 }
 
 
@@ -1063,7 +1067,7 @@ def build_genre_flex(current_genres: list) -> FlexMessage:
         ["経済", "仕事"],
         ["国際", "AI・テック"],
         ["暮らし", "話題"],
-        ["スポーツ"],
+        ["スポーツ", "海外"],
     ]
 
     for chunk in layout_rows:

@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(venv/Scripts/python.exe -c ' *)",
+      "Bash(venv/Scripts/python.exe -m py_compile send_news.py)",
+      "Bash(venv/Scripts/python.exe -m py_compile app.py)"
+    ]
+  }
+}
