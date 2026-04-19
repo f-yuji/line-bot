@@ -844,22 +844,22 @@ async def _fetch_all_rss_async(urls: list) -> list:
 
 
 def _translate_overseas_titles(articles: List[Dict]) -> List[Dict]:
-    """海外記事タイトルを一括翻訳して [国名] 日本語タイトル 形式にする。失敗時は英語タイトルにフォールバック"""
+    """海外記事タイトルを一括翻訳して 〈国名〉 日本語タイトル 形式にする。失敗時は英語タイトルにフォールバック"""
     if not articles:
         return articles
 
-    # フォールバック: 翻訳失敗時は [国名] 英語タイトルのまま
+    # フォールバック: 翻訳失敗時は 〈国名〉 英語タイトルのまま
     for a in articles:
-        a["title"] = f"[{a['_country']}] {a['title']}"
+        a["title"] = f"〈{a['_country']}〉 {a['title']}"
 
     titles_text = "\n".join(
-        f"{i+1}. [{a['_country']}] {a['_orig_title']}"
+        f"{i+1}. 〈{a['_country']}〉 {a['_orig_title']}"
         for i, a in enumerate(articles)
     )
     prompt = (
         "以下の英語ニュースタイトルを日本語に翻訳してください。\n"
-        "- 各行を「番号. [国名] 日本語タイトル」の形式で返す\n"
-        "- 国名はそのまま維持\n"
+        "- 各行を「番号. 〈国名〉 日本語タイトル」の形式で返す\n"
+        "- 〈〉のかっこと国名はそのまま維持\n"
         "- 番号も維持\n"
         "- 余計な説明は不要\n\n"
         + titles_text
