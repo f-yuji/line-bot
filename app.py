@@ -40,6 +40,17 @@ from linebot.v3.messaging import (
 from linebot.v3.webhooks import FollowEvent, MessageEvent, PostbackEvent, TextMessageContent
 
 from send_news import fetch_news_for_reply, get_recent_sent_links
+from nikkei_alert import (
+    get_drop_list,
+    get_single_stock_change,
+    format_drop_list_text,
+    get_ai_comment as get_stock_ai_comment,
+    get_nikkei_change_pct,
+    NIKKEI225,
+)
+
+# 急落株一覧コンテキスト（user_id → drop list）
+_user_drop_list: dict[str, list] = {}
 
 # ─── 初期設定 ───
 load_dotenv()
@@ -955,6 +966,7 @@ def format_genres(genres):
 def main_quick_reply() -> QuickReply:
     return QuickReply(items=[
         QuickReplyItem(action=MessageAction(label="ニュース", text="ニュース")),
+        QuickReplyItem(action=MessageAction(label="急落株", text="急落株")),
         QuickReplyItem(action=MessageAction(label="会話ネタ", text="会話ネタ")),
         QuickReplyItem(action=MessageAction(label="リンク", text="リンク")),
         QuickReplyItem(action=MessageAction(label="使い方", text="使い方")),
@@ -2851,8 +2863,99 @@ def handle_message(event):
             return
         # _qa_would_fire の場合は ★7 Q&A 側でクリア
 
+    # ★急落株一覧
+    if text in {"急落株", "急落", "急落銘柄"}:
+        if plan != "paid":
+            reply_with_payment_for_user(
+                event.reply_token, user_id,
+                "急落株速報は有料会員向けの機能\n\nメンバーシップで使えるようになる",
+                quick_reply=qr,
+            )
+            try:
+                supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
+            except Exception:
+                pass
+            return
+        try:
+            nikkei_pct = get_nikkei_change_pct()
+            drops = get_drop_list()
+            _user_drop_list[user_id] = drops
+            reply_text(event.reply_token, format_drop_list_text(drops, nikkei_pct), quick_reply=qr)
+        except Exception as e:
+            logger.error("急落株一覧取得エラー: %s", e)
+            reply_text(event.reply_token, "データ取得に失敗した\nしばらく待ってから試して", quick_reply=qr)
+        try:
+            supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
+        except Exception:
+            pass
+        return
+
+    # ★急落株 番号選択（drop list コンテキストがある場合、★7-a より先に処理）
+    if user_id in _user_drop_list and re.match(r"^[1-9]$", text):
+        drops = _user_drop_list.get(user_id, [])
+        idx = int(text) - 1
+        if 0 <= idx < len(drops):
+            if plan != "paid":
+                reply_with_payment_for_user(
+                    event.reply_token, user_id,
+                    "個別解説は有料会員向けの機能",
+                    quick_reply=qr,
+                )
+                return
+            stock = drops[idx]
+            try:
+                nikkei_pct = get_nikkei_change_pct()
+                comment = get_stock_ai_comment(stock["code"], stock["name"], stock["change_pct"], nikkei_pct)
+                reply_text(
+                    event.reply_token,
+                    f"{stock['code']} {stock['name']}\n\n{comment}",
+                    quick_reply=qr,
+                )
+            except Exception as e:
+                logger.error("急落株AI解説エラー: %s", e)
+                reply_text(event.reply_token, "解説取得に失敗した", quick_reply=qr)
+            try:
+                supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
+            except Exception:
+                pass
+            return
+        # 番号が範囲外 → 通常の番号ハンドラへ fall through
+
+    # ★急落株 証券コード直接入力（4桁数字でNikkei225に存在する場合）
+    if re.match(r"^[0-9]{4}$", text) and text in NIKKEI225:
+        if plan != "paid":
+            reply_with_payment_for_user(
+                event.reply_token, user_id,
+                "個別解説は有料会員向けの機能",
+                quick_reply=qr,
+            )
+            try:
+                supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
+            except Exception:
+                pass
+            return
+        try:
+            nikkei_pct = get_nikkei_change_pct()
+            stock = get_single_stock_change(text)
+            change_pct = stock["change_pct"] if stock else None
+            comment = get_stock_ai_comment(text, NIKKEI225[text], change_pct, nikkei_pct)
+            reply_text(
+                event.reply_token,
+                f"{text} {NIKKEI225[text]}\n\n{comment}",
+                quick_reply=qr,
+            )
+        except Exception as e:
+            logger.error("急落株コード入力エラー: %s", e)
+            reply_text(event.reply_token, "解説取得に失敗した", quick_reply=qr)
+        try:
+            supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
+        except Exception:
+            pass
+        return
+
     # ★4 ニュース取得トリガー
     if text in _NEWS_TRIGGER_KW:
+        _user_drop_list.pop(user_id, None)
         if plan != "paid":
             logger.info("free_news_count user=%s count=%s", user_id, user.get("free_news_count", 0))
             if user.get("free_news_count", 0) >= 3:
