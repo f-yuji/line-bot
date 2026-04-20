@@ -5,7 +5,14 @@
       "Bash(venv/Scripts/python.exe -m py_compile send_news.py)",
       "Bash(venv/Scripts/python.exe -m py_compile app.py)",
       "Bash(python -m py_compile nikkei_alert.py)",
-      "Bash(python -m py_compile /c/Users/f-yuj/dev/line_bot/nikkei_alert.py)"
+      "Bash(python -m py_compile /c/Users/f-yuj/dev/line_bot/nikkei_alert.py)",
+      "WebFetch(domain:developers.digital.go.jp)",
+      "WebSearch",
+      "Bash(curl -s \"https://api.jgrants-portal.go.jp/exp/v1/public/subsidies?keyword=補助金&sort=created_date&order=DESC&acceptance=1\")",
+      "Bash(python -m json.tool)",
+      "Bash(curl -sv \"https://api.jgrants-portal.go.jp/exp/v1/public/subsidies?keyword=補助金&sort=created_date&order=DESC&acceptance=1\")",
+      "Bash(curl -s \"https://api.jgrants-portal.go.jp/exp/v1/public/subsidies?keyword=%E8%A3%9C%E5%8A%A9%E9%87%91&sort=created_date&order=DESC&acceptance=1\")",
+      "Bash(python -c ' *)"
     ]
   }
 }

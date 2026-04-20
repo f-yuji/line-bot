@@ -55,11 +55,11 @@ _openai = OpenAI(api_key=_OPENAI_API_KEY) if (_OPENAI_AVAILABLE and _OPENAI_API_
 
 # ─── 市場定義 ───
 MARKETS: dict[str, dict] = {
-    "gold":      {"label": "ゴールド",     "ticker": "GC=F"},
-    "us_stocks": {"label": "米株",         "ticker": "^GSPC"},
     "japan":     {"label": "日本株",       "ticker": "^N225"},
-    "bitcoin":   {"label": "ビットコイン", "ticker": "BTC-USD"},
     "usdjpy":    {"label": "ドル円",       "ticker": "USDJPY=X"},
+    "us_stocks": {"label": "米株",         "ticker": "^GSPC"},
+    "gold":      {"label": "ゴールド",     "ticker": "GC=F"},
+    "bitcoin":   {"label": "ビットコイン", "ticker": "BTC-USD"},
     "oil":       {"label": "原油",         "ticker": "CL=F"},
 }
 
@@ -129,34 +129,22 @@ def _generate_ai_summary(key: str, metrics: dict) -> Optional[dict]:
         return f"{v:+.1f}%" if v is not None else "N/A"
 
     prompt = (
-        f"以下の市場データを見て、投資家向けの相場コメントを生成してください。\n\n"
+        f"以下の市場データを見て、投資家向けの相場コメントを80字以内の1文で生成してください。\n\n"
         f"市場: {label}\n"
         f"前日比: {fp(metrics.get('day_pct'))}\n"
         f"週比（5営業日）: {fp(metrics.get('week_pct'))}\n"
         f"月比（20営業日）: {fp(metrics.get('month_pct'))}\n"
         f"52週高値からの距離: {fp(metrics.get('from_high_pct'))}\n\n"
-        "以下の形式のみで出力してください（各50字以内）：\n"
-        "要約: （全体的なトレンドを1文で）\n"
-        "背景: （価格動向の背景要因を1文で）\n"
-        "注目点: （投資家が注意すべき点を1文で）\n\n"
-        "断定口調は避ける。投資助言禁止。"
+        "トレンド・背景・注目点を自然な1文にまとめること。"
+        "断定口調は避ける。投資助言禁止。余計なラベルや改行は不要。"
     )
     try:
         resp = _openai.chat.completions.create(
             model="gpt-4o-mini",
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=200,
+            max_tokens=150,
         )
-        raw = resp.choices[0].message.content.strip()
-        result: dict[str, str] = {"summary": "", "background": "", "note": ""}
-        for line in raw.splitlines():
-            if line.startswith("要約:"):
-                result["summary"] = line[3:].strip()
-            elif line.startswith("背景:"):
-                result["background"] = line[3:].strip()
-            elif line.startswith("注目点:"):
-                result["note"] = line[4:].strip()
-        return result
+        return resp.choices[0].message.content.strip()
     except Exception as e:
         logger.error("AI要約生成エラー key=%s: %s", key, e)
         return None
@@ -164,7 +152,7 @@ def _generate_ai_summary(key: str, metrics: dict) -> Optional[dict]:
 
 # ─── フォーマット ───
 
-def _format_content(key: str, metrics: dict, ai: Optional[dict], fetched_at: datetime) -> str:
+def _format_content(key: str, metrics: dict, ai: Optional[str], fetched_at: datetime) -> str:
     label = MARKETS[key]["label"]
     fetched_str = fetched_at.strftime("%m/%d %H:%M")
 
@@ -181,14 +169,7 @@ def _format_content(key: str, metrics: dict, ai: Optional[dict], fetched_at: dat
         f"高値から: {fp(metrics.get('from_high_pct'))}",
     ]
     if ai:
-        if ai.get("summary"):
-            lines += ["", f"要約:\n{ai['summary']}"]
-        if ai.get("background"):
-            lines += ["", f"背景:\n{ai['background']}"]
-        if ai.get("note"):
-            lines += ["", f"注目点:\n{ai['note']}"]
-    else:
-        lines += ["", "（AI解説は現在利用不可）"]
+        lines += ["", ai]
     return "\n".join(lines)
 
 
@@ -251,6 +232,19 @@ def get_market_reply(key: str) -> str:
         return content
     label = MARKETS.get(key, {}).get("label", key)
     return f"{label}の相場データがまだ準備できていません。\nしばらく待ってから試してください。"
+
+
+def get_all_markets_reply() -> str:
+    """全6市場をまとめて1テキストで返す"""
+    parts = []
+    for key in MARKETS:
+        content = load_market_cache(key)
+        if content:
+            parts.append(content)
+        else:
+            label = MARKETS[key]["label"]
+            parts.append(f"{label}相場\n（データ未取得）")
+    return "\n\n─────\n\n".join(parts)
 
 
 # ─── cron エントリポイント ───

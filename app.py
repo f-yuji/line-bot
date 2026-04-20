@@ -48,10 +48,18 @@ from nikkei_alert import (
     get_nikkei_change_pct,
     NIKKEI225,
 )
-from market_summary import get_market_reply, MARKET_LABEL_TO_KEY, MARKETS
+from market_summary import get_all_markets_reply
+from subsidy_bot import (
+    get_subsidy_list,
+    format_subsidy_list,
+    normalize_prefecture,
+    SUBSIDY_CATEGORIES,
+)
 
 # 急落株一覧コンテキスト（user_id → drop list）
 _user_drop_list: dict[str, list] = {}
+# 補助金 条件入力待ち状態（user_id → "await_prefecture" | "await_category"）
+_user_subsidy_state: dict[str, str] = {}
 
 # ─── 初期設定 ───
 load_dotenv()
@@ -964,8 +972,9 @@ def format_genres(genres):
 
 
 # ─── LINE UI ヘルパー ───
-def _market_select_quick_reply() -> QuickReply:
-    items = [QuickReplyItem(action=MessageAction(label=v["label"], text=v["label"])) for v in MARKETS.values()]
+
+def _subsidy_category_quick_reply() -> QuickReply:
+    items = [QuickReplyItem(action=MessageAction(label=c, text=c)) for c in SUBSIDY_CATEGORIES]
     return QuickReply(items=items)
 
 
@@ -974,6 +983,7 @@ def main_quick_reply() -> QuickReply:
         QuickReplyItem(action=MessageAction(label="ニュース", text="ニュース")),
         QuickReplyItem(action=MessageAction(label="急落株", text="急落株")),
         QuickReplyItem(action=MessageAction(label="相場", text="相場")),
+        QuickReplyItem(action=MessageAction(label="補助金", text="補助金")),
         QuickReplyItem(action=MessageAction(label="会話ネタ", text="会話ネタ")),
         QuickReplyItem(action=MessageAction(label="リンク", text="リンク")),
         QuickReplyItem(action=MessageAction(label="使い方", text="使い方")),
@@ -2870,6 +2880,56 @@ def handle_message(event):
             return
         # _qa_would_fire の場合は ★7 Q&A 側でクリア
 
+    # ★補助金 都道府県入力待ち
+    if _user_subsidy_state.get(user_id) == "await_prefecture":
+        _KNOWN_CMDS = {"急落株", "急落", "急落銘柄", "相場", "補助金", "助成金", "ニュース", "停止", "配信停止", "都道府県変更", "業種変更"}
+        if text not in _KNOWN_CMDS:
+            pref = normalize_prefecture(text)
+            if pref:
+                _user_subsidy_state.pop(user_id, None)
+                try:
+                    supabase.table("users").update({"subsidy_prefecture": pref}).eq("user_id", user_id).execute()
+                    user["subsidy_prefecture"] = pref
+                    logger.info("補助金都道府県保存: user=%s pref=%s", user_id, pref)
+                except Exception as e:
+                    logger.error("都道府県保存エラー: %s", e)
+                try:
+                    items = get_subsidy_list(pref, user.get("subsidy_category"))
+                    reply_text(event.reply_token, format_subsidy_list(items, pref, user.get("subsidy_category")), quick_reply=qr)
+                except Exception as e:
+                    logger.error("補助金一覧取得エラー: %s", e)
+                    reply_text(event.reply_token, "データ取得に失敗した\nしばらく待ってから試して", quick_reply=qr)
+            else:
+                reply_text(event.reply_token, "都道府県が認識できませんでした\n例：東京　神奈川　大阪", quick_reply=qr)
+            try:
+                supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
+            except Exception:
+                pass
+            return
+        else:
+            _user_subsidy_state.pop(user_id, None)
+
+    # ★補助金 業種入力待ち
+    if _user_subsidy_state.get(user_id) == "await_category" and text in SUBSIDY_CATEGORIES:
+        _user_subsidy_state.pop(user_id, None)
+        try:
+            supabase.table("users").update({"subsidy_category": text}).eq("user_id", user_id).execute()
+            user["subsidy_category"] = text
+            logger.info("補助金業種保存: user=%s cat=%s", user_id, text)
+        except Exception as e:
+            logger.error("業種保存エラー: %s", e)
+        try:
+            items = get_subsidy_list(user.get("subsidy_prefecture"), text)
+            reply_text(event.reply_token, format_subsidy_list(items, user.get("subsidy_prefecture"), text), quick_reply=qr)
+        except Exception as e:
+            logger.error("補助金一覧取得エラー: %s", e)
+            reply_text(event.reply_token, "データ取得に失敗した\nしばらく待ってから試して", quick_reply=qr)
+        try:
+            supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
+        except Exception:
+            pass
+        return
+
     # ★急落株一覧
     if text in {"急落株", "急落", "急落銘柄"}:
         if plan != "paid":
@@ -2960,7 +3020,7 @@ def handle_message(event):
             pass
         return
 
-    # ★相場 市場選択UI
+    # ★相場
     if text == "相場":
         if plan != "paid":
             reply_with_payment_for_user(
@@ -2973,23 +3033,24 @@ def handle_message(event):
             except Exception:
                 pass
             return
-        reply_text(
-            event.reply_token,
-            "どの市場を見る？",
-            quick_reply=_market_select_quick_reply(),
-        )
+        try:
+            content = get_all_markets_reply()
+            reply_text(event.reply_token, content, quick_reply=qr)
+        except Exception as e:
+            logger.error("相場取得エラー: %s", e)
+            reply_text(event.reply_token, "データ取得に失敗した\nしばらく待ってから試して", quick_reply=qr)
         try:
             supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
         except Exception:
             pass
         return
 
-    # ★相場 市場選択
-    if text in MARKET_LABEL_TO_KEY:
+    # ★補助金一覧
+    if text in {"補助金", "助成金"}:
         if plan != "paid":
             reply_with_payment_for_user(
                 event.reply_token, user_id,
-                "相場機能は有料会員向けの機能\n\nメンバーシップで使えるようになる",
+                "補助金・助成金機能は有料会員向けの機能\n\nメンバーシップで使えるようになる",
                 quick_reply=qr,
             )
             try:
@@ -2997,13 +3058,36 @@ def handle_message(event):
             except Exception:
                 pass
             return
-        key = MARKET_LABEL_TO_KEY[text]
+        _user_subsidy_state.pop(user_id, None)
+        pref = user.get("subsidy_prefecture")
+        cat = user.get("subsidy_category")
+        logger.info("補助金一覧起動: user=%s pref=%s cat=%s", user_id, pref, cat)
         try:
-            content = get_market_reply(key)
-            reply_text(event.reply_token, content, quick_reply=_market_select_quick_reply())
+            items = get_subsidy_list(pref, cat)
+            reply_text(event.reply_token, format_subsidy_list(items, pref, cat), quick_reply=qr)
         except Exception as e:
-            logger.error("相場取得エラー key=%s: %s", key, e)
+            logger.error("補助金一覧取得エラー: %s", e)
             reply_text(event.reply_token, "データ取得に失敗した\nしばらく待ってから試して", quick_reply=qr)
+        try:
+            supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
+        except Exception:
+            pass
+        return
+
+    # ★補助金 都道府県変更
+    if text == "都道府県変更":
+        _user_subsidy_state[user_id] = "await_prefecture"
+        reply_text(event.reply_token, "都道府県を入力してください\n例：東京　神奈川　大阪", quick_reply=qr)
+        try:
+            supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
+        except Exception:
+            pass
+        return
+
+    # ★補助金 業種変更
+    if text == "業種変更":
+        _user_subsidy_state[user_id] = "await_category"
+        reply_text(event.reply_token, "業種を選んでください", quick_reply=_subsidy_category_quick_reply())
         try:
             supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
         except Exception:
