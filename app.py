@@ -48,6 +48,7 @@ from nikkei_alert import (
     get_nikkei_change_pct,
     NIKKEI225,
 )
+from market_summary import get_market_reply, MARKET_LABEL_TO_KEY, MARKETS
 
 # 急落株一覧コンテキスト（user_id → drop list）
 _user_drop_list: dict[str, list] = {}
@@ -963,10 +964,16 @@ def format_genres(genres):
 
 
 # ─── LINE UI ヘルパー ───
+def _market_select_quick_reply() -> QuickReply:
+    items = [QuickReplyItem(action=MessageAction(label=v["label"], text=v["label"])) for v in MARKETS.values()]
+    return QuickReply(items=items)
+
+
 def main_quick_reply() -> QuickReply:
     return QuickReply(items=[
         QuickReplyItem(action=MessageAction(label="ニュース", text="ニュース")),
         QuickReplyItem(action=MessageAction(label="急落株", text="急落株")),
+        QuickReplyItem(action=MessageAction(label="相場", text="相場")),
         QuickReplyItem(action=MessageAction(label="会話ネタ", text="会話ネタ")),
         QuickReplyItem(action=MessageAction(label="リンク", text="リンク")),
         QuickReplyItem(action=MessageAction(label="使い方", text="使い方")),
@@ -2947,6 +2954,56 @@ def handle_message(event):
         except Exception as e:
             logger.error("急落株コード入力エラー: %s", e)
             reply_text(event.reply_token, "解説取得に失敗した", quick_reply=qr)
+        try:
+            supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
+        except Exception:
+            pass
+        return
+
+    # ★相場 市場選択UI
+    if text == "相場":
+        if plan != "paid":
+            reply_with_payment_for_user(
+                event.reply_token, user_id,
+                "相場機能は有料会員向けの機能\n\nメンバーシップで使えるようになる",
+                quick_reply=qr,
+            )
+            try:
+                supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
+            except Exception:
+                pass
+            return
+        reply_text(
+            event.reply_token,
+            "どの市場を見る？",
+            quick_reply=_market_select_quick_reply(),
+        )
+        try:
+            supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
+        except Exception:
+            pass
+        return
+
+    # ★相場 市場選択
+    if text in MARKET_LABEL_TO_KEY:
+        if plan != "paid":
+            reply_with_payment_for_user(
+                event.reply_token, user_id,
+                "相場機能は有料会員向けの機能\n\nメンバーシップで使えるようになる",
+                quick_reply=qr,
+            )
+            try:
+                supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
+            except Exception:
+                pass
+            return
+        key = MARKET_LABEL_TO_KEY[text]
+        try:
+            content = get_market_reply(key)
+            reply_text(event.reply_token, content, quick_reply=_market_select_quick_reply())
+        except Exception as e:
+            logger.error("相場取得エラー key=%s: %s", key, e)
+            reply_text(event.reply_token, "データ取得に失敗した\nしばらく待ってから試して", quick_reply=qr)
         try:
             supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
         except Exception:

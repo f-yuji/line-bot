@@ -21,7 +21,7 @@ python send_news.py --dry-run
 # ===== Git 基本 =====
 git status
 git add .
-git commit -m "stripe実装前"
+git commit -m "株価速報実装"
 git pull
 git push
 

@@ -4,7 +4,8 @@
       "Bash(venv/Scripts/python.exe -c ' *)",
       "Bash(venv/Scripts/python.exe -m py_compile send_news.py)",
       "Bash(venv/Scripts/python.exe -m py_compile app.py)",
-      "Bash(python -m py_compile nikkei_alert.py)"
+      "Bash(python -m py_compile nikkei_alert.py)",
+      "Bash(python -m py_compile /c/Users/f-yuj/dev/line_bot/nikkei_alert.py)"
     ]
   }
 }

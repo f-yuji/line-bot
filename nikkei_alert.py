@@ -5,6 +5,7 @@ cron: python nikkei_alert.py  (15:40 JST 実行)
 """
 import logging
 import os
+import sys
 from datetime import datetime, timedelta, timezone
 
 from dotenv import load_dotenv
@@ -68,6 +69,8 @@ SUPABASE_KEY = _mode_env("SUPABASE_KEY", SUPABASE_MODE, required=True)
 LINE_MODE = _opt("LINE_MODE")
 LINE_CHANNEL_ACCESS_TOKEN = _mode_env("LINE_CHANNEL_ACCESS_TOKEN", LINE_MODE, required=True)
 OPENAI_API_KEY = _opt("OPENAI_API_KEY")
+JQUANTS_API_KEY = _opt("JQUANTS_API_KEY") or _opt("JQUANTS_REFRESH_TOKEN")
+JQUANTS_API_BASE = "https://api.jquants.com/v2"
 
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 openai_client = OpenAI(api_key=OPENAI_API_KEY) if (_OPENAI_AVAILABLE and OPENAI_API_KEY) else None
@@ -289,8 +292,6 @@ NIKKEI225: dict[str, str] = {
     "9984": "ソフトバンクグループ",
 }
 
-# フェーズ2でJ-Quants財務チェックに差し替え予定
-# 現在は高配当が期待できる主要銘柄を静的に保持
 _HIGH_DIVIDEND_CODES = {"8058", "8001", "8031", "8053", "8002", "2914", "9432", "9433", "8306", "8316", "8411"}
 
 
@@ -398,24 +399,105 @@ def format_drop_list_text(drops: list[dict], nikkei_pct: float | None = None) ->
     return "\n".join(lines)
 
 
+# ─── J-Quants 財務キャッシュ ───
+
+def fetch_and_cache_financials() -> None:
+    """J-Quantsから財務データを取得してSupabaseにキャッシュ（8:00 cron）"""
+    logger.info("=== 財務データ取得開始 ===")
+    now_jst = datetime.now(JST)
+    if now_jst.weekday() >= 5:
+        logger.info("土日のためスキップ")
+        return
+
+    if not JQUANTS_API_KEY:
+        logger.error("JQUANTS_API_KEY未設定。中断")
+        return
+
+    headers = {"x-api-key": JQUANTS_API_KEY}
+    today = now_jst.date().isoformat()
+
+    # 銘柄ごとに最新財務サマリーを取得（赤字判定に使用）
+    import time as _time
+    fin_by_code: dict[str, bool] = {}
+    for code in NIKKEI225:
+        try:
+            r = _requests.get(
+                f"{JQUANTS_API_BASE}/fins/summary",
+                params={"code": code + "0"},
+                headers=headers,
+                timeout=10,
+            )
+            if r.status_code == 200:
+                entries = r.json().get("data", [])
+                if entries:
+                    latest = entries[-1]
+                    profit = latest.get("NetIncome") or latest.get("Profit") or latest.get("OrdinaryProfit")
+                    if profit is not None:
+                        try:
+                            fin_by_code[code] = float(profit) < 0
+                        except (ValueError, TypeError):
+                            pass
+        except Exception as e:
+            logger.warning("財務取得エラー code=%s: %s", code, e)
+        _time.sleep(0.1)
+
+    logger.info("財務データ取得: %d銘柄", len(fin_by_code))
+
+    # 配当はFreeプランで取得不可のため静的リストを使用
+    records = [
+        {
+            "code": code,
+            "is_deficit": fin_by_code.get(code, False),
+            "dividend_per_share": None,
+            "updated_at": today,
+        }
+        for code in NIKKEI225
+    ]
+
+    try:
+        supabase.table("nikkei_financials").upsert(records).execute()
+        logger.info("財務キャッシュ保存完了: %d銘柄", len(records))
+    except Exception as e:
+        logger.error("財務キャッシュ保存エラー: %s", e)
+
+    logger.info("=== 財務データ取得完了 ===")
+
+
+def _load_financials_cache() -> dict[str, dict]:
+    """{code: {is_deficit, dividend_per_share}} をSupabaseから取得"""
+    try:
+        res = supabase.table("nikkei_financials").select("code, is_deficit, dividend_per_share").execute()
+        return {r["code"]: r for r in (res.data or [])}
+    except Exception as e:
+        logger.warning("財務キャッシュ読み込みエラー（スキップ）: %s", e)
+        return {}
+
+
 # ─── 買いシグナル判定 ───
 
-def is_buy_signal(stock: dict, nikkei_pct: float | None) -> bool:
+def is_buy_signal(stock: dict, nikkei_pct: float | None, financials: dict | None = None) -> bool:
     """買いシグナル条件を全て満たすか判定"""
     if stock["change_pct"] > ALERT_THRESHOLD:
         return False
     if nikkei_pct is not None:
-        gap = stock["change_pct"] - nikkei_pct
-        if gap > NIKKEI_GAP_THRESHOLD:
+        if stock["change_pct"] - nikkei_pct > NIKKEI_GAP_THRESHOLD:
             return False
-    # フェーズ2: J-Quantsで財務スクリーニングに差し替え予定
-    # 現状はNikkei225銘柄全て大型株・流動性十分とみなす
+    # 財務キャッシュがあれば赤字銘柄を除外（J-Quants有料プランで精度向上予定）
+    if financials:
+        fin = financials.get(stock["code"])
+        if fin and fin.get("is_deficit") is True:
+            return False
     return True
 
 
-def _build_signal_reason(stock: dict, nikkei_pct: float | None) -> str:
+def _build_signal_reason(stock: dict, nikkei_pct: float | None, financials: dict | None = None) -> str:
     reasons = ["指数より弱い下げ"]
-    if stock["code"] in _HIGH_DIVIDEND_CODES:
+    if financials:
+        fin = financials.get(stock["code"])
+        dpf = fin.get("dividend_per_share") if fin else None
+        if dpf and dpf > 0:
+            reasons.append("配当あり")
+    elif stock["code"] in _HIGH_DIVIDEND_CODES:
         reasons.append("高配当")
     reasons.append("大型株")
     return " / ".join(reasons)
@@ -550,9 +632,12 @@ def run_alert() -> None:
         logger.warning("株価データ取得失敗")
         return
 
+    financials = _load_financials_cache()
+    logger.info("財務キャッシュ: %d銘柄", len(financials))
+
     signals = [
         s for s in stocks.values()
-        if is_buy_signal(s, nikkei_pct) and not has_notified_recently(s["code"])
+        if is_buy_signal(s, nikkei_pct, financials) and not has_notified_recently(s["code"])
     ]
 
     logger.info("買いシグナル候補: %d銘柄", len(signals))
@@ -573,7 +658,7 @@ def run_alert() -> None:
     notified_codes: set[str] = set()
 
     for stock in signals:
-        reason = _build_signal_reason(stock, nikkei_pct)
+        reason = _build_signal_reason(stock, nikkei_pct, financials)
         msg = (
             f"買いシグナル速報\n\n"
             f"{stock['code']} {stock['name']} {stock['change_pct']:+.1f}%\n\n"
@@ -597,6 +682,16 @@ def run_alert() -> None:
 
     logger.info("=== 完了: %d銘柄通知 ===", len(notified_codes))
 
+    # 市場要約キャッシュも更新
+    try:
+        from market_summary import run_market_update
+        run_market_update()
+    except Exception as e:
+        logger.error("市場要約更新エラー: %s", e)
+
 
 if __name__ == "__main__":
-    run_alert()
+    if "--fetch-financials" in sys.argv:
+        fetch_and_cache_financials()
+    else:
+        run_alert()
