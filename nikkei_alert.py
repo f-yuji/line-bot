@@ -39,7 +39,6 @@ logger = logging.getLogger(__name__)
 DROP_LIST_THRESHOLD = -2.0     # 急落一覧閾値（%）
 ALERT_THRESHOLD = -2.5          # 買いシグナル閾値（%）
 NIKKEI_GAP_THRESHOLD = -1.5     # 指数乖離閾値（pt）
-RESEND_COOLDOWN_DAYS = 3        # 再通知抑制日数
 AI_COMMENT_CACHE_TTL_DAYS = 7
 
 JST = timezone(timedelta(hours=9))
@@ -507,16 +506,14 @@ def _build_signal_reason(stock: dict, nikkei_pct: float | None, financials: dict
 # ─── 通知履歴 ───
 
 def has_notified_recently(code: str) -> bool:
-    """RESEND_COOLDOWN_DAYS以内に通知済みか確認"""
-    cutoff = (datetime.now(JST).date() - timedelta(days=RESEND_COOLDOWN_DAYS)).isoformat()
+    """同じ銘柄を同日に通知済みか確認"""
     today = datetime.now(JST).date().isoformat()
     try:
         res = (
             supabase.table("nikkei_alert_log")
             .select("id")
             .eq("code", code)
-            .gte("alerted_at", cutoff)
-            .lte("alerted_at", today)
+            .eq("alerted_at", today)
             .execute()
         )
         return len(res.data) > 0

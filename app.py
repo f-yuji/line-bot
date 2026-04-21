@@ -987,11 +987,11 @@ def _subsidy_category_quick_reply() -> QuickReply:
 def main_quick_reply() -> QuickReply:
     return QuickReply(items=[
         QuickReplyItem(action=MessageAction(label="ニュース", text="ニュース")),
-        QuickReplyItem(action=MessageAction(label="急落株", text="急落株")),
-        QuickReplyItem(action=MessageAction(label="相場", text="相場")),
-        QuickReplyItem(action=MessageAction(label="補助金", text="補助金")),
-        QuickReplyItem(action=MessageAction(label="会話ネタ", text="会話ネタ")),
         QuickReplyItem(action=MessageAction(label="リンク", text="リンク")),
+        QuickReplyItem(action=MessageAction(label="相場", text="相場")),
+        QuickReplyItem(action=MessageAction(label="急落株", text="急落株")),
+        QuickReplyItem(action=MessageAction(label="会話ネタ", text="会話ネタ")),
+        QuickReplyItem(action=MessageAction(label="補助金", text="補助金")),
         QuickReplyItem(action=MessageAction(label="使い方", text="使い方")),
         QuickReplyItem(action=MessageAction(label="停止", text="停止")),
     ])

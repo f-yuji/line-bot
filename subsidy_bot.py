@@ -133,19 +133,14 @@ def _fetch_from_api(
 
 
 def _build_summary_fallback(item: dict) -> str:
-    region = (item.get("target_area_search") or "").strip()
     institution = (item.get("institution_name") or "").strip()
-    deadline = (item.get("acceptance_end_datetime") or "").strip()
+    title = (item.get("title") or "").strip()
 
-    parts = []
-    if region:
-        parts.append(f"対象: {region}")
     if institution:
-        parts.append(f"実施: {institution}")
-    if deadline:
-        parts.append(f"締切: {deadline[:10]}")
-    parts.append("詳細はリンク先で確認して")
-    return " / ".join(parts)
+        return f"{institution}が実施する制度"
+    if title:
+        return f"{title}の募集案内"
+    return "制度の詳細はリンク先で確認して"
 
 
 def _matches_category(item: dict, category: Optional[str]) -> bool:
@@ -322,7 +317,16 @@ def format_subsidy_list(
         lines = []
         for i, item in enumerate(items):
             num = CIRCLE_NUMS[i] if i < len(CIRCLE_NUMS) else f"{i + 1}."
-            lines.append(f"{num} {item['title']}\n{item['summary']}\n{item['url']}")
+            summary = (item.get("summary") or "").strip()
+            deadline = (item.get("deadline") or "").strip()
+            deadline_text = deadline[:10] if deadline else "未定"
+            lines.append(
+                f"{num} {item['title']}\n"
+                f"対象: {item.get('region') or '全国'}\n"
+                f"締切: {deadline_text}\n"
+                f"要点: {summary}\n"
+                f"詳細: {item['url']}"
+            )
         body = "\n\n".join(lines)
 
     footer = "\n\n------\n都道府県変更 / 業種変更 で条件を変えられる"
