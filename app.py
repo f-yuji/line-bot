@@ -51,9 +51,13 @@ from nikkei_alert import (
 from market_summary import get_all_markets_reply
 from subsidy_bot import (
     get_subsidy_list,
-    format_subsidy_list,
+    format_subsidy_page,
+    get_last_subsidy_batch,
     normalize_prefecture,
+    save_last_subsidy_batch,
     SUBSIDY_CATEGORIES,
+    SUBSIDY_PAGE_SIZE,
+    update_last_subsidy_batch_offset,
 )
 
 # 急落株一覧コンテキスト（user_id → drop list）
@@ -257,10 +261,7 @@ def ensure_user(user_id: str):
             "membership_updated_at": None,
             "free_news_count": 0,
             "free_news_date": None,
-            "free_detail_count": 0,
-            "free_detail_date": None,
-            "free_chat_count": 0,
-            "free_chat_date": None,
+            "subsidy_continue_pending": False,
         }, True
     # 既存ユーザー: display_nameを更新
     display_name = get_line_profile(user_id)
@@ -288,11 +289,16 @@ def ensure_user(user_id: str):
     user.setdefault("last_news_context_sent_at", None)
     user.setdefault("free_news_count", 0)
     user.setdefault("free_news_date", None)
-    user.setdefault("free_detail_count", 0)
-    user.setdefault("free_detail_date", None)
-    user.setdefault("free_chat_count", 0)
-    user.setdefault("free_chat_date", None)
+    user.setdefault("subsidy_continue_pending", False)
     return user, False
+
+
+def set_subsidy_continue_pending(user_id: str, user: dict, pending: bool) -> None:
+    user["subsidy_continue_pending"] = pending
+    try:
+        supabase.table("users").update({"subsidy_continue_pending": pending}).eq("user_id", user_id).execute()
+    except Exception as e:
+        logger.error("subsidy_continue_pending update error user=%s pending=%s %s", user_id, pending, e)
 
 
 # ─── LINEメンバーシップ ───
@@ -2390,28 +2396,6 @@ def handle_message(event):
         user["free_news_count"] = 0
         user["free_news_date"] = today
 
-    if user.get("free_detail_date") != today:
-        try:
-            supabase.table("users").update({
-                "free_detail_count": 0,
-                "free_detail_date": today,
-            }).eq("user_id", user_id).execute()
-        except Exception:
-            pass
-        user["free_detail_count"] = 0
-        user["free_detail_date"] = today
-
-    if user.get("free_chat_date") != today:
-        try:
-            supabase.table("users").update({
-                "free_chat_count": 0,
-                "free_chat_date": today,
-            }).eq("user_id", user_id).execute()
-        except Exception:
-            pass
-        user["free_chat_count"] = 0
-        user["free_chat_date"] = today
-
     plan = resolve_effective_plan(user, now_dt)
     active = user.get("active", True)
     genres = user.get("genres", [])
@@ -2578,31 +2562,65 @@ def handle_message(event):
         return
 
     if text == "使い方":
-        _status = _plan_label(plan, user.get("membership_status", "none"))
-        _delivery = "オン" if active else "オフ"
-        _genre_text = format_genres(genres) if genres else "全ジャンル"
-        _help_text = (
-            "ニュース → 今日のニュースを見る\n"
-            "会話ネタ → 話題に使えるネタを見る\n"
-            "リンク → 直近ニュースのURLを見る\n"
-            "停止 → 配信を止める（再開は「再開」と入力）\n\n"
-            "ーーー\n\n"
-            "記事の解説が欲しいときは\n"
-            "番号を入力\n"
-            "例：1 / 1と2\n\n"
-            "記事内の言葉が分からないときは\n"
-            "「〇〇ってなに？」と聞いてOK\n\n"
-            "ーーー\n\n"
-            "メンバーシップでできること\n"
-            "・気になる記事を深掘り\n"
-            "・そのまま使える会話ネタ\n"
-            "・相手に合わせた話題を出せる\n\n"
-            "ーーー\n\n"
-            "今の状態\n"
-            f"プラン：{_status}\n"
-            f"配信：{_delivery}\n"
-            f"ジャンル：{_genre_text}"
-        )
+        if plan == "paid":
+            _help_text = (
+                "使い方ガイド（メンバーシップ）\n\n"
+                "【できること】\n"
+                "・毎朝ニュース要約配信\n"
+                "・優良株急落通知\n\n"
+                "ニュース → 今日のニュースを見る\n"
+                "会話ネタ → 話題に使えるネタを見る\n"
+                "リンク → 直近ニュースのURLを見る\n"
+                "補助金 → 今使える制度を探す\n"
+                "相場 → 市場の動きを見る\n"
+                "急落株 → 急落銘柄を見る\n"
+                "停止 → 配信停止\n"
+                "再開 → 配信再開\n"
+                "状態 → 設定確認\n\n"
+                "――――――\n\n"
+                "【ニュース活用】\n"
+                "1詳しく → 記事を深掘り\n"
+                "〇〇ってなに？ → 用語解説\n"
+                "今後どうなる？ → 追加質問OK\n\n"
+                "――――――\n\n"
+                "【解約するには】\n"
+                "解約 → 自動更新を止める\n"
+                "解約後も次回更新日までは使える\n\n"
+                "――――――\n\n"
+                "【今の状態】\n"
+                f"プラン：{_plan_label(plan, user.get('membership_status', 'none'))}\n"
+                f"配信：{'オン' if active else 'オフ'}\n"
+                f"ジャンル：{format_genres(genres) if genres else '全ジャンル'}"
+            )
+        else:
+            _help_text = (
+                "使い方ガイド（無料プラン）\n\n"
+                "【使える機能】\n"
+                "・毎朝ニュース要約配信\n\n"
+                "ニュース → 今日のニュースを見る\n"
+                "追加ニュース → 1日2回まで\n"
+                "リンク → 直近ニュースのURLを見る\n"
+                "停止 → 配信停止\n"
+                "再開 → 配信再開\n"
+                "状態 → 利用状況を見る\n\n"
+                "――――――\n\n"
+                "【月額298円で使える機能】\n"
+                "・追加ニュース 無制限\n"
+                "・記事を深掘り\n"
+                "・ニュースに質問できる\n"
+                "・会話ネタ作成\n"
+                "・補助金検索\n"
+                "・相場チェック\n"
+                "・急落株チェック\n"
+                "・優良株急落通知\n"
+                "・ジャンル設定\n\n"
+                "気になる方は「登録」と入力\n\n"
+                "――――――\n\n"
+                "【今の状態】\n"
+                f"プラン：{_plan_label(plan, user.get('membership_status', 'none'))}\n"
+                f"配信：{'オン' if active else 'オフ'}\n"
+                f"ジャンル：{format_genres(genres) if genres else '全ジャンル'}"
+            )
         # ジャンルFlexと使い方本文 (+ 登録ボタン) を1回のreplyにまとめる
         try:
             with ApiClient(configuration) as api_client:
@@ -2888,7 +2906,13 @@ def handle_message(event):
                     logger.error("都道府県保存エラー: %s", e)
                 try:
                     items = get_subsidy_list(pref, user.get("subsidy_category"))
-                    reply_text(event.reply_token, format_subsidy_list(items, pref, user.get("subsidy_category")), quick_reply=qr)
+                    save_last_subsidy_batch(user_id, items, pref, user.get("subsidy_category"))
+                    set_subsidy_continue_pending(user_id, user, bool(items))
+                    reply_text(
+                        event.reply_token,
+                        format_subsidy_page(items, pref, user.get("subsidy_category")),
+                        quick_reply=qr,
+                    )
                 except Exception as e:
                     logger.error("補助金一覧取得エラー: %s", e)
                     reply_text(event.reply_token, "データ取得に失敗した\nしばらく待ってから試して", quick_reply=qr)
@@ -2913,7 +2937,13 @@ def handle_message(event):
             logger.error("業種保存エラー: %s", e)
         try:
             items = get_subsidy_list(user.get("subsidy_prefecture"), text)
-            reply_text(event.reply_token, format_subsidy_list(items, user.get("subsidy_prefecture"), text), quick_reply=qr)
+            save_last_subsidy_batch(user_id, items, user.get("subsidy_prefecture"), text)
+            set_subsidy_continue_pending(user_id, user, bool(items))
+            reply_text(
+                event.reply_token,
+                format_subsidy_page(items, user.get("subsidy_prefecture"), text),
+                quick_reply=qr,
+            )
         except Exception as e:
             logger.error("補助金一覧取得エラー: %s", e)
             reply_text(event.reply_token, "データ取得に失敗した\nしばらく待ってから試して", quick_reply=qr)
@@ -3057,10 +3087,65 @@ def handle_message(event):
         logger.info("補助金一覧起動: user=%s pref=%s cat=%s", user_id, pref, cat)
         try:
             items = get_subsidy_list(pref, cat)
-            reply_text(event.reply_token, format_subsidy_list(items, pref, cat), quick_reply=qr)
+            save_last_subsidy_batch(user_id, items, pref, cat)
+            set_subsidy_continue_pending(user_id, user, bool(items))
+            reply_text(event.reply_token, format_subsidy_page(items, pref, cat), quick_reply=qr)
         except Exception as e:
             logger.error("補助金一覧取得エラー: %s", e)
             reply_text(event.reply_token, "データ取得に失敗した\nしばらく待ってから試して", quick_reply=qr)
+        try:
+            supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
+        except Exception:
+            pass
+        return
+
+    if user.get("subsidy_continue_pending") and text not in {"補助金", "助成金", "補助金続き", "助成金続き", "続き", "都道府県変更", "業種変更"}:
+        set_subsidy_continue_pending(user_id, user, False)
+
+    if text in {"補助金続き", "助成金続き"} or (text == "続き" and user.get("subsidy_continue_pending")):
+        if plan != "paid":
+            reply_with_payment_for_user(
+                event.reply_token, user_id,
+                "補助金・助成金機能は有料会員向けの機能\n\nメンバーシップで使えるようになる",
+                quick_reply=qr,
+            )
+            try:
+                supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
+            except Exception:
+                pass
+            return
+
+        batch = get_last_subsidy_batch(user_id)
+        if not batch or not batch.get("items"):
+            reply_text(event.reply_token, "先に「補助金」を押して\n一覧を出してから続きが見れる", quick_reply=qr)
+            try:
+                supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
+            except Exception:
+                pass
+            return
+
+        items = batch.get("items") or []
+        offset = int(batch.get("next_offset") or 0)
+        pref = batch.get("prefecture") or user.get("subsidy_prefecture")
+        cat = batch.get("category") or user.get("subsidy_category")
+
+        if offset >= len(items):
+            set_subsidy_continue_pending(user_id, user, False)
+            reply_text(event.reply_token, "これで全部見た\n条件を変えるなら都道府県変更 / 業種変更", quick_reply=qr)
+            try:
+                supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
+            except Exception:
+                pass
+            return
+
+        next_offset = min(offset + SUBSIDY_PAGE_SIZE, len(items))
+        update_last_subsidy_batch_offset(user_id, next_offset)
+        set_subsidy_continue_pending(user_id, user, next_offset < len(items))
+        reply_text(
+            event.reply_token,
+            format_subsidy_page(items, pref, cat, offset=offset, page_size=SUBSIDY_PAGE_SIZE),
+            quick_reply=qr,
+        )
         try:
             supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
         except Exception:

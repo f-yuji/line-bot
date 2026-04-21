@@ -27,6 +27,8 @@ JST = timezone(timedelta(hours=9))
 LINE_API_BASE = "https://api.line.me"
 JGRANTS_API_BASE = "https://api.jgrants-portal.go.jp/exp/v1/public"
 JGRANTS_PORTAL_BASE = "https://www.jgrants-portal.go.jp/subsidy"
+SUBSIDY_PAGE_SIZE = 5
+SUBSIDY_CACHE_LIMIT = 20
 
 
 def _opt(name: str) -> str:
@@ -192,7 +194,7 @@ def _generate_summary(title: str) -> str:
 def get_subsidy_list(
     prefecture: Optional[str],
     category: Optional[str],
-    limit: int = 5,
+    limit: int = SUBSIDY_CACHE_LIMIT,
 ) -> list[dict]:
     industry = CATEGORY_TO_INDUSTRY.get(category) if category else None
     items1 = _fetch_from_api("補助金", prefecture, industry)
@@ -231,6 +233,78 @@ def get_subsidy_list(
             "deadline": item.get("acceptance_end_datetime", ""),
         })
     return result
+
+
+def save_last_subsidy_batch(
+    user_id: str,
+    items: list[dict],
+    prefecture: Optional[str],
+    category: Optional[str],
+    next_offset: int = SUBSIDY_PAGE_SIZE,
+) -> None:
+    payload = {
+        "user_id": user_id,
+        "prefecture": prefecture or "",
+        "category": category or "",
+        "items": items,
+        "next_offset": next_offset,
+        "saved_at": datetime.now(timezone.utc).isoformat(),
+    }
+    try:
+        supabase.table("last_subsidy_batch").upsert(payload, on_conflict="user_id").execute()
+    except Exception as e:
+        logger.error("last_subsidy_batch save error user=%s: %s", user_id, e)
+
+
+def get_last_subsidy_batch(user_id: str) -> Optional[dict]:
+    try:
+        response = (
+            supabase.table("last_subsidy_batch")
+            .select("user_id,prefecture,category,items,next_offset,saved_at")
+            .eq("user_id", user_id)
+            .single()
+            .execute()
+        )
+        return response.data or None
+    except Exception as e:
+        logger.error("last_subsidy_batch load error user=%s: %s", user_id, e)
+        return None
+
+
+def update_last_subsidy_batch_offset(user_id: str, next_offset: int) -> None:
+    try:
+        supabase.table("last_subsidy_batch").update({"next_offset": next_offset}).eq("user_id", user_id).execute()
+    except Exception as e:
+        logger.error("last_subsidy_batch offset update error user=%s: %s", user_id, e)
+
+
+def format_subsidy_page(
+    items: list[dict],
+    prefecture: Optional[str],
+    category: Optional[str],
+    *,
+    offset: int = 0,
+    page_size: int = SUBSIDY_PAGE_SIZE,
+) -> str:
+    page_items = items[offset: offset + page_size]
+    base_text = format_subsidy_list(page_items, prefecture, category)
+    if not page_items:
+        return base_text
+
+    shown_to = offset + len(page_items)
+    total = len(items)
+    if shown_to < total:
+        return (
+            f"{base_text}\n\n"
+            f"表示: {offset + 1}-{shown_to} / {total}件\n"
+            "続きは「補助金続き」"
+        )
+
+    return (
+        f"{base_text}\n\n"
+        f"表示: {offset + 1}-{shown_to} / {total}件\n"
+        "これで全部"
+    )
 
 
 def format_subsidy_list(
