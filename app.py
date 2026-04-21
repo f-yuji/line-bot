@@ -2778,32 +2778,36 @@ def handle_message(event):
 
     # ★2.4 相手別会話ネタ直発火（「彼女と会話」のような一発入力）
     if is_direct_person_chat_request(text):
-        if plan == "paid":
-            if not can_use_paid_ai(user, plan):
-                reply_text(
-                    event.reply_token,
-                    "今日はここまでにしよ\nまた明日使えるようになってる",
-                    quick_reply=qr,
-                )
-                try:
-                    supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
-                except Exception:
-                    pass
-                return
-            if user.get("pending_action"):
-                _clear_pending(user_id)
-                user["pending_action"] = None
-                user["pending_count"] = None
-            answer = generate_chat_for_person(user_id, text)
-            next_count = user.get("ai_count", 0) + 1
-            reply_text(event.reply_token, answer + get_paid_usage_tail(next_count), quick_reply=qr)
-            increment_ai_count(user_id, user.get("ai_count", 0), today, now_dt)
-        else:
+        if plan != "paid":
             reply_text(
                 event.reply_token,
-                "相手に合わせた話題は\nメンバーシップで使える",
+                "相手別の会話ネタはトライアルかメンバーシップで使える\n\n無料版はニュース受け取りまで",
                 quick_reply=qr,
             )
+            try:
+                supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
+            except Exception:
+                pass
+            return
+        if not can_use_paid_ai(user, plan):
+            reply_text(
+                event.reply_token,
+                "今日はここまでにしよ\nまた明日使えるようになってる",
+                quick_reply=qr,
+            )
+            try:
+                supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
+            except Exception:
+                pass
+            return
+        if user.get("pending_action"):
+            _clear_pending(user_id)
+            user["pending_action"] = None
+            user["pending_count"] = None
+        answer = generate_chat_for_person(user_id, text)
+        next_count = user.get("ai_count", 0) + 1
+        reply_text(event.reply_token, answer + get_paid_usage_tail(next_count), quick_reply=qr)
+        increment_ai_count(user_id, user.get("ai_count", 0), today, now_dt)
         try:
             supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
         except Exception:
@@ -2812,48 +2816,37 @@ def handle_message(event):
 
     # ★2.5 会話ネタ完全一致トリガー（Q&Aより前に処理）
     if text in _CHAT_TOPIC_EXACT or any(kw in text for kw in _CHAT_TOPIC_KW):
-        if plan == "paid":
-            if not can_use_paid_ai(user, plan):
-                reply_text(
-                    event.reply_token,
-                    "今日はここまでにしよ\nまた明日使えるようになってる",
-                    quick_reply=qr,
-                )
-                try:
-                    supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
-                except Exception:
-                    pass
-                return
-            answer = generate_chat_topic_paid(user_id)
-            next_count = user.get("ai_count", 0) + 1
-            reply_text(event.reply_token, answer + get_paid_usage_tail(next_count), quick_reply=qr)
-            _set_pending_person_topic(user_id)
-            increment_ai_count(user_id, user.get("ai_count", 0), today, now_dt)
-        else:
-            logger.info("free_chat_count user=%s count=%s", user_id, user.get("free_chat_count", 0))
-            if user.get("free_chat_count", 0) >= 1:
-                reply_text(
-                    event.reply_token,
-                    "free版の話題出しは今日はここまで\nまた明日使える",
-                    quick_reply=qr,
-                )
-            else:
-                answer = generate_chat_topic_free(user_id)
-                reply_text(event.reply_token, answer, quick_reply=qr)
-                new_count = user.get("free_chat_count", 0) + 1
-                try:
-                    supabase.table("users").update({
-                        "free_chat_count": new_count,
-                        "free_chat_date": today,
-                        "last_reply_time": now_dt.isoformat(),
-                    }).eq("user_id", user_id).execute()
-                    user["free_chat_count"] = new_count
-                except Exception:
-                    pass
+        if plan != "paid":
+            reply_text(
+                event.reply_token,
+                "会話ネタはトライアルかメンバーシップで使える\n\n無料版はニュース受け取りまで",
+                quick_reply=qr,
+            )
             try:
                 supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
             except Exception:
                 pass
+            return
+        if not can_use_paid_ai(user, plan):
+            reply_text(
+                event.reply_token,
+                "今日はここまでにしよ\nまた明日使えるようになってる",
+                quick_reply=qr,
+            )
+            try:
+                supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
+            except Exception:
+                pass
+            return
+        answer = generate_chat_topic_paid(user_id)
+        next_count = user.get("ai_count", 0) + 1
+        reply_text(event.reply_token, answer + get_paid_usage_tail(next_count), quick_reply=qr)
+        _set_pending_person_topic(user_id)
+        increment_ai_count(user_id, user.get("ai_count", 0), today, now_dt)
+        try:
+            supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
+        except Exception:
+            pass
         return
 
     # ★3 相手別会話ネタ（paid only）— pending中の次の1ターン限定
@@ -3099,8 +3092,8 @@ def handle_message(event):
         _user_drop_list.pop(user_id, None)
         if plan != "paid":
             logger.info("free_news_count user=%s count=%s", user_id, user.get("free_news_count", 0))
-            if user.get("free_news_count", 0) >= 3:
-                reply_text(event.reply_token, "free版では今日のニュースはここまで\n明日また見れる", quick_reply=qr)
+            if user.get("free_news_count", 0) >= 2:
+                reply_text(event.reply_token, "無料版の追加ニュースは今日はここまで\nまた明日見れる", quick_reply=qr)
                 try:
                     supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
                 except Exception:
@@ -3189,45 +3182,34 @@ def handle_message(event):
     if _nums:
         logger.info("★7-a 深掘り新仕様ルート: user=%s nums=%s text=%r", user_id, _nums, text)
 
-        if plan == "paid":
-            if not can_use_paid_ai(user, plan):
-                reply_text(event.reply_token, "今日はここまでにしよ\nまた明日使えるようになってる", quick_reply=qr)
-                try:
-                    supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
-                except Exception:
-                    pass
-                return
-            if user.get("pending_action"):
-                _clear_pending(user_id)
-                user["pending_action"] = None
-                user["pending_count"] = None
-            answer = answer_detail_new(user_id, _nums)
-            next_count = user.get("ai_count", 0) + 1
-            reply_text(event.reply_token, answer + get_paid_usage_tail(next_count), quick_reply=qr)
-            increment_ai_count(user_id, user.get("ai_count", 0), today, now_dt)
-            save_last_news_question_targets(user_id, _nums, get_latest_news_context(user_id))
-        else:
-            logger.info("free_detail_count user=%s count=%s", user_id, user.get("free_detail_count", 0))
-            if user.get("free_detail_count", 0) >= 2:
-                reply_text(event.reply_token, "free版の解説は今日はここまで\nまた明日見れる", quick_reply=qr)
-                try:
-                    supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
-                except Exception:
-                    pass
-                return
-            answer = answer_detail_new(user_id, _nums)
-            reply_text(event.reply_token, answer, quick_reply=qr)
-            new_count = user.get("free_detail_count", 0) + 1
+        if plan != "paid":
+            reply_text(
+                event.reply_token,
+                "ニュースの詳しい解説はトライアルかメンバーシップで使える\n\n無料版はニュース受け取りまで",
+                quick_reply=qr,
+            )
             try:
-                supabase.table("users").update({
-                    "free_detail_count": new_count,
-                    "free_detail_date": today,
-                    "last_reply_time": now_dt.isoformat(),
-                }).eq("user_id", user_id).execute()
-                user["free_detail_count"] = new_count
+                supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
             except Exception:
                 pass
-            save_last_news_question_targets(user_id, _nums, get_latest_news_context(user_id))
+            return
+
+        if not can_use_paid_ai(user, plan):
+            reply_text(event.reply_token, "今日はここまでにしよ\nまた明日使えるようになってる", quick_reply=qr)
+            try:
+                supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
+            except Exception:
+                pass
+            return
+        if user.get("pending_action"):
+            _clear_pending(user_id)
+            user["pending_action"] = None
+            user["pending_count"] = None
+        answer = answer_detail_new(user_id, _nums)
+        next_count = user.get("ai_count", 0) + 1
+        reply_text(event.reply_token, answer + get_paid_usage_tail(next_count), quick_reply=qr)
+        increment_ai_count(user_id, user.get("ai_count", 0), today, now_dt)
+        save_last_news_question_targets(user_id, _nums, get_latest_news_context(user_id))
         return
 
     # ★7-b 自然文Q&A（番号系入力は ★7-a で処理済み）
@@ -3243,47 +3225,35 @@ def handle_message(event):
                 pass
             return
 
-        if plan == "paid":
-            if not can_use_paid_ai(user, plan):
-                reply_text(event.reply_token, "今日はここまでにしよ\nまた明日使えるようになってる", quick_reply=qr)
-                try:
-                    supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
-                except Exception:
-                    pass
-                return
-            if user.get("pending_action"):
-                _clear_pending(user_id)
-                user["pending_action"] = None
-                user["pending_count"] = None
-            answer, _q_targets = answer_news_question(user_id, text)
-            next_count = user.get("ai_count", 0) + 1
-            reply_text(event.reply_token, answer + get_paid_usage_tail(next_count), quick_reply=qr)
-            increment_ai_count(user_id, user.get("ai_count", 0), today, now_dt)
-            if _q_targets:
-                save_last_news_question_targets(user_id, _q_targets, get_latest_news_context(user_id))
-        else:
-            logger.info("free_detail_count user=%s count=%s", user_id, user.get("free_detail_count", 0))
-            if user.get("free_detail_count", 0) >= 2:
-                reply_text(event.reply_token, "free版の解説は今日はここまで\nまた明日見れる", quick_reply=qr)
-                try:
-                    supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
-                except Exception:
-                    pass
-                return
-            answer, _q_targets = answer_news_question(user_id, text)
-            reply_text(event.reply_token, answer, quick_reply=qr)
-            new_count = user.get("free_detail_count", 0) + 1
+        if plan != "paid":
+            reply_text(
+                event.reply_token,
+                "ニュースの質問や深掘りはトライアルかメンバーシップで使える\n\n無料版はニュース受け取りまで",
+                quick_reply=qr,
+            )
             try:
-                supabase.table("users").update({
-                    "free_detail_count": new_count,
-                    "free_detail_date": today,
-                    "last_reply_time": now_dt.isoformat(),
-                }).eq("user_id", user_id).execute()
-                user["free_detail_count"] = new_count
+                supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
             except Exception:
                 pass
-            if _q_targets:
-                save_last_news_question_targets(user_id, _q_targets, get_latest_news_context(user_id))
+            return
+
+        if not can_use_paid_ai(user, plan):
+            reply_text(event.reply_token, "今日はここまでにしよ\nまた明日使えるようになってる", quick_reply=qr)
+            try:
+                supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
+            except Exception:
+                pass
+            return
+        if user.get("pending_action"):
+            _clear_pending(user_id)
+            user["pending_action"] = None
+            user["pending_count"] = None
+        answer, _q_targets = answer_news_question(user_id, text)
+        next_count = user.get("ai_count", 0) + 1
+        reply_text(event.reply_token, answer + get_paid_usage_tail(next_count), quick_reply=qr)
+        increment_ai_count(user_id, user.get("ai_count", 0), today, now_dt)
+        if _q_targets:
+            save_last_news_question_targets(user_id, _q_targets, get_latest_news_context(user_id))
         return
 
 

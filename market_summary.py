@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """
-市場動向要約モジュール
-cron実行時に各市場データを取得・AI要約を生成してSupabaseに保存。
-ユーザー問い合わせ時はキャッシュを即返し（AI呼び出しなし）。
+相場サマリーのキャッシュ生成と返信用整形。
+cron: python market_summary.py
 """
 import logging
 import os
@@ -28,22 +27,23 @@ except ImportError:
 load_dotenv()
 
 logger = logging.getLogger(__name__)
-
 JST = timezone(timedelta(hours=9))
 
-# ─── 環境変数 ───
+
 def _opt(name: str) -> str:
     return os.getenv(name, "").strip()
+
 
 def _mode_env(base: str, mode: str, *, required: bool = False) -> str:
     mode_upper = (mode or "").strip().upper()
     for cand in ([f"{base}_{mode_upper}"] if mode_upper else []) + [base]:
-        v = _opt(cand)
-        if v:
-            return v
+        value = _opt(cand)
+        if value:
+            return value
     if required:
         raise KeyError(base)
     return ""
+
 
 _SUPABASE_MODE = _opt("SUPABASE_MODE") or _opt("ENV")
 _SUPABASE_URL = _mode_env("SUPABASE_URL", _SUPABASE_MODE, required=True)
@@ -53,26 +53,23 @@ _OPENAI_API_KEY = _opt("OPENAI_API_KEY")
 supabase = create_client(_SUPABASE_URL, _SUPABASE_KEY)
 _openai = OpenAI(api_key=_OPENAI_API_KEY) if (_OPENAI_AVAILABLE and _OPENAI_API_KEY) else None
 
-# ─── 市場定義 ───
-MARKETS: dict[str, dict] = {
-    "japan":     {"label": "日本株",       "ticker": "^N225"},
-    "usdjpy":    {"label": "ドル円",       "ticker": "USDJPY=X"},
-    "us_stocks": {"label": "米株",         "ticker": "^GSPC"},
-    "gold":      {"label": "ゴールド",     "ticker": "GC=F"},
-    "bitcoin":   {"label": "ビットコイン", "ticker": "BTC-USD"},
-    "oil":       {"label": "原油",         "ticker": "CL=F"},
+MARKETS: dict[str, dict[str, str]] = {
+    "japan": {"label": "日本株", "ticker": "^N225"},
+    "usdjpy": {"label": "ドル円", "ticker": "USDJPY=X"},
+    "us_stocks": {"label": "米株", "ticker": "^GSPC"},
+    "gold": {"label": "ゴールド", "ticker": "GC=F"},
+    "bitcoin": {"label": "ビットコイン", "ticker": "BTC-USD"},
+    "oil": {"label": "原油", "ticker": "CL=F"},
 }
 
-MARKET_LABEL_TO_KEY: dict[str, str] = {v["label"]: k for k, v in MARKETS.items()}
 MARKET_CACHE_TTL_HOURS = 12
 
-
-# ─── データ取得 ───
 
 def _fetch_metrics_once(ticker: str) -> Optional[dict]:
     hist = yf.Ticker(ticker).history(period="1y")
     if hist.empty or len(hist) < 2:
         return None
+
     closes = hist["Close"]
     highs = hist["High"]
 
@@ -104,76 +101,71 @@ def _fetch_metrics_once(ticker: str) -> Optional[dict]:
 
 
 def fetch_market_metrics(key: str) -> Optional[dict]:
-    """指定市場のメトリクスを取得（最大3回リトライ）"""
     if not HAS_YFINANCE:
         return None
+
     ticker = MARKETS[key]["ticker"]
     for attempt in range(3):
         try:
-            result = _fetch_metrics_once(ticker)
-            if result:
-                return result
+            metrics = _fetch_metrics_once(ticker)
+            if metrics:
+                return metrics
         except Exception as e:
-            logger.warning("市場データ取得失敗 key=%s attempt=%d: %s", key, attempt + 1, e)
+            logger.warning("market fetch error key=%s attempt=%d: %s", key, attempt + 1, e)
     return None
 
 
-# ─── AI要約生成 ───
-
-def _generate_ai_summary(key: str, metrics: dict) -> Optional[dict]:
+def _generate_ai_summary(key: str, metrics: dict) -> Optional[str]:
     if not _openai:
         return None
+
     label = MARKETS[key]["label"]
 
-    def fp(v):
-        return f"{v:+.1f}%" if v is not None else "N/A"
+    def fp(value):
+        return f"{value:+.1f}%" if value is not None else "N/A"
 
     prompt = (
-        f"以下の市場データを見て、投資家向けの相場コメントを80字以内の1文で生成してください。\n\n"
-        f"市場: {label}\n"
+        f"相場: {label}\n"
         f"前日比: {fp(metrics.get('day_pct'))}\n"
-        f"週比（5営業日）: {fp(metrics.get('week_pct'))}\n"
-        f"月比（20営業日）: {fp(metrics.get('month_pct'))}\n"
-        f"52週高値からの距離: {fp(metrics.get('from_high_pct'))}\n\n"
-        "トレンド・背景・注目点を自然な1文にまとめること。"
-        "断定口調は避ける。投資助言禁止。余計なラベルや改行は不要。"
+        f"週次: {fp(metrics.get('week_pct'))}\n"
+        f"月次: {fp(metrics.get('month_pct'))}\n"
+        f"52週高値から: {fp(metrics.get('from_high_pct'))}\n\n"
+        "この数字からわかる雰囲気を日本語で1文だけ短くまとめて。"
+        "投資助言っぽくせず、状況説明だけにして。"
     )
+
     try:
-        resp = _openai.chat.completions.create(
+        response = _openai.chat.completions.create(
             model="gpt-4o-mini",
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=150,
+            max_tokens=120,
         )
-        return resp.choices[0].message.content.strip()
+        return response.choices[0].message.content.strip()
     except Exception as e:
-        logger.error("AI要約生成エラー key=%s: %s", key, e)
+        logger.error("market ai summary error key=%s: %s", key, e)
         return None
 
-
-# ─── フォーマット ───
 
 def _format_content(key: str, metrics: dict, ai: Optional[str], fetched_at: datetime) -> str:
     label = MARKETS[key]["label"]
     fetched_str = fetched_at.strftime("%m/%d %H:%M")
 
-    def fp(v):
-        return f"{v:+.1f}%" if v is not None else "N/A"
+    def fp(value):
+        return f"{value:+.1f}%" if value is not None else "N/A"
 
     lines = [
         f"{label}相場",
-        f"（取得: {fetched_str}）",
+        f"取得: {fetched_str}",
         "",
-        f"前日比: {fp(metrics.get('day_pct'))}",
-        f"週比: {fp(metrics.get('week_pct'))}",
-        f"月比: {fp(metrics.get('month_pct'))}",
-        f"高値から: {fp(metrics.get('from_high_pct'))}",
+        f"前日比 {fp(metrics.get('day_pct'))}",
+        f"週次   {fp(metrics.get('week_pct'))}",
+        f"月次   {fp(metrics.get('month_pct'))}",
+        f"高値差 {fp(metrics.get('from_high_pct'))}",
     ]
     if ai:
-        lines += ["", ai]
+        lines.extend(["", ai])
     return "\n".join(lines)
 
-
-# ─── キャッシュ保存・読み込み ───
 
 def _save_market_cache(key: str, content: str, raw_metrics: dict, now_jst: datetime) -> None:
     expires_at = (now_jst + timedelta(hours=MARKET_CACHE_TTL_HOURS)).isoformat()
@@ -188,86 +180,101 @@ def _save_market_cache(key: str, content: str, raw_metrics: dict, now_jst: datet
     }
     try:
         supabase.table("market_cache").upsert(record).execute()
-        logger.info("市場キャッシュ保存完了: %s", key)
+        logger.info("market cache saved key=%s", key)
     except Exception as e:
-        logger.error("市場キャッシュ保存エラー key=%s: %s", key, e)
+        logger.error("market cache save error key=%s: %s", key, e)
+
+
+def _get_market_cache_row(key: str) -> Optional[dict]:
+    try:
+        response = supabase.table("market_cache").select("*").eq("key", key).execute()
+        if response.data:
+            return response.data[0]
+    except Exception as e:
+        logger.error("market cache row load error key=%s: %s", key, e)
+    return None
+
+
+def _is_cache_fresh(row: Optional[dict], now_jst: datetime) -> bool:
+    if not row:
+        return False
+    expires_str = row.get("expires_at") or ""
+    if not expires_str:
+        return False
+    try:
+        expires_dt = datetime.fromisoformat(expires_str.replace("Z", "+00:00")).astimezone(JST)
+    except Exception:
+        return False
+    return now_jst <= expires_dt
 
 
 def load_market_cache(key: str) -> Optional[str]:
-    """キャッシュからコンテンツを返す。TTL切れなら直近データ＋注記を返す"""
     try:
-        res = supabase.table("market_cache").select("*").eq("key", key).execute()
-        if not res.data:
+        row = _get_market_cache_row(key)
+        if not row:
             return None
-        row = res.data[0]
         content = row.get("content") or ""
         if not content:
             return None
 
         now_jst = datetime.now(JST)
-        expires_str = row.get("expires_at") or ""
-        if expires_str:
-            try:
-                expires_dt = datetime.fromisoformat(expires_str.replace("Z", "+00:00"))
-                if now_jst > expires_dt:
-                    last_str = row.get("last_success_at") or row.get("created_at") or ""
-                    try:
-                        last_dt = datetime.fromisoformat(last_str.replace("Z", "+00:00")).astimezone(JST)
-                        note = f"\n\n※最新取得に失敗したため、直近データを表示\n（取得: {last_dt.strftime('%m/%d %H:%M')}）"
-                    except Exception:
-                        note = "\n\n※最新データの取得に失敗しました"
-                    return content + note
-            except Exception:
-                pass
-        return content
+        if _is_cache_fresh(row, now_jst):
+            return content
+
+        last_str = row.get("last_success_at") or row.get("created_at") or ""
+        try:
+            last_dt = datetime.fromisoformat(last_str.replace("Z", "+00:00")).astimezone(JST)
+            note = f"\n\n※ 最新取得に失敗したため、直近キャッシュを表示\n取得: {last_dt.strftime('%m/%d %H:%M')}"
+        except Exception:
+            note = "\n\n※ 最新取得に失敗したため、直近キャッシュを表示"
+        return content + note
     except Exception as e:
-        logger.error("市場キャッシュ読み込みエラー key=%s: %s", key, e)
+        logger.error("market cache load error key=%s: %s", key, e)
         return None
 
 
 def get_market_reply(key: str) -> str:
-    """ユーザーへの返信テキストを返す（キャッシュ優先）"""
     content = load_market_cache(key)
     if content:
         return content
     label = MARKETS.get(key, {}).get("label", key)
-    return f"{label}の相場データがまだ準備できていません。\nしばらく待ってから試してください。"
+    return f"{label}の相場データがまだない\n少し待ってから試してみて"
 
 
 def get_all_markets_reply() -> str:
-    """全6市場をまとめて1テキストで返す"""
     parts = []
     for key in MARKETS:
         content = load_market_cache(key)
         if content:
             parts.append(content)
         else:
-            label = MARKETS[key]["label"]
-            parts.append(f"{label}相場\n（データ未取得）")
-    return "\n\n─────\n\n".join(parts)
+            parts.append(f"{MARKETS[key]['label']}相場\nデータ未取得")
+    return "\n\n------\n\n".join(parts)
 
-
-# ─── cron エントリポイント ───
 
 def run_market_update() -> None:
-    """全市場のデータ取得・AI要約生成・キャッシュ保存（cronから呼び出す）"""
-    logger.info("=== 市場要約更新開始 ===")
+    logger.info("=== market update start ===")
     now_jst = datetime.now(JST)
-
-    if now_jst.weekday() >= 5:
-        logger.info("土日のためスキップ")
-        return
 
     for key in MARKETS:
         try:
+            cache_row = _get_market_cache_row(key)
+            if _is_cache_fresh(cache_row, now_jst):
+                logger.info("market cache still fresh; skip update key=%s", key)
+                continue
             metrics = fetch_market_metrics(key)
             if metrics is None:
-                logger.warning("市場データ取得失敗（スキップ）: %s", key)
+                logger.warning("market fetch failed key=%s", key)
                 continue
             ai = _generate_ai_summary(key, metrics)
             content = _format_content(key, metrics, ai, now_jst)
             _save_market_cache(key, content, metrics, now_jst)
         except Exception as e:
-            logger.error("市場更新エラー key=%s: %s", key, e)
+            logger.error("market update error key=%s: %s", key, e)
 
-    logger.info("=== 市場要約更新完了 ===")
+    logger.info("=== market update done ===")
+
+
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+    run_market_update()

@@ -40,6 +40,7 @@ DROP_LIST_THRESHOLD = -2.0     # 急落一覧閾値（%）
 ALERT_THRESHOLD = -2.5          # 買いシグナル閾値（%）
 NIKKEI_GAP_THRESHOLD = -1.5     # 指数乖離閾値（pt）
 RESEND_COOLDOWN_DAYS = 3        # 再通知抑制日数
+AI_COMMENT_CACHE_TTL_DAYS = 7
 
 JST = timezone(timedelta(hours=9))
 LINE_API_BASE = "https://api.line.me"
@@ -539,6 +540,57 @@ def log_alert(code: str, change_pct: float) -> None:
 
 # ─── AI解説 ───
 
+def _comment_cache_bucket(value: float | None) -> str:
+    if value is None:
+        return "none"
+    return f"{value:.1f}"
+
+
+def _get_cached_ai_comment(code: str, change_pct: float | None, nikkei_pct: float | None) -> str | None:
+    now_iso = datetime.now(timezone.utc).isoformat()
+    try:
+        res = (
+            supabase.table("nikkei_ai_comment_cache")
+            .select("comment")
+            .eq("code", code)
+            .eq("change_bucket", _comment_cache_bucket(change_pct))
+            .eq("nikkei_bucket", _comment_cache_bucket(nikkei_pct))
+            .gte("expires_at", now_iso)
+            .limit(1)
+            .execute()
+        )
+        if res.data:
+            return res.data[0].get("comment")
+    except Exception as e:
+        logger.warning("AI comment cache load error: %s", e)
+    return None
+
+
+def _save_ai_comment_cache(
+    code: str,
+    name: str,
+    change_pct: float | None,
+    nikkei_pct: float | None,
+    comment: str,
+) -> None:
+    now = datetime.now(timezone.utc)
+    row = {
+        "code": code,
+        "name": name,
+        "change_bucket": _comment_cache_bucket(change_pct),
+        "nikkei_bucket": _comment_cache_bucket(nikkei_pct),
+        "comment": comment,
+        "updated_at": now.isoformat(),
+        "expires_at": (now + timedelta(days=AI_COMMENT_CACHE_TTL_DAYS)).isoformat(),
+    }
+    try:
+        supabase.table("nikkei_ai_comment_cache").upsert(
+            row, on_conflict="code,change_bucket,nikkei_bucket"
+        ).execute()
+    except Exception as e:
+        logger.warning("AI comment cache save error: %s", e)
+
+
 def get_ai_comment(
     code: str,
     name: str,
@@ -548,6 +600,9 @@ def get_ai_comment(
     """急落理由と見通しをGPTで生成"""
     if not openai_client:
         return "解説取得できなかった（OpenAI未設定）"
+    cached = _get_cached_ai_comment(code, change_pct, nikkei_pct)
+    if cached:
+        return cached
     try:
         pct_str = f"{change_pct:+.1f}%" if change_pct is not None else "急落"
         nikkei_str = f"日経平均は{nikkei_pct:+.1f}%。" if nikkei_pct is not None else ""
@@ -564,7 +619,10 @@ def get_ai_comment(
             messages=[{"role": "user", "content": prompt}],
             max_tokens=300,
         )
-        return resp.choices[0].message.content.strip()
+        comment = resp.choices[0].message.content.strip()
+        if comment:
+            _save_ai_comment_cache(code, name, change_pct, nikkei_pct, comment)
+        return comment
     except Exception as e:
         logger.error("AI解説エラー: %s", e)
         return "解説の取得に失敗した"

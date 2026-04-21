@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import html
 import json
 import logging
@@ -75,8 +76,7 @@ RSS_SOURCES = [
 OVERSEAS_RSS_SOURCES = [
     ("米国", "https://news.yahoo.com/rss/world"),
     ("英国", "https://feeds.bbci.co.uk/news/world/rss.xml"),
-    ("韓国", "https://www.koreatimes.co.kr/www/rss/rss.xml"),
-    ("アジア", "https://www.channelnewsasia.com/rssfeeds/8395744"),
+    ("アジア", "https://www.channelnewsasia.com/api/v1/rss-outbound-feed?_format=xml&category=6311"),
     ("インド", "https://timesofindia.indiatimes.com/rssfeeds/296589292.cms"),
 ]
 OVERSEAS_MAX_PER_SOURCE = 5
@@ -86,6 +86,8 @@ DEFAULT_MAX_ITEMS = 5
 LINE_MAX_MESSAGE_OBJECTS = 5
 LINE_TEXT_SAFE_LIMIT = 4500
 LINE_RETRY_MAX = 3
+RESOLVED_LINK_CACHE_TTL_HOURS = 72
+OVERSEAS_TITLE_CACHE_TTL_DAYS = 30
 
 _NEWS_QUICK_REPLY = {
     "items": [
@@ -755,6 +757,11 @@ async def _fetch_rss_async(url: str, client: httpx.AsyncClient, max_retries: int
 
 async def _resolve_urls_batch_async(urls: List[str]) -> Dict[str, str]:
     """Google News URLを並列解決。{元URL: 解決済みURL}を返す。失敗時は元URLをそのまま返す"""
+    if not urls:
+        return {}
+
+    cached_map = get_cached_resolved_links(urls)
+    pending_urls = [url for url in urls if url not in cached_map]
     sem = asyncio.Semaphore(20)
 
     async def _decode_google_news_url(url: str, c: httpx.AsyncClient) -> str:
@@ -818,16 +825,24 @@ async def _resolve_urls_batch_async(urls: List[str]) -> Dict[str, str]:
                 logger.warning("URL解決失敗(フォールバック使用): %s %s", url, e)
                 return url, url
 
-    async with httpx.AsyncClient(headers=_RSS_HEADERS) as c:
-        tasks = [_resolve_one(url, c) for url in urls]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
+    results = []
+    if pending_urls:
+        async with httpx.AsyncClient(headers=_RSS_HEADERS) as c:
+            tasks = [_resolve_one(url, c) for url in pending_urls]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
 
-    url_map: Dict[str, str] = {}
+    url_map: Dict[str, str] = dict(cached_map)
     for result in results:
         if isinstance(result, Exception):
             continue
         orig, resolved = result
         url_map[orig] = resolved
+    if pending_urls:
+        save_resolved_links({
+            orig: resolved
+            for orig, resolved in url_map.items()
+            if orig in pending_urls
+        })
     return url_map
 
 
@@ -848,42 +863,57 @@ def _translate_overseas_titles(articles: List[Dict]) -> List[Dict]:
     if not articles:
         return articles
 
-    # フォールバック: 翻訳失敗時は 〈国名〉 英語タイトルのまま
+    cached_titles = get_cached_overseas_translations(articles)
     for a in articles:
-        a["title"] = f"〈{a['_country']}〉 {a['title']}"
+        cache_key = build_overseas_translation_cache_key(a["_country"], a["_orig_title"])
+        a["_translation_cache_key"] = cache_key
+        a["title"] = cached_titles.get(cache_key, f"〈{a['_country']}〉 {a['title']}")
 
-    titles_text = "\n".join(
-        f"{i+1}. 〈{a['_country']}〉 {a['_orig_title']}"
-        for i, a in enumerate(articles)
-    )
-    prompt = (
-        "以下の英語ニュースタイトルを日本語に翻訳してください。\n"
-        "- 各行を「番号. 〈国名〉 日本語タイトル」の形式で返す\n"
-        "- 〈〉のかっこと国名はそのまま維持\n"
-        "- 番号も維持\n"
-        "- 余計な説明は不要\n\n"
-        + titles_text
-    )
-    try:
-        res = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.3,
+    uncached_articles = [a for a in articles if a["_translation_cache_key"] not in cached_titles]
+    if uncached_articles:
+        titles_text = "\n".join(
+            f"{i+1}. 〈{a['_country']}〉 {a['_orig_title']}"
+            for i, a in enumerate(uncached_articles)
         )
-        for line in res.choices[0].message.content.strip().split("\n"):
-            m = re.match(r"(\d+)\.\s*(.+)", line.strip())
-            if m:
+        prompt = (
+            "以下の英語ニュースタイトルを日本語に翻訳してください。\n"
+            "- 各行を「番号. 〈国名〉 日本語タイトル」の形式で返す\n"
+            "- 〈〉のかっこと国名はそのまま維持\n"
+            "- 番号も維持\n"
+            "- 余計な説明は不要\n\n"
+            + titles_text
+        )
+        try:
+            res = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.3,
+            )
+            saved_rows = []
+            for line in res.choices[0].message.content.strip().split("\n"):
+                m = re.match(r"(\d+)\.\s*(.+)", line.strip())
+                if not m:
+                    continue
                 idx = int(m.group(1)) - 1
-                if 0 <= idx < len(articles):
-                    articles[idx]["title"] = m.group(2).strip()
-        logger.info("海外ニュースタイトル翻訳完了: %d件", len(articles))
-    except Exception as e:
-        logger.error("海外ニュースタイトル翻訳失敗（英語タイトルで代替）: %s", e)
+                if 0 <= idx < len(uncached_articles):
+                    translated = m.group(2).strip()
+                    uncached_articles[idx]["title"] = translated
+                    saved_rows.append({
+                        "cache_key": uncached_articles[idx]["_translation_cache_key"],
+                        "country": uncached_articles[idx]["_country"],
+                        "original_title": uncached_articles[idx]["_orig_title"],
+                        "translated_title": translated,
+                    })
+            save_overseas_translations(saved_rows)
+            logger.info("海外ニュースタイトル翻訳完了: %d件", len(uncached_articles))
+        except Exception as e:
+            logger.error("海外ニュースタイトル翻訳失敗（英語タイトルで代替）: %s", e)
 
     # 作業用キーを削除
     for a in articles:
         a.pop("_country", None)
         a.pop("_orig_title", None)
+        a.pop("_translation_cache_key", None)
 
     return articles
 
@@ -936,23 +966,24 @@ def fetch_overseas_news() -> List[Dict[str, str]]:
     return _translate_overseas_titles(raw_articles)
 
 
-def fetch_news() -> List[Dict[str, str]]:
+def fetch_news(*, include_domestic: bool = True, include_overseas: bool = True) -> List[Dict[str, str]]:
     """複数RSSソースを並列取得してマージして返す"""
     all_entries: List[Any] = []
 
-    results = asyncio.run(_fetch_all_rss_async(RSS_SOURCES))
-    for i, result in enumerate(results):
-        rss_url = RSS_SOURCES[i]
-        if isinstance(result, Exception):
-            logger.warning("RSSソース失敗: %s → %s", rss_url, result)
-            continue
-        if result.entries:
-            logger.info("RSSソース成功: url=%s entries=%d", rss_url, len(result.entries))
-            all_entries.extend(result.entries[:MAX_FETCH_ITEMS])
-        else:
-            logger.warning("RSSソース失敗: %s", rss_url)
+    if include_domestic:
+        results = asyncio.run(_fetch_all_rss_async(RSS_SOURCES))
+        for i, result in enumerate(results):
+            rss_url = RSS_SOURCES[i]
+            if isinstance(result, Exception):
+                logger.warning("RSSソース失敗: %s → %s", rss_url, result)
+                continue
+            if result.entries:
+                logger.info("RSSソース成功: url=%s entries=%d", rss_url, len(result.entries))
+                all_entries.extend(result.entries[:MAX_FETCH_ITEMS])
+            else:
+                logger.warning("RSSソース失敗: %s", rss_url)
 
-    if not all_entries:
+    if include_domestic and not all_entries and not include_overseas:
         logger.error("RSS取得失敗: 全ソースからエントリ0件")
         return []
 
@@ -1008,12 +1039,102 @@ def fetch_news() -> List[Dict[str, str]]:
         logger.info("URL解決後記事数: %d件", len(news))
 
     # 海外ニュースをマージ
-    overseas = fetch_overseas_news()
-    news.extend(overseas)
-    logger.info("海外ニュースマージ後: %d件（海外 %d件）", len(news), len(overseas))
+    if include_overseas:
+        overseas = fetch_overseas_news()
+        news.extend(overseas)
+        logger.info("海外ニュースマージ後: %d件（海外 %d件）", len(news), len(overseas))
 
     logger.info("ニュース取得: %d件", len(news))
     return news
+
+
+def build_overseas_translation_cache_key(country: str, original_title: str) -> str:
+    payload = f"{country}\n{original_title}".encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def get_cached_resolved_links(urls: List[str]) -> Dict[str, str]:
+    if not urls:
+        return {}
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=RESOLVED_LINK_CACHE_TTL_HOURS)).isoformat()
+    try:
+        res = (
+            supabase.table("news_url_cache")
+            .select("source_url,resolved_url")
+            .in_("source_url", urls)
+            .gte("updated_at", cutoff)
+            .execute()
+        )
+        return {
+            row["source_url"]: row.get("resolved_url") or row["source_url"]
+            for row in (res.data or [])
+            if row.get("source_url")
+        }
+    except Exception as e:
+        logger.warning("news_url_cache load error: %s", e)
+        return {}
+
+
+def save_resolved_links(url_map: Dict[str, str]) -> None:
+    if not url_map:
+        return
+    now = datetime.now(timezone.utc).isoformat()
+    rows = [
+        {"source_url": source_url, "resolved_url": resolved_url, "updated_at": now}
+        for source_url, resolved_url in url_map.items()
+        if source_url
+    ]
+    try:
+        supabase.table("news_url_cache").upsert(rows, on_conflict="source_url").execute()
+    except Exception as e:
+        logger.warning("news_url_cache save error: %s", e)
+
+
+def get_cached_overseas_translations(articles: List[Dict]) -> Dict[str, str]:
+    cache_keys = [
+        build_overseas_translation_cache_key(article["_country"], article["_orig_title"])
+        for article in articles
+        if article.get("_country") and article.get("_orig_title")
+    ]
+    if not cache_keys:
+        return {}
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=OVERSEAS_TITLE_CACHE_TTL_DAYS)).isoformat()
+    try:
+        res = (
+            supabase.table("overseas_title_cache")
+            .select("cache_key,translated_title")
+            .in_("cache_key", cache_keys)
+            .gte("updated_at", cutoff)
+            .execute()
+        )
+        return {
+            row["cache_key"]: row["translated_title"]
+            for row in (res.data or [])
+            if row.get("cache_key") and row.get("translated_title")
+        }
+    except Exception as e:
+        logger.warning("overseas_title_cache load error: %s", e)
+        return {}
+
+
+def save_overseas_translations(rows: List[Dict[str, str]]) -> None:
+    if not rows:
+        return
+    now = datetime.now(timezone.utc).isoformat()
+    payload = [
+        {
+            "cache_key": row["cache_key"],
+            "country": row["country"],
+            "original_title": row["original_title"],
+            "translated_title": row["translated_title"],
+            "updated_at": now,
+        }
+        for row in rows
+    ]
+    try:
+        supabase.table("overseas_title_cache").upsert(payload, on_conflict="cache_key").execute()
+    except Exception as e:
+        logger.warning("overseas_title_cache save error: %s", e)
 
 
 # =========================
@@ -1506,11 +1627,6 @@ def send_news_to_user(user_id: str) -> None:
 
 def fetch_news_for_reply(user_id: str, exclude_links: set = None) -> tuple:
     """手動ニュース取得（reply用）。fetch+filter+summarize+save。(messages, filtered_news)を返す。送信はしない。"""
-    news = fetch_news()
-    if not news:
-        logger.warning("fetch_news_for_reply: ニュース0件: %s", user_id)
-        return [], []
-
     plan = "free"
     genres: List[str] = []
     membership_status = "none"
@@ -1542,10 +1658,24 @@ def fetch_news_for_reply(user_id: str, exclude_links: set = None) -> tuple:
     }
     effective_plan = resolve_effective_plan(user, datetime.now(timezone.utc))
     actual_max = plan_max_items(effective_plan)
+    wants_only_overseas = bool(genres) and all(g == "overseas" for g in genres)
+    include_domestic = not wants_only_overseas
+    include_overseas = effective_plan == "paid" or "overseas" in genres
+    if not include_domestic and not include_overseas:
+        include_domestic = True
+
+    news = fetch_news(include_domestic=include_domestic, include_overseas=include_overseas)
+    if not news:
+        logger.warning("fetch_news_for_reply: ニュース0件: %s", user_id)
+        return [], []
+
     # 重複除外前に十分な候補を確保するため、filter_news には大きめの上限を渡す
     user["max_items"] = MAX_FETCH_ITEMS
 
-    logger.info("fetch_news_for_reply: 候補取得数=%d user=%s", len(news), user_id)
+    logger.info(
+        "fetch_news_for_reply: 候補取得数=%d user=%s domestic=%s overseas=%s effective_plan=%s genres=%s",
+        len(news), user_id, include_domestic, include_overseas, effective_plan, genres,
+    )
     filtered = filter_news(news, user)
     logger.info("fetch_news_for_reply: filter_news後=%d件 user=%s", len(filtered), user_id)
     if not filtered:
