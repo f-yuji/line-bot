@@ -233,7 +233,24 @@ def load_market_cache(key: str) -> Optional[str]:
         return None
 
 
+def _refresh_market_cache_if_needed(key: str) -> None:
+    now_jst = datetime.now(JST)
+    cache_row = _get_market_cache_row(key)
+    if _is_cache_fresh(cache_row, now_jst):
+        return
+
+    metrics = fetch_market_metrics(key)
+    if metrics is None:
+        logger.warning("market fetch failed on demand key=%s", key)
+        return
+
+    ai = _generate_ai_summary(key, metrics)
+    content = _format_content(key, metrics, ai, now_jst)
+    _save_market_cache(key, content, metrics, now_jst)
+
+
 def get_market_reply(key: str) -> str:
+    _refresh_market_cache_if_needed(key)
     content = load_market_cache(key)
     if content:
         return content
@@ -244,6 +261,7 @@ def get_market_reply(key: str) -> str:
 def get_all_markets_reply() -> str:
     parts = []
     for key in MARKETS:
+        _refresh_market_cache_if_needed(key)
         content = load_market_cache(key)
         if content:
             parts.append(content)
