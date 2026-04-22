@@ -44,6 +44,7 @@ from nikkei_alert import (
     get_drop_list,
     get_single_stock_change,
     format_drop_list_text,
+    format_company_profile_text,
     get_ai_comment as get_stock_ai_comment,
     get_nikkei_change_pct,
     NIKKEI225,
@@ -2981,7 +2982,7 @@ def handle_message(event):
         return
 
     # ★急落株 番号選択（drop list コンテキストがある場合、★7-a より先に処理）
-    if user_id in _user_drop_list and re.match(r"^[1-9]$", text):
+    if user_id in _user_drop_list and re.match(r"^(10|[1-9])$", text):
         drops = _user_drop_list.get(user_id, [])
         idx = int(text) - 1
         if 0 <= idx < len(drops):
@@ -2996,9 +2997,18 @@ def handle_message(event):
             try:
                 nikkei_pct = get_nikkei_change_pct()
                 comment = get_stock_ai_comment(stock["code"], stock["name"], stock["change_pct"], nikkei_pct)
+                company_profile = format_company_profile_text(stock["code"])
+                company_block = f"{company_profile}\n\n" if company_profile else ""
                 reply_text(
                     event.reply_token,
-                    f"{stock['code']} {stock['name']}\n\n{comment}",
+                    f"{stock['code']} {stock['name']}\n"
+                    f"{company_block}"
+                    f"取得: {stock.get('fetched_at', '-')}\n\n"
+                    f"価格   {stock['price']:,.0f}円\n"
+                    f"前日比 {(f'{stock.get('day_pct'):+.1f}%') if stock.get('day_pct') is not None else 'N/A'}\n"
+                    f"週次   {(f'{stock.get('week_pct'):+.1f}%') if stock.get('week_pct') is not None else 'N/A'}\n"
+                    f"月次   {(f'{stock.get('month_pct'):+.1f}%') if stock.get('month_pct') is not None else 'N/A'}\n"
+                    f"高値差 {(f'{stock.get('from_high_pct'):+.1f}%') if stock.get('from_high_pct') is not None else 'N/A'}\n\n{comment}",
                     quick_reply=qr,
                 )
             except Exception as e:
@@ -3029,9 +3039,18 @@ def handle_message(event):
             stock = get_single_stock_change(text)
             change_pct = stock["change_pct"] if stock else None
             comment = get_stock_ai_comment(text, NIKKEI225[text], change_pct, nikkei_pct)
+            company_profile = format_company_profile_text(text)
+            company_block = f"{company_profile}\n\n" if company_profile else ""
             reply_text(
                 event.reply_token,
-                f"{text} {NIKKEI225[text]}\n\n{comment}",
+                f"{text} {NIKKEI225[text]}\n"
+                f"{company_block}"
+                f"取得: {stock.get('fetched_at', '-')}\n\n"
+                f"価格   {stock['price']:,.0f}円\n"
+                f"前日比 {(f'{stock.get('day_pct'):+.1f}%') if stock.get('day_pct') is not None else 'N/A'}\n"
+                f"週次   {(f'{stock.get('week_pct'):+.1f}%') if stock.get('week_pct') is not None else 'N/A'}\n"
+                f"月次   {(f'{stock.get('month_pct'):+.1f}%') if stock.get('month_pct') is not None else 'N/A'}\n"
+                f"高値差 {(f'{stock.get('from_high_pct'):+.1f}%') if stock.get('from_high_pct') is not None else 'N/A'}\n\n{comment}",
                 quick_reply=qr,
             )
         except Exception as e:

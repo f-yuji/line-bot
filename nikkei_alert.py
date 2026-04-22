@@ -293,6 +293,50 @@ NIKKEI225: dict[str, str] = {
 }
 
 _HIGH_DIVIDEND_CODES = {"8058", "8001", "8031", "8053", "8002", "2914", "9432", "9433", "8306", "8316", "8411"}
+_company_profile_cache: dict[str, dict | None] = {}
+
+
+def _fp(value: float | None) -> str:
+    return f"{value:+.1f}%" if value is not None else "N/A"
+
+
+def _build_stock_snapshot(code: str, name: str, closes, highs, fetched_at: str) -> dict | None:
+    prices = closes.dropna()
+    high_values = highs.dropna()
+    if len(prices) < 2 or high_values.empty:
+        return None
+
+    prev = float(prices.iloc[-2])
+    today = float(prices.iloc[-1])
+    if prev == 0:
+        return None
+
+    day_pct = round((today - prev) / prev * 100, 2)
+
+    week_pct = None
+    if len(prices) >= 6:
+        prev_week = float(prices.iloc[-6])
+        week_pct = round((today - prev_week) / prev_week * 100, 2) if prev_week else None
+
+    month_pct = None
+    if len(prices) >= 21:
+        prev_month = float(prices.iloc[-21])
+        month_pct = round((today - prev_month) / prev_month * 100, 2) if prev_month else None
+
+    high_52w = float(high_values.max())
+    from_high_pct = round((today - high_52w) / high_52w * 100, 2) if high_52w else None
+
+    return {
+        "code": code,
+        "name": name,
+        "change_pct": day_pct,
+        "day_pct": day_pct,
+        "week_pct": week_pct,
+        "month_pct": month_pct,
+        "from_high_pct": from_high_pct,
+        "price": round(today, 1),
+        "fetched_at": fetched_at,
+    }
 
 
 # ─── 株価取得 ───
@@ -314,14 +358,15 @@ def get_nikkei_change_pct() -> float | None:
 
 
 def get_stock_changes() -> dict[str, dict]:
-    """日経225全銘柄の騰落率を一括取得。{code: {code, name, change_pct, price}}"""
+    """日経225全銘柄の変動情報を一括取得。"""
     if not HAS_YFINANCE:
         return {}
     tickers = [f"{c}.T" for c in NIKKEI225]
     try:
+        fetched_at = datetime.now(JST).strftime("%m/%d %H:%M")
         df = yf.download(
             tickers,
-            period="2d",
+            period="1y",
             interval="1d",
             progress=False,
             auto_adjust=True,
@@ -330,24 +375,15 @@ def get_stock_changes() -> dict[str, dict]:
         if df.empty:
             return {}
         close = df["Close"] if isinstance(df.columns, pd.MultiIndex) else df[["Close"]]
+        high = df["High"] if isinstance(df.columns, pd.MultiIndex) else df[["High"]]
         result: dict[str, dict] = {}
         for code, name in NIKKEI225.items():
             ticker = f"{code}.T"
-            if ticker not in close.columns:
+            if ticker not in close.columns or ticker not in high.columns:
                 continue
-            prices = close[ticker].dropna()
-            if len(prices) < 2:
-                continue
-            prev = float(prices.iloc[-2])
-            today = float(prices.iloc[-1])
-            if prev == 0:
-                continue
-            result[code] = {
-                "code": code,
-                "name": name,
-                "change_pct": round((today - prev) / prev * 100, 2),
-                "price": round(today, 1),
-            }
+            snapshot = _build_stock_snapshot(code, name, close[ticker], high[ticker], fetched_at)
+            if snapshot:
+                result[code] = snapshot
         return result
     except Exception as e:
         logger.error("株価一括取得エラー: %s", e)
@@ -355,23 +391,15 @@ def get_stock_changes() -> dict[str, dict]:
 
 
 def get_single_stock_change(code: str) -> dict | None:
-    """単一銘柄の当日騰落率を取得"""
+    """単一銘柄の変動情報を取得"""
     if not HAS_YFINANCE or code not in NIKKEI225:
         return None
     try:
-        hist = yf.Ticker(f"{code}.T").history(period="2d")
+        hist = yf.Ticker(f"{code}.T").history(period="1y", auto_adjust=True)
         if len(hist) < 2:
             return None
-        prev = float(hist["Close"].iloc[-2])
-        today = float(hist["Close"].iloc[-1])
-        if prev == 0:
-            return None
-        return {
-            "code": code,
-            "name": NIKKEI225[code],
-            "change_pct": round((today - prev) / prev * 100, 2),
-            "price": round(today, 1),
-        }
+        fetched_at = datetime.now(JST).strftime("%m/%d %H:%M")
+        return _build_stock_snapshot(code, NIKKEI225[code], hist["Close"], hist["High"], fetched_at)
     except Exception as e:
         logger.error("単一株取得エラー: code=%s %s", code, e)
         return None
@@ -388,15 +416,26 @@ def get_drop_list(threshold: float = DROP_LIST_THRESHOLD) -> list[dict]:
 
 def format_drop_list_text(drops: list[dict], nikkei_pct: float | None = None) -> str:
     """急落一覧のLINE表示テキストを生成"""
-    nikkei_line = f"日経平均 {nikkei_pct:+.1f}%\n\n" if nikkei_pct is not None else ""
+    nikkei_line = f"日経平均 {_fp(nikkei_pct)}\n" if nikkei_pct is not None else ""
+    fetched_at = drops[0].get("fetched_at") if drops else None
+    fetched_line = f"取得: {fetched_at}\n\n" if fetched_at else "\n"
     if not drops:
-        return f"{nikkei_line}本日の急落銘柄はなし\n（基準: -2%以上の下落）"
-    lines = [f"{nikkei_line}日経225 急落銘柄\n"]
+        return f"日経225 急落銘柄\n{nikkei_line}{fetched_line}本日の急落銘柄はなし\n（基準: -2%以上の下落）"
+    lines = [f"日経225 急落銘柄\n{nikkei_line}{fetched_line}"]
     for i, s in enumerate(drops[:10]):
         num = CIRCLE_NUMS[i] if i < len(CIRCLE_NUMS) else f"{i+1}."
-        lines.append(f"{num} {s['name']} {s['change_pct']:+.1f}%")
-    lines.append("\n番号で理由を見れる\n例: 1")
-    return "\n".join(lines)
+        company_profile = format_company_profile_text(s["code"])
+        company_block = f"   {company_profile.replace(chr(10), chr(10) + '   ')}\n" if company_profile else ""
+        lines.append(
+            f"{num} {s['name']} / {s['price']:,.0f}円\n"
+            f"{company_block}"
+            f"   前日比 {_fp(s.get('day_pct'))}\n"
+            f"   週次   {_fp(s.get('week_pct'))}\n"
+            f"   月次   {_fp(s.get('month_pct'))}\n"
+            f"   高値差 {_fp(s.get('from_high_pct'))}"
+        )
+    lines.append("番号で理由を見れる\n例: 1 / 10")
+    return "\n\n".join(lines)
 
 
 # ─── J-Quants 財務キャッシュ ───
@@ -501,6 +540,42 @@ def _build_signal_reason(stock: dict, nikkei_pct: float | None, financials: dict
         reasons.append("高配当")
     reasons.append("大型株")
     return " / ".join(reasons)
+
+
+def get_company_profile(code: str) -> dict | None:
+    if code in _company_profile_cache:
+        return _company_profile_cache[code]
+
+    try:
+        res = (
+            supabase.table("nikkei_company_profiles")
+            .select("code,name,sector,business_summary")
+            .eq("code", code)
+            .limit(1)
+            .execute()
+        )
+        profile = res.data[0] if res.data else None
+        _company_profile_cache[code] = profile
+        return profile
+    except Exception as e:
+        logger.warning("company profile load error code=%s: %s", code, e)
+        _company_profile_cache[code] = None
+        return None
+
+
+def format_company_profile_text(code: str) -> str:
+    profile = get_company_profile(code)
+    if not profile:
+        return ""
+
+    lines = []
+    sector = str(profile.get("sector") or "").strip()
+    summary = str(profile.get("business_summary") or "").strip()
+    if sector:
+        lines.append(sector)
+    if summary:
+        lines.append(summary)
+    return "\n".join(lines).strip()
 
 
 # ─── 通知履歴 ───

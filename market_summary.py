@@ -56,13 +56,57 @@ _openai = OpenAI(api_key=_OPENAI_API_KEY) if (_OPENAI_AVAILABLE and _OPENAI_API_
 MARKETS: dict[str, dict[str, str]] = {
     "japan": {"label": "日本株", "ticker": "^N225"},
     "usdjpy": {"label": "ドル円", "ticker": "USDJPY=X"},
-    "us_stocks": {"label": "米株", "ticker": "^GSPC"},
+    "us_stocks": {"label": "ダウ", "ticker": "^DJI"},
     "gold": {"label": "ゴールド", "ticker": "GC=F"},
     "bitcoin": {"label": "ビットコイン", "ticker": "BTC-USD"},
     "oil": {"label": "原油", "ticker": "CL=F"},
 }
 
 MARKET_CACHE_TTL_HOURS = 12
+TROY_OUNCE_IN_GRAMS = 31.1035
+
+
+def _get_usdjpy_rate() -> float | None:
+    row = _get_market_cache_row("usdjpy")
+    if row:
+        raw = row.get("raw_metrics") or {}
+        try:
+            price = raw.get("price")
+            if price is not None:
+                return float(price)
+        except Exception:
+            pass
+    metrics = fetch_market_metrics("usdjpy")
+    if metrics and metrics.get("price") is not None:
+        try:
+            return float(metrics["price"])
+        except Exception:
+            return None
+    return None
+
+
+def _format_market_price(key: str, price: float | None) -> str:
+    if price is None:
+        return "N/A"
+    if key == "japan":
+        return f"{price:,.0f}"
+    if key == "usdjpy":
+        return f"{price:,.2f}円"
+    if key == "bitcoin":
+        usdjpy = _get_usdjpy_rate()
+        if usdjpy:
+            return f"{price * usdjpy:,.0f}円"
+        return f"{price:,.0f}ドル"
+    if key in {"us_stocks", "gold", "oil"}:
+        if key == "us_stocks":
+            return f"{price:,.0f}pt"
+        if key == "gold":
+            usdjpy = _get_usdjpy_rate()
+            if usdjpy:
+                yen_per_gram = (price * usdjpy) / TROY_OUNCE_IN_GRAMS
+                return f"{yen_per_gram:,.0f}円/g"
+        return f"{price:,.2f}ドル"
+    return f"{price:,.4f}".rstrip("0").rstrip(".")
 
 
 def _fetch_metrics_once(ticker: str) -> Optional[dict]:
@@ -153,10 +197,13 @@ def _format_content(key: str, metrics: dict, ai: Optional[str], fetched_at: date
     def fp(value):
         return f"{value:+.1f}%" if value is not None else "N/A"
 
+    price_text = _format_market_price(key, metrics.get("price"))
+
     lines = [
         f"{label}相場",
         f"取得: {fetched_str}",
         "",
+        f"価格   {price_text}",
         f"前日比 {fp(metrics.get('day_pct'))}",
         f"週次   {fp(metrics.get('week_pct'))}",
         f"月次   {fp(metrics.get('month_pct'))}",
