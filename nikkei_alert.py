@@ -37,13 +37,13 @@ logger = logging.getLogger(__name__)
 
 # ─── 閾値定数（後で調整可能）───
 DROP_LIST_THRESHOLD = -2.0      # 急落一覧閾値（%）
-ALERT_THRESHOLD = -5.0          # push通知閾値（%）。一覧より厳しめにする
+ALERT_THRESHOLD = -5.5          # push通知閾値（%）。一覧より厳しめにする
 NIKKEI_GAP_THRESHOLD = -1.5     # 指数乖離閾値（pt）
 AI_COMMENT_CACHE_TTL_DAYS = 7
 DROP_CACHE_KEY = "latest"
 DROP_CACHE_TTL_HOURS = 12
 DROP_VALUATION_DISPLAY_LIMIT = 10
-MAX_ALERT_SIGNALS = 3
+MAX_ALERT_SIGNALS = 10
 
 JST = timezone(timedelta(hours=9))
 LINE_API_BASE = "https://api.line.me"
@@ -1032,6 +1032,7 @@ def run_alert() -> None:
         if is_buy_signal(s, nikkei_pct, financials) and s["code"] not in notified_today
     ]
     signals = sorted(signals, key=lambda x: x["change_pct"])[:MAX_ALERT_SIGNALS]
+    signals = _enrich_drop_valuations(signals, limit=MAX_ALERT_SIGNALS)
 
     logger.info("買いシグナル候補: %d銘柄", len(signals))
     if not signals:
