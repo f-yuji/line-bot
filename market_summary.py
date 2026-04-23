@@ -109,6 +109,24 @@ def _format_market_price(key: str, price: float | None) -> str:
     return f"{price:,.4f}".rstrip("0").rstrip(".")
 
 
+def _format_market_change_value(key: str, value: float | None) -> str:
+    if value is None:
+        return "N/A"
+    if key == "japan":
+        return f"{value:+,.0f}円"
+    if key == "us_stocks":
+        return f"{value:+,.0f}pt"
+    if key == "usdjpy":
+        return f"{value:+,.2f}円"
+    if key == "gold":
+        return f"{value:+,.0f}円/g"
+    if key == "bitcoin":
+        return f"{value:+,.0f}円"
+    if key == "oil":
+        return f"{value:+,.2f}ドル"
+    return f"{value:+,.2f}"
+
+
 def _fetch_metrics_once(ticker: str) -> Optional[dict]:
     hist = yf.Ticker(ticker).history(period="1y")
     if hist.empty or len(hist) < 2:
@@ -119,6 +137,7 @@ def _fetch_metrics_once(ticker: str) -> Optional[dict]:
 
     today_price = float(closes.iloc[-1])
     prev_day = float(closes.iloc[-2])
+    day_diff = round(today_price - prev_day, 4)
     day_pct = round((today_price - prev_day) / prev_day * 100, 2) if prev_day else None
 
     week_pct = None
@@ -136,6 +155,7 @@ def _fetch_metrics_once(ticker: str) -> Optional[dict]:
 
     return {
         "price": round(today_price, 4),
+        "day_diff": day_diff,
         "day_pct": day_pct,
         "week_pct": week_pct,
         "month_pct": month_pct,
@@ -204,7 +224,7 @@ def _format_content(key: str, metrics: dict, ai: Optional[str], fetched_at: date
         f"取得: {fetched_str}",
         "",
         f"価格   {price_text}",
-        f"前日比 {fp(metrics.get('day_pct'))}",
+        f"前日比 {_format_market_change_value(key, metrics.get('day_diff'))}（{fp(metrics.get('day_pct'))}）",
         f"週次   {fp(metrics.get('week_pct'))}",
         f"月次   {fp(metrics.get('month_pct'))}",
         f"高値差 {fp(metrics.get('from_high_pct'))}",

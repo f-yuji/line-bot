@@ -364,6 +364,14 @@ def _valuation_score(
     return max(5, min(95, score))
 
 
+def _format_day_change_text(price: float | None, day_pct: float | None) -> str:
+    if price is None or day_pct is None or day_pct <= -100:
+        return _fp(day_pct)
+    prev_price = price / (1 + day_pct / 100)
+    day_diff = price - prev_price
+    return f"{day_diff:+,.0f}円（{_fp(day_pct)}）"
+
+
 def get_valuation_metrics(code: str) -> dict | None:
     if code in _valuation_cache:
         return _valuation_cache[code]
@@ -649,7 +657,7 @@ def format_drop_list_text(
         lines.append(
             f"{num} {s['name']} / {s['price']:,.0f}円\n"
             f"{company_block}"
-            f"   前日比 {_fp(s.get('day_pct'))}\n"
+            f"   前日比 {_format_day_change_text(s.get('price'), s.get('day_pct'))}\n"
             f"   高値差 {_fp(s.get('from_high_pct'))}"
             f"\n{valuation_line}"
         )
@@ -962,7 +970,7 @@ def _build_alert_digest(signals: list[dict], nikkei_pct: float | None, financial
         valuation = stock.get("valuation") or {}
         lines.append(
             f"{num} {stock['code']} {stock['name']}\n"
-            f"前日比 {_fp(stock.get('change_pct'))}\n"
+            f"前日比 {_format_day_change_text(stock.get('price'), stock.get('change_pct'))}\n"
             f"PER {_fmt_ratio(valuation.get('per'), digits=1, suffix='倍')} / "
             f"PBR {_fmt_ratio(valuation.get('pbr'), digits=2, suffix='倍')} / "
             f"配当 {_fmt_dividend_yield(valuation.get('dividend_yield_pct'), valuation.get('dividend_yield_status'))}"

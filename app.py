@@ -45,6 +45,7 @@ from nikkei_alert import (
     get_single_stock_change,
     format_drop_list_text,
     format_company_profile_text,
+    _format_day_change_text,
     get_ai_comment as get_stock_ai_comment,
     get_nikkei_change_pct,
     NIKKEI225,
@@ -2510,7 +2511,8 @@ def handle_message(event):
                 reply_text(
                     event.reply_token,
                     "解約はこのページからできる\n"
-                    "完了したらこのbotでは即時freeに戻す\n\n"
+                    "解約しても次回更新日まではそのまま使える\n"
+                    "期間終了後に自動でfreeへ戻る\n\n"
                     f"{manage_url}",
                     quick_reply=qr,
                 )
@@ -3044,7 +3046,7 @@ def handle_message(event):
                     f"{company_block}"
                     f"取得: {stock.get('fetched_at', '-')}\n\n"
                     f"価格   {stock['price']:,.0f}円\n"
-                    f"前日比 {(f'{stock.get('day_pct'):+.1f}%') if stock.get('day_pct') is not None else 'N/A'}\n"
+                    f"前日比 {_format_day_change_text(stock.get('price'), stock.get('day_pct'))}\n"
                     f"週次   {(f'{stock.get('week_pct'):+.1f}%') if stock.get('week_pct') is not None else 'N/A'}\n"
                     f"月次   {(f'{stock.get('month_pct'):+.1f}%') if stock.get('month_pct') is not None else 'N/A'}\n"
                     f"高値差 {(f'{stock.get('from_high_pct'):+.1f}%') if stock.get('from_high_pct') is not None else 'N/A'}\n\n{comment}",
@@ -3086,7 +3088,7 @@ def handle_message(event):
                 f"{company_block}"
                 f"取得: {stock.get('fetched_at', '-')}\n\n"
                 f"価格   {stock['price']:,.0f}円\n"
-                f"前日比 {(f'{stock.get('day_pct'):+.1f}%') if stock.get('day_pct') is not None else 'N/A'}\n"
+                f"前日比 {_format_day_change_text(stock.get('price'), stock.get('day_pct'))}\n"
                 f"週次   {(f'{stock.get('week_pct'):+.1f}%') if stock.get('week_pct') is not None else 'N/A'}\n"
                 f"月次   {(f'{stock.get('month_pct'):+.1f}%') if stock.get('month_pct') is not None else 'N/A'}\n"
                 f"高値差 {(f'{stock.get('from_high_pct'):+.1f}%') if stock.get('from_high_pct') is not None else 'N/A'}\n\n{comment}",
