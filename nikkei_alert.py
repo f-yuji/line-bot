@@ -1049,7 +1049,7 @@ def run_alert() -> None:
 
     try:
         res = supabase.table("users").select(
-            "user_id, plan, trial_started_at, trial_extended_until, membership_status, active"
+            "user_id, plan, trial_started_at, trial_extended_until, membership_status, active, drop_alert_enabled"
         ).execute()
         users = res.data or []
     except Exception as e:
@@ -1061,6 +1061,8 @@ def run_alert() -> None:
     sent_count = 0
     for u in users:
         if not u.get("active", True):
+            continue
+        if not u.get("drop_alert_enabled", False):
             continue
         if _resolve_plan(u, now_utc) != "paid":
             continue

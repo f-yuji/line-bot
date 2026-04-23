@@ -233,6 +233,7 @@ def save_user(user_id: str, active=True, plan="free", genres=None, display_name:
         "plan": plan,
         "genres": genres,
         "display_name": display_name,
+        "drop_alert_enabled": False,
     }).execute()
 
     logger.info("Supabase保存: user=%s active=%s plan=%s genres=%s", user_id, active, plan, genres)
@@ -264,6 +265,7 @@ def ensure_user(user_id: str):
             "free_news_count": 0,
             "free_news_date": None,
             "subsidy_continue_pending": False,
+            "drop_alert_enabled": False,
         }, True
     # 既存ユーザー: display_nameを更新
     display_name = get_line_profile(user_id)
@@ -292,6 +294,7 @@ def ensure_user(user_id: str):
     user.setdefault("free_news_count", 0)
     user.setdefault("free_news_date", None)
     user.setdefault("subsidy_continue_pending", False)
+    user.setdefault("drop_alert_enabled", False)
     return user, False
 
 
@@ -2345,6 +2348,8 @@ _MAIN_COMMANDS = {
     "解約",
     "プラン",
     "設定",
+    "急落通知オン",
+    "急落通知オフ",
 }
 
 _STRONG_COMMANDS = (
@@ -2366,10 +2371,17 @@ def _plan_label(plan: str, membership_status: str) -> str:
     return "無料プラン"
 
 
-def _plan_status_text(plan: str, active: bool, genres: list, membership_status: str = "none") -> str:
+def _plan_status_text(
+    plan: str,
+    active: bool,
+    genres: list,
+    membership_status: str = "none",
+    drop_alert_enabled: bool = False,
+) -> str:
     genre_label = f"ジャンル: {format_genres(genres)}" if genres else "ジャンル: 未設定（全部配信）"
     active_label = "配信：オン" if active else "配信：オフ"
-    return f"今こんな感じ\n\n{_plan_label(plan, membership_status)}\n{active_label}\n{genre_label}"
+    drop_alert_label = "急落通知：オン" if drop_alert_enabled else "急落通知：オフ"
+    return f"今こんな感じ\n\n{_plan_label(plan, membership_status)}\n{active_label}\n{genre_label}\n{drop_alert_label}"
 
 
 @handler.add(MessageEvent, message=TextMessageContent)
@@ -2430,6 +2442,7 @@ def handle_message(event):
     plan = resolve_effective_plan(user, now_dt)
     active = user.get("active", True)
     genres = user.get("genres", [])
+    drop_alert_enabled = bool(user.get("drop_alert_enabled", False))
     qr = main_quick_reply()
 
     # ─── フィードバック受理（最優先・トライアル延長）───
@@ -2486,6 +2499,33 @@ def handle_message(event):
     if text in _START_WORDS:
         supabase.table("users").update({"active": True}).eq("user_id", user_id).execute()
         reply_text(event.reply_token, "配信再開した", quick_reply=qr)
+        try:
+            supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
+        except Exception:
+            pass
+        return
+
+    if text == "急落通知オン":
+        if plan != "paid":
+            reply_with_payment_for_user(
+                event.reply_token, user_id,
+                "急落通知は有料会員向けの機能\n\nメンバーシップで使えるようになる",
+                quick_reply=qr,
+            )
+        else:
+            supabase.table("users").update({"drop_alert_enabled": True}).eq("user_id", user_id).execute()
+            user["drop_alert_enabled"] = True
+            reply_text(event.reply_token, "急落株通知をオンにした", quick_reply=qr)
+        try:
+            supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
+        except Exception:
+            pass
+        return
+
+    if text == "急落通知オフ":
+        supabase.table("users").update({"drop_alert_enabled": False}).eq("user_id", user_id).execute()
+        user["drop_alert_enabled"] = False
+        reply_text(event.reply_token, "急落株通知をオフにした", quick_reply=qr)
         try:
             supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
         except Exception:
@@ -2606,6 +2646,8 @@ def handle_message(event):
                 "補助金 → 今使える制度を探す\n"
                 "相場 → 市場の動きを見る\n"
                 "急落株 → 急落銘柄を見る\n"
+                "急落通知オン → 急落株通知を受け取る\n"
+                "急落通知オフ → 急落株通知を止める\n"
                 "停止 → 配信停止\n"
                 "再開 → 配信再開\n"
                 "状態 → 設定確認\n\n"
@@ -2622,7 +2664,8 @@ def handle_message(event):
                 "【今の状態】\n"
                 f"プラン：{_plan_label(plan, user.get('membership_status', 'none'))}\n"
                 f"配信：{'オン' if active else 'オフ'}\n"
-                f"ジャンル：{format_genres(genres) if genres else '全ジャンル'}"
+                f"ジャンル：{format_genres(genres) if genres else '全ジャンル'}\n"
+                f"急落通知：{'オン' if drop_alert_enabled else 'オフ'}"
             )
         else:
             _help_text = (
@@ -2651,7 +2694,8 @@ def handle_message(event):
                 "【今の状態】\n"
                 f"プラン：{_plan_label(plan, user.get('membership_status', 'none'))}\n"
                 f"配信：{'オン' if active else 'オフ'}\n"
-                f"ジャンル：{format_genres(genres) if genres else '全ジャンル'}"
+                f"ジャンル：{format_genres(genres) if genres else '全ジャンル'}\n"
+                f"急落通知：{'オン' if drop_alert_enabled else 'オフ'}"
             )
         # ジャンルFlexと使い方本文 (+ 登録ボタン) を1回のreplyにまとめる
         try:
@@ -2708,7 +2752,17 @@ def handle_message(event):
         return
 
     if text == "プラン":
-        reply_text(event.reply_token, _plan_status_text(plan, active, genres, user.get("membership_status", "none")), quick_reply=qr)
+        reply_text(
+            event.reply_token,
+            _plan_status_text(
+                plan,
+                active,
+                genres,
+                user.get("membership_status", "none"),
+                drop_alert_enabled,
+            ),
+            quick_reply=qr,
+        )
         try:
             supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
         except Exception:
