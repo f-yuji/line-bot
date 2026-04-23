@@ -2319,12 +2319,41 @@ def is_direct_person_chat_request(text: str) -> bool:
 _NEWS_TRIGGER_KW = {"ニュース", "ニュースくれ", "最新"}
 
 # 強コマンド — pending を問答無用でスキップ・クリアする
+_MAIN_COMMANDS = {
+    "ニュース",
+    "ニュースくれ",
+    "最新",
+    "追加ニュース",
+    "リンク",
+    "相場",
+    "急落株",
+    "急落",
+    "急落銘柄",
+    "会話ネタ",
+    "会話",
+    "雑談",
+    "ネタ",
+    "補助金",
+    "助成金",
+    "補助金続き",
+    "助成金続き",
+    "続き",
+    "都道府県変更",
+    "業種変更",
+    "登録",
+    "解約",
+    "プラン",
+    "設定",
+}
+
 _STRONG_COMMANDS = (
     _STOP_WORDS
     | _START_WORDS
     | _GENRE_WORDS
     | _STATUS_WORDS
     | _HELP_WORDS
+    | _NEWS_TRIGGER_KW
+    | _MAIN_COMMANDS
 )
 
 

@@ -294,10 +294,116 @@ NIKKEI225: dict[str, str] = {
 
 _HIGH_DIVIDEND_CODES = {"8058", "8001", "8031", "8053", "8002", "2914", "9432", "9433", "8306", "8316", "8411"}
 _company_profile_cache: dict[str, dict | None] = {}
+_valuation_cache: dict[str, dict | None] = {}
 
 
 def _fp(value: float | None) -> str:
     return f"{value:+.1f}%" if value is not None else "N/A"
+
+
+def _fmt_ratio(value: float | None, *, digits: int = 1, suffix: str = "") -> str:
+    if value is None:
+        return "-"
+    return f"{value:.{digits}f}{suffix}"
+
+
+def _fmt_dividend_yield(value: float | None, status: str | None = None) -> str:
+    if status == "missing":
+        return "取得不可"
+    if status == "invalid":
+        return "N/A"
+    if value is None:
+        return "取得不可"
+    if abs(value) < 0.05:
+        return "無配"
+    return f"{value:.1f}%"
+
+
+def _to_float(value) -> float | None:
+    try:
+        if value is None:
+            return None
+        return float(value)
+    except Exception:
+        return None
+
+
+def _score_bucket(value: float | None, buckets: list[tuple[float, int]], *, reverse: bool = False) -> int:
+    if value is None:
+        return 0
+    if reverse:
+        for threshold, score in buckets:
+            if value >= threshold:
+                return score
+    else:
+        for threshold, score in buckets:
+            if value <= threshold:
+                return score
+    return 0
+
+
+def _valuation_score(
+    per: float | None,
+    pbr: float | None,
+    dividend_pct: float | None,
+    from_high_pct: float | None,
+) -> int:
+    score = 20
+    score += _score_bucket(per, [(8, 28), (12, 23), (16, 18), (20, 12), (30, 6)])
+    score += _score_bucket(pbr, [(0.8, 28), (1.0, 23), (1.5, 16), (2.0, 9), (3.0, 4)])
+    score += _score_bucket(dividend_pct, [(4.0, 12), (3.0, 9), (2.0, 6), (1.0, 3)], reverse=True)
+
+    if from_high_pct is not None:
+        high_gap = abs(min(from_high_pct, 0))
+        score += _score_bucket(high_gap, [(35, 12), (25, 9), (15, 6), (8, 3)], reverse=True)
+
+    return max(5, min(95, score))
+
+
+def get_valuation_metrics(code: str) -> dict | None:
+    if code in _valuation_cache:
+        return _valuation_cache[code]
+
+    if not HAS_YFINANCE:
+        _valuation_cache[code] = None
+        return None
+
+    try:
+        info = yf.Ticker(f"{code}.T").info or {}
+        forward_per = _to_float(info.get("forwardPE"))
+        trailing_per = _to_float(info.get("trailingPE"))
+        per = forward_per if forward_per and forward_per > 0 else trailing_per
+        if per is not None and per <= 0:
+            per = None
+        pbr = _to_float(info.get("priceToBook"))
+        if pbr is not None and pbr <= 0:
+            pbr = None
+        dividend_yield = _to_float(info.get("dividendYield"))
+        if dividend_yield is None:
+            dividend_pct = None
+            dividend_status = "missing"
+        elif dividend_yield <= 1:
+            dividend_pct = dividend_yield * 100
+            dividend_status = "ok"
+        else:
+            dividend_pct = dividend_yield
+            dividend_status = "ok"
+        if dividend_pct is not None and dividend_pct > 20:
+            dividend_pct = None
+            dividend_status = "invalid"
+
+        result = {
+            "per": per,
+            "pbr": pbr,
+            "dividend_yield_pct": dividend_pct,
+            "dividend_yield_status": dividend_status,
+        }
+        _valuation_cache[code] = result
+        return result
+    except Exception as e:
+        logger.warning("valuation info load error code=%s: %s", code, e)
+        _valuation_cache[code] = None
+        return None
 
 
 def _build_stock_snapshot(code: str, name: str, closes, highs, fetched_at: str) -> dict | None:
@@ -426,15 +532,27 @@ def format_drop_list_text(drops: list[dict], nikkei_pct: float | None = None) ->
         num = CIRCLE_NUMS[i] if i < len(CIRCLE_NUMS) else f"{i+1}."
         company_profile = format_company_profile_text(s["code"])
         company_block = f"   {company_profile.replace(chr(10), chr(10) + '   ')}\n" if company_profile else ""
+        valuation = get_valuation_metrics(s["code"]) or {}
+        valuation_score = _valuation_score(
+            valuation.get("per"),
+            valuation.get("pbr"),
+            valuation.get("dividend_yield_pct"),
+            s.get("from_high_pct"),
+        )
+        valuation_line = (
+            f"   PER {_fmt_ratio(valuation.get('per'), digits=1, suffix='倍')} / "
+            f"PBR {_fmt_ratio(valuation.get('pbr'), digits=2, suffix='倍')} / "
+            f"配当 {_fmt_dividend_yield(valuation.get('dividend_yield_pct'), valuation.get('dividend_yield_status'))}\n"
+            f"   指標割安度 {valuation_score}/100\n"
+        )
         lines.append(
             f"{num} {s['name']} / {s['price']:,.0f}円\n"
             f"{company_block}"
             f"   前日比 {_fp(s.get('day_pct'))}\n"
-            f"   週次   {_fp(s.get('week_pct'))}\n"
-            f"   月次   {_fp(s.get('month_pct'))}\n"
             f"   高値差 {_fp(s.get('from_high_pct'))}"
+            f"\n{valuation_line}"
         )
-    lines.append("番号で理由を見れる\n例: 1 / 10")
+    lines.append("番号で理由を見れる\n例: 1")
     return "\n\n".join(lines)
 
 

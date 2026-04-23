@@ -91,10 +91,14 @@ OVERSEAS_TITLE_CACHE_TTL_DAYS = 30
 
 _NEWS_QUICK_REPLY = {
     "items": [
-        {"type": "action", "action": {"type": "message", "label": "ニュース",  "text": "ニュース"}},
-        {"type": "action", "action": {"type": "message", "label": "会話ネタ",  "text": "会話ネタ"}},
-        {"type": "action", "action": {"type": "message", "label": "リンク",    "text": "リンク"}},
-        {"type": "action", "action": {"type": "message", "label": "使い方",    "text": "使い方"}},
+        {"type": "action", "action": {"type": "message", "label": "ニュース", "text": "ニュース"}},
+        {"type": "action", "action": {"type": "message", "label": "リンク", "text": "リンク"}},
+        {"type": "action", "action": {"type": "message", "label": "相場", "text": "相場"}},
+        {"type": "action", "action": {"type": "message", "label": "急落株", "text": "急落株"}},
+        {"type": "action", "action": {"type": "message", "label": "会話ネタ", "text": "会話ネタ"}},
+        {"type": "action", "action": {"type": "message", "label": "補助金", "text": "補助金"}},
+        {"type": "action", "action": {"type": "message", "label": "使い方", "text": "使い方"}},
+        {"type": "action", "action": {"type": "message", "label": "停止", "text": "停止"}},
     ]
 }
 
