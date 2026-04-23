@@ -41,7 +41,7 @@ from linebot.v3.webhooks import FollowEvent, MessageEvent, PostbackEvent, TextMe
 
 from send_news import fetch_news_for_reply, get_recent_sent_links
 from nikkei_alert import (
-    get_drop_list,
+    get_drop_list_for_reply,
     get_single_stock_change,
     format_drop_list_text,
     format_company_profile_text,
@@ -2997,10 +2997,20 @@ def handle_message(event):
                 pass
             return
         try:
-            nikkei_pct = get_nikkei_change_pct()
-            drops = get_drop_list()
+            drops, nikkei_pct, fetched_at, stale_fallback = get_drop_list_for_reply()
+            if fetched_at is None:
+                reply_text(
+                    event.reply_token,
+                    "急落株データがまだない\n前場寄り後か後場引け後の更新を待って",
+                    quick_reply=qr,
+                )
+                return
             _user_drop_list[user_id] = drops
-            reply_text(event.reply_token, format_drop_list_text(drops, nikkei_pct), quick_reply=qr)
+            reply_text(
+                event.reply_token,
+                format_drop_list_text(drops, nikkei_pct, fetched_at, stale_fallback),
+                quick_reply=qr,
+            )
         except Exception as e:
             logger.error("急落株一覧取得エラー: %s", e)
             reply_text(event.reply_token, "データ取得に失敗した\nしばらく待ってから試して", quick_reply=qr)

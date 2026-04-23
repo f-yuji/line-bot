@@ -36,10 +36,14 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ─── 閾値定数（後で調整可能）───
-DROP_LIST_THRESHOLD = -2.0     # 急落一覧閾値（%）
-ALERT_THRESHOLD = -2.5          # 買いシグナル閾値（%）
+DROP_LIST_THRESHOLD = -2.0      # 急落一覧閾値（%）
+ALERT_THRESHOLD = -5.0          # push通知閾値（%）。一覧より厳しめにする
 NIKKEI_GAP_THRESHOLD = -1.5     # 指数乖離閾値（pt）
 AI_COMMENT_CACHE_TTL_DAYS = 7
+DROP_CACHE_KEY = "latest"
+DROP_CACHE_TTL_HOURS = 12
+DROP_VALUATION_DISPLAY_LIMIT = 10
+MAX_ALERT_SIGNALS = 3
 
 JST = timezone(timedelta(hours=9))
 LINE_API_BASE = "https://api.line.me"
@@ -406,6 +410,17 @@ def get_valuation_metrics(code: str) -> dict | None:
         return None
 
 
+def _enrich_drop_valuations(drops: list[dict], limit: int = DROP_VALUATION_DISPLAY_LIMIT) -> list[dict]:
+    """急落リストにPER/PBR/配当を埋め込む。cron側だけで呼ぶ想定。"""
+    enriched: list[dict] = []
+    for i, stock in enumerate(drops):
+        item = dict(stock)
+        if i < limit:
+            item["valuation"] = get_valuation_metrics(str(stock.get("code", ""))) or {}
+        enriched.append(item)
+    return enriched
+
+
 def _build_stock_snapshot(code: str, name: str, closes, highs, fetched_at: str) -> dict | None:
     prices = closes.dropna()
     high_values = highs.dropna()
@@ -520,19 +535,105 @@ def get_drop_list(threshold: float = DROP_LIST_THRESHOLD) -> list[dict]:
     return sorted(drops, key=lambda x: x["change_pct"])
 
 
-def format_drop_list_text(drops: list[dict], nikkei_pct: float | None = None) -> str:
+def save_drop_cache(drops: list[dict], nikkei_pct: float | None) -> None:
+    """cronで取得した急落一覧をDBへ保存する。LINE表示はこのキャッシュを読む。"""
+    now_utc = datetime.now(timezone.utc)
+    fetched_at = drops[0].get("fetched_at") if drops else datetime.now(JST).strftime("%m/%d %H:%M")
+    row = {
+        "cache_key": DROP_CACHE_KEY,
+        "drops": drops,
+        "nikkei_pct": nikkei_pct,
+        "fetched_at": fetched_at,
+        "updated_at": now_utc.isoformat(),
+    }
+    try:
+        supabase.table("nikkei_drop_cache").upsert(row, on_conflict="cache_key").execute()
+        logger.info("急落株キャッシュ保存: drops=%d nikkei_pct=%s fetched_at=%s", len(drops), nikkei_pct, fetched_at)
+    except Exception as e:
+        logger.error("急落株キャッシュ保存エラー: %s", e)
+
+
+def _parse_dt(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except Exception:
+        return None
+
+
+def _is_drop_cache_fresh(updated_at: str | None) -> bool:
+    dt = _parse_dt(updated_at)
+    if not dt:
+        return False
+    return datetime.now(timezone.utc) - dt.astimezone(timezone.utc) <= timedelta(hours=DROP_CACHE_TTL_HOURS)
+
+
+def load_drop_cache() -> tuple[list[dict], float | None, str | None, str | None]:
+    """最新の急落一覧キャッシュを返す。外部API取得はしない。"""
+    try:
+        res = (
+            supabase.table("nikkei_drop_cache")
+            .select("drops, nikkei_pct, fetched_at, updated_at")
+            .eq("cache_key", DROP_CACHE_KEY)
+            .limit(1)
+            .execute()
+        )
+        rows = res.data or []
+        if not rows:
+            return [], None, None, None
+        row = rows[0]
+        drops = row.get("drops") or []
+        nikkei_pct = _to_float(row.get("nikkei_pct"))
+        fetched_at = row.get("fetched_at") or None
+        updated_at = row.get("updated_at") or None
+        return drops, nikkei_pct, fetched_at, updated_at
+    except Exception as e:
+        logger.error("急落株キャッシュ取得エラー: %s", e)
+        return [], None, None, None
+
+
+def get_drop_list_for_reply() -> tuple[list[dict], float | None, str | None, bool]:
+    """
+    LINE返信用の急落一覧を返す。
+    12時間以内のキャッシュがあればDBのみ。古ければその場で再取得する。
+    戻り値の最後は stale_fallback（取得失敗で古いキャッシュを返したか）。
+    """
+    cached_drops, cached_nikkei, cached_fetched_at, updated_at = load_drop_cache()
+    if _is_drop_cache_fresh(updated_at):
+        return cached_drops, cached_nikkei, cached_fetched_at, False
+
+    nikkei_pct = get_nikkei_change_pct()
+    fresh_drops = _enrich_drop_valuations(get_drop_list())
+    if fresh_drops or nikkei_pct is not None:
+        save_drop_cache(fresh_drops, nikkei_pct)
+        fetched_at = fresh_drops[0].get("fetched_at") if fresh_drops else datetime.now(JST).strftime("%m/%d %H:%M")
+        return fresh_drops, nikkei_pct, fetched_at, False
+
+    if cached_fetched_at is not None:
+        return cached_drops, cached_nikkei, cached_fetched_at, True
+    return [], None, None, False
+
+
+def format_drop_list_text(
+    drops: list[dict],
+    nikkei_pct: float | None = None,
+    fetched_at: str | None = None,
+    stale_fallback: bool = False,
+) -> str:
     """急落一覧のLINE表示テキストを生成"""
     nikkei_line = f"日経平均 {_fp(nikkei_pct)}\n" if nikkei_pct is not None else ""
-    fetched_at = drops[0].get("fetched_at") if drops else None
+    fetched_at = fetched_at or (drops[0].get("fetched_at") if drops else None)
     fetched_line = f"取得: {fetched_at}\n\n" if fetched_at else "\n"
     if not drops:
-        return f"日経225 急落銘柄\n{nikkei_line}{fetched_line}本日の急落銘柄はなし\n（基準: -2%以上の下落）"
+        note = "\n※ 最新取得に失敗したため、直近キャッシュを表示" if stale_fallback else ""
+        return f"日経225 急落銘柄\n{nikkei_line}{fetched_line}本日の急落銘柄はなし\n（基準: -2%以上の下落）{note}"
     lines = [f"日経225 急落銘柄\n{nikkei_line}{fetched_line}"]
     for i, s in enumerate(drops[:10]):
         num = CIRCLE_NUMS[i] if i < len(CIRCLE_NUMS) else f"{i+1}."
         company_profile = format_company_profile_text(s["code"])
         company_block = f"   {company_profile.replace(chr(10), chr(10) + '   ')}\n" if company_profile else ""
-        valuation = get_valuation_metrics(s["code"]) or {}
+        valuation = s.get("valuation") or {}
         valuation_score = _valuation_score(
             valuation.get("per"),
             valuation.get("pbr"),
@@ -552,6 +653,8 @@ def format_drop_list_text(drops: list[dict], nikkei_pct: float | None = None) ->
             f"   高値差 {_fp(s.get('from_high_pct'))}"
             f"\n{valuation_line}"
         )
+    if stale_fallback:
+        lines.append("※ 最新取得に失敗したため、直近キャッシュを表示")
     lines.append("番号で理由を見れる\n例: 1")
     return "\n\n".join(lines)
 
@@ -715,6 +818,22 @@ def has_notified_recently(code: str) -> bool:
         return False
 
 
+def get_notified_codes_today() -> set[str]:
+    """本日通知済みの銘柄コードを一括取得"""
+    today = datetime.now(JST).date().isoformat()
+    try:
+        res = (
+            supabase.table("nikkei_alert_log")
+            .select("code")
+            .eq("alerted_at", today)
+            .execute()
+        )
+        return {str(r.get("code")) for r in (res.data or []) if r.get("code")}
+    except Exception as e:
+        logger.error("通知履歴一括取得エラー: %s", e)
+        return set()
+
+
 def log_alert(code: str, change_pct: float) -> None:
     """通知ログをDBに保存"""
     today = datetime.now(JST).date().isoformat()
@@ -835,6 +954,23 @@ def _push_text(user_id: str, text: str) -> None:
         logger.error("push失敗: user=%s %s", user_id, e)
 
 
+def _build_alert_digest(signals: list[dict], nikkei_pct: float | None, financials: dict) -> str:
+    nikkei_line = f"日経平均 {_fp(nikkei_pct)}\n" if nikkei_pct is not None else ""
+    lines = [f"急落株速報\n{nikkei_line}"]
+    for i, stock in enumerate(signals[:MAX_ALERT_SIGNALS]):
+        num = CIRCLE_NUMS[i] if i < len(CIRCLE_NUMS) else f"{i+1}."
+        valuation = stock.get("valuation") or {}
+        lines.append(
+            f"{num} {stock['code']} {stock['name']}\n"
+            f"前日比 {_fp(stock.get('change_pct'))}\n"
+            f"PER {_fmt_ratio(valuation.get('per'), digits=1, suffix='倍')} / "
+            f"PBR {_fmt_ratio(valuation.get('pbr'), digits=2, suffix='倍')} / "
+            f"配当 {_fmt_dividend_yield(valuation.get('dividend_yield_pct'), valuation.get('dividend_yield_status'))}"
+        )
+    lines.append("詳しく見るなら「急落株」")
+    return "\n\n".join(lines)
+
+
 def _resolve_plan(user: dict, now_dt: datetime) -> str:
     """app.py の resolve_effective_plan と同等ロジック"""
     if user.get("membership_status") == "active":
@@ -880,13 +1016,22 @@ def run_alert() -> None:
         logger.warning("株価データ取得失敗")
         return
 
+    drops = sorted(
+        [s for s in stocks.values() if s["change_pct"] <= DROP_LIST_THRESHOLD],
+        key=lambda x: x["change_pct"],
+    )
+    drops = _enrich_drop_valuations(drops)
+    save_drop_cache(drops, nikkei_pct)
+
     financials = _load_financials_cache()
     logger.info("財務キャッシュ: %d銘柄", len(financials))
 
+    notified_today = get_notified_codes_today()
     signals = [
         s for s in stocks.values()
-        if is_buy_signal(s, nikkei_pct, financials) and not has_notified_recently(s["code"])
+        if is_buy_signal(s, nikkei_pct, financials) and s["code"] not in notified_today
     ]
+    signals = sorted(signals, key=lambda x: x["change_pct"])[:MAX_ALERT_SIGNALS]
 
     logger.info("買いシグナル候補: %d銘柄", len(signals))
     if not signals:
@@ -903,30 +1048,22 @@ def run_alert() -> None:
         return
 
     now_utc = datetime.now(timezone.utc)
+    msg = _build_alert_digest(signals, nikkei_pct, financials)
+    sent_count = 0
+    for u in users:
+        if not u.get("active", True):
+            continue
+        if _resolve_plan(u, now_utc) != "paid":
+            continue
+        _push_text(u["user_id"], msg)
+        sent_count += 1
+
     notified_codes: set[str] = set()
-
-    for stock in signals:
-        reason = _build_signal_reason(stock, nikkei_pct, financials)
-        msg = (
-            f"買いシグナル速報\n\n"
-            f"{stock['code']} {stock['name']} {stock['change_pct']:+.1f}%\n\n"
-            f"理由:\n{reason}\n\n"
-            f"詳しく見るなら\n{stock['code']} で返信"
-        )
-
-        sent_count = 0
-        for u in users:
-            if not u.get("active", True):
-                continue
-            if _resolve_plan(u, now_utc) != "paid":
-                continue
-            _push_text(u["user_id"], msg)
-            sent_count += 1
-
-        if sent_count > 0:
+    if sent_count > 0:
+        for stock in signals:
             log_alert(stock["code"], stock["change_pct"])
             notified_codes.add(stock["code"])
-            logger.info("通知: %s %s → %d人", stock["code"], stock["name"], sent_count)
+        logger.info("まとめ通知: %d銘柄 → %d人", len(signals), sent_count)
 
     logger.info("=== 完了: %d銘柄通知 ===", len(notified_codes))
 
