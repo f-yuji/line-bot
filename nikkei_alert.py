@@ -655,7 +655,7 @@ def format_drop_list_text(
             f"   指標割安度 {valuation_score}/100\n"
         )
         lines.append(
-            f"{num} {s['name']} / {s['price']:,.0f}円\n"
+            f"{num} {s['code']} {s['name']} / {s['price']:,.0f}円\n"
             f"{company_block}"
             f"   前日比 {_format_day_change_text(s.get('price'), s.get('day_pct'))}\n"
             f"   高値差 {_fp(s.get('from_high_pct'))}"
@@ -663,7 +663,7 @@ def format_drop_list_text(
         )
     if stale_fallback:
         lines.append("※ 最新取得に失敗したため、直近キャッシュを表示")
-    lines.append("銘柄コードか銘柄名で詳しく見れる\n例: 7731 / ニコン")
+    lines.append("銘柄コードか銘柄名で詳しく見れる\n例: 7731 / ニコン / リソル")
     return "\n\n".join(lines)
 
 

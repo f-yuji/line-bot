@@ -1388,6 +1388,40 @@ def _normalize_query_for_match(text: str) -> str:
     return t.strip()
 
 
+def _resolve_drop_stock_from_text(user_id: str, text: str) -> Optional[dict]:
+    query = _normalize_text(text)
+    if not query:
+        return None
+
+    drops = _user_drop_list.get(user_id, [])
+    if drops:
+        for stock in drops:
+            code = str(stock.get("code") or "")
+            name = str(stock.get("name") or "")
+            norm_name = _normalize_text(name)
+            if query == code or query == norm_name:
+                return stock
+        for stock in drops:
+            name = str(stock.get("name") or "")
+            norm_name = _normalize_text(name)
+            if norm_name and (query in norm_name or norm_name in query):
+                return stock
+        return None
+
+    if re.fullmatch(r"[0-9]{4}", text) and text in NIKKEI225:
+        return {"code": text, "name": NIKKEI225[text]}
+
+    for code, name in NIKKEI225.items():
+        norm_name = _normalize_text(name)
+        if query == code or query == norm_name:
+            return {"code": code, "name": name}
+    for code, name in NIKKEI225.items():
+        norm_name = _normalize_text(name)
+        if norm_name and (query in norm_name or norm_name in query):
+            return {"code": code, "name": name}
+    return None
+
+
 def _is_context_alive(ctx: dict, ttl_hours: int = _CONTEXT_TTL_HOURS) -> bool:
     if not ctx:
         return False
@@ -3076,48 +3110,9 @@ def handle_message(event):
             pass
         return
 
-    # ★急落株 番号選択（drop list コンテキストがある場合、★7-a より先に処理）
-    if user_id in _user_drop_list and re.match(r"^(10|[1-9])$", text):
-        drops = _user_drop_list.get(user_id, [])
-        idx = int(text) - 1
-        if 0 <= idx < len(drops):
-            if plan != "paid":
-                reply_with_payment_for_user(
-                    event.reply_token, user_id,
-                    "個別解説は有料会員向けの機能",
-                    quick_reply=qr,
-                )
-                return
-            stock = drops[idx]
-            try:
-                nikkei_pct = get_nikkei_change_pct()
-                comment = get_stock_ai_comment(stock["code"], stock["name"], stock["change_pct"], nikkei_pct)
-                company_profile = format_company_profile_text(stock["code"])
-                company_block = f"{company_profile}\n\n" if company_profile else ""
-                reply_text(
-                    event.reply_token,
-                    f"{stock['code']} {stock['name']}\n"
-                    f"{company_block}"
-                    f"取得: {stock.get('fetched_at', '-')}\n\n"
-                    f"価格   {stock['price']:,.0f}円\n"
-                    f"前日比 {_format_day_change_text(stock.get('price'), stock.get('day_pct'))}\n"
-                    f"週次   {(f'{stock.get('week_pct'):+.1f}%') if stock.get('week_pct') is not None else 'N/A'}\n"
-                    f"月次   {(f'{stock.get('month_pct'):+.1f}%') if stock.get('month_pct') is not None else 'N/A'}\n"
-                    f"高値差 {(f'{stock.get('from_high_pct'):+.1f}%') if stock.get('from_high_pct') is not None else 'N/A'}\n\n{comment}",
-                    quick_reply=qr,
-                )
-            except Exception as e:
-                logger.error("急落株AI解説エラー: %s", e)
-                reply_text(event.reply_token, "解説取得に失敗した", quick_reply=qr)
-            try:
-                supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
-            except Exception:
-                pass
-            return
-        # 番号が範囲外 → 通常の番号ハンドラへ fall through
-
-    # ★急落株 証券コード直接入力（4桁数字でNikkei225に存在する場合）
-    if re.match(r"^[0-9]{4}$", text) and text in NIKKEI225:
+    # ★急落株 銘柄コード / 銘柄名入力
+    stock_from_text = _resolve_drop_stock_from_text(user_id, text)
+    if stock_from_text:
         if plan != "paid":
             reply_with_payment_for_user(
                 event.reply_token, user_id,
@@ -3131,14 +3126,17 @@ def handle_message(event):
             return
         try:
             nikkei_pct = get_nikkei_change_pct()
-            stock = get_single_stock_change(text)
+            stock = stock_from_text if stock_from_text.get("price") is not None else get_single_stock_change(stock_from_text["code"])
+            if not stock:
+                reply_text(event.reply_token, "銘柄データ取得に失敗した\nしばらく待ってから試して", quick_reply=qr)
+                return
             change_pct = stock["change_pct"] if stock else None
-            comment = get_stock_ai_comment(text, NIKKEI225[text], change_pct, nikkei_pct)
-            company_profile = format_company_profile_text(text)
+            comment = get_stock_ai_comment(stock["code"], stock["name"], change_pct, nikkei_pct)
+            company_profile = format_company_profile_text(stock["code"])
             company_block = f"{company_profile}\n\n" if company_profile else ""
             reply_text(
                 event.reply_token,
-                f"{text} {NIKKEI225[text]}\n"
+                f"{stock['code']} {stock['name']}\n"
                 f"{company_block}"
                 f"取得: {stock.get('fetched_at', '-')}\n\n"
                 f"価格   {stock['price']:,.0f}円\n"
@@ -3149,7 +3147,7 @@ def handle_message(event):
                 quick_reply=qr,
             )
         except Exception as e:
-            logger.error("急落株コード入力エラー: %s", e)
+            logger.error("急落株銘柄入力エラー: %s", e)
             reply_text(event.reply_token, "解説取得に失敗した", quick_reply=qr)
         try:
             supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
