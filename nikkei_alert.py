@@ -37,7 +37,7 @@ logger = logging.getLogger(__name__)
 
 # ─── 閾値定数（後で調整可能）───
 DROP_LIST_THRESHOLD = -2.0      # 急落一覧閾値（%）
-ALERT_THRESHOLD = -5.5          # push通知閾値（%）。一覧より厳しめにする
+ALERT_THRESHOLD = -9.0          # push通知閾値（%）。一覧より厳しめにする
 NIKKEI_GAP_THRESHOLD = -1.5     # 指数乖離閾値（pt）
 AI_COMMENT_CACHE_TTL_DAYS = 7
 DROP_CACHE_KEY = "latest"
@@ -663,7 +663,7 @@ def format_drop_list_text(
         )
     if stale_fallback:
         lines.append("※ 最新取得に失敗したため、直近キャッシュを表示")
-    lines.append("番号で理由を見れる\n例: 1")
+    lines.append("銘柄コードか銘柄名で詳しく見れる\n例: 7731 / ニコン")
     return "\n\n".join(lines)
 
 
