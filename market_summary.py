@@ -300,10 +300,10 @@ def load_market_cache(key: str) -> Optional[str]:
         return None
 
 
-def _refresh_market_cache_if_needed(key: str) -> None:
+def _refresh_market_cache_if_needed(key: str, *, force: bool = False) -> None:
     now_jst = datetime.now(JST)
     cache_row = _get_market_cache_row(key)
-    if _is_cache_fresh(cache_row, now_jst):
+    if not force and _is_cache_fresh(cache_row, now_jst):
         return
 
     metrics = fetch_market_metrics(key)
@@ -337,14 +337,14 @@ def get_all_markets_reply() -> str:
     return "\n\n------\n\n".join(parts)
 
 
-def run_market_update() -> None:
+def run_market_update(*, force: bool = True) -> None:
     logger.info("=== market update start ===")
     now_jst = datetime.now(JST)
 
     for key in MARKETS:
         try:
             cache_row = _get_market_cache_row(key)
-            if _is_cache_fresh(cache_row, now_jst):
+            if not force and _is_cache_fresh(cache_row, now_jst):
                 logger.info("market cache still fresh; skip update key=%s", key)
                 continue
             metrics = fetch_market_metrics(key)
