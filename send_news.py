@@ -554,11 +554,16 @@ def get_recent_sent_links(user_id: str, article_limit: int = 15) -> set:
 
 def load_users() -> Dict[str, Any]:
     try:
-        res = supabase.table("users").select("*").eq("active", True).execute()
+        res = supabase.table("users").select("*").execute()
         rows = res.data or []
 
         users: Dict[str, Any] = {}
+        inactive_count = 0
         for row in rows:
+            if row.get("active") is False:
+                inactive_count += 1
+                continue
+
             user_id = row["user_id"]
             plan = row.get("plan", "free")
             users[user_id] = {
@@ -573,7 +578,10 @@ def load_users() -> Dict[str, Any]:
                 "trial_extended_until": row.get("trial_extended_until"),
             }
 
-        logger.info("Supabaseユーザー読込: %d件", len(users))
+        logger.info(
+            "Supabaseユーザー読込: active=%d件 inactive=%d件 total=%d件",
+            len(users), inactive_count, len(rows),
+        )
         return users
 
     except Exception as e:
