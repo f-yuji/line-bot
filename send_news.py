@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import hashlib
 import html
 import json
@@ -57,6 +58,28 @@ SUPABASE_URL = _get_mode_env("SUPABASE_URL", SUPABASE_MODE, required=True)
 SUPABASE_KEY = _get_mode_env("SUPABASE_KEY", SUPABASE_MODE, required=True)
 OWNER_LINE_USER_ID = _get_mode_env("OWNER_LINE_USER_ID", LINE_MODE)
 ENV = os.getenv("ENV", "prod")
+
+
+def _jwt_claims(token: str) -> Dict[str, Any]:
+    try:
+        payload = token.split(".")[1]
+        payload += "=" * (-len(payload) % 4)
+        return json.loads(base64.urlsafe_b64decode(payload.encode("ascii")))
+    except Exception:
+        return {}
+
+
+def log_runtime_config() -> None:
+    claims = _jwt_claims(SUPABASE_KEY)
+    logger.info(
+        "Runtime config: env=%s supabase_mode=%s line_mode=%s supabase_host=%s supabase_ref=%s supabase_role=%s",
+        ENV,
+        SUPABASE_MODE or "legacy",
+        LINE_MODE or "legacy",
+        urlparse(SUPABASE_URL).netloc,
+        claims.get("ref", "unknown"),
+        claims.get("role", "unknown"),
+    )
 
 # ─── クライアント ───
 client = OpenAI(api_key=OPENAI_API_KEY)
@@ -1738,6 +1761,7 @@ if __name__ == "__main__":
     else:
         print("=== 起動確認 ===")
         print(f"環境: {ENV}")
+        log_runtime_config()
         if ENV == "test":
             print("◎ テスト環境で実行中")
         elif ENV == "prod":
