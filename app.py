@@ -721,6 +721,223 @@ def _billing_manage_done_html(user_id: str) -> str:
 </html>"""
 
 
+def _billing_page_html_clean(user_id: str, canceled: bool = False) -> str:
+    safe_user_id = escape(user_id)
+    cancel_message = ""
+    if canceled:
+        cancel_message = (
+            "<p class='notice'>決済はキャンセルされました。内容を確認して、準備ができたらもう一度お進みください。</p>"
+        )
+
+    return f"""<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>LINEニュースBot メンバーシップ登録</title>
+  <style>
+    :root {{
+      color-scheme: light;
+      --page: #f6f7f9;
+      --panel: #ffffff;
+      --text: #17202a;
+      --muted: #667085;
+      --accent: #0f766e;
+      --accent-dark: #115e59;
+      --line: #d9dee7;
+      --soft: #eef6f5;
+      --shadow: 0 16px 44px rgba(15, 23, 42, 0.10);
+    }}
+    * {{ box-sizing: border-box; }}
+    body {{
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      padding: 20px;
+      color: var(--text);
+      background: var(--page);
+      font-family: "Yu Gothic UI", "Hiragino Sans", sans-serif;
+    }}
+    .card {{
+      width: min(100%, 620px);
+      padding: 28px;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+    }}
+    .brand {{
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding-bottom: 18px;
+      margin-bottom: 24px;
+      border-bottom: 1px solid var(--line);
+    }}
+    .brand-name {{
+      font-size: 15px;
+      font-weight: 700;
+    }}
+    .badge {{
+      padding: 7px 11px;
+      color: var(--accent-dark);
+      background: var(--soft);
+      border: 1px solid #cce7e3;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 700;
+      white-space: nowrap;
+    }}
+    h1 {{
+      margin: 0 0 10px;
+      font-size: 26px;
+      line-height: 1.35;
+    }}
+    p {{
+      margin: 0 0 16px;
+      line-height: 1.7;
+    }}
+    .lead {{
+      color: #344054;
+      font-size: 15px;
+    }}
+    .sub {{
+      color: var(--muted);
+      font-size: 14px;
+    }}
+    .notice {{
+      padding: 12px 14px;
+      color: #9a3412;
+      background: #fff7ed;
+      border: 1px solid #fed7aa;
+      border-radius: 8px;
+    }}
+    .box {{
+      margin: 20px 0;
+      padding: 18px;
+      background: #fbfcfd;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+    }}
+    .checklist {{
+      display: grid;
+      gap: 11px;
+      margin: 0;
+      padding: 0;
+      color: #344054;
+      font-size: 14px;
+      list-style: none;
+    }}
+    .checklist li {{
+      display: grid;
+      grid-template-columns: 22px 1fr;
+      gap: 10px;
+      align-items: start;
+    }}
+    .checklist li::before {{
+      content: "✓";
+      display: grid;
+      place-items: center;
+      width: 22px;
+      height: 22px;
+      color: #fff;
+      background: var(--accent);
+      border-radius: 999px;
+      font-size: 13px;
+      font-weight: 700;
+    }}
+    .meta {{
+      display: grid;
+      gap: 8px;
+      margin: 18px 0 22px;
+      padding: 14px;
+      color: var(--muted);
+      background: #f8fafc;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      font-size: 13px;
+    }}
+    .meta-row {{
+      display: flex;
+      justify-content: space-between;
+      gap: 14px;
+    }}
+    .meta strong {{
+      color: var(--text);
+      font-weight: 700;
+      overflow-wrap: anywhere;
+    }}
+    button {{
+      width: 100%;
+      padding: 16px 20px;
+      color: #fff;
+      background: var(--accent);
+      border: 0;
+      border-radius: 8px;
+      box-shadow: 0 10px 22px rgba(15, 118, 110, 0.24);
+      cursor: pointer;
+      font-size: 16px;
+      font-weight: 700;
+    }}
+    button:hover {{
+      background: var(--accent-dark);
+    }}
+    .footnote {{
+      margin-top: 14px;
+      margin-bottom: 0;
+      text-align: center;
+    }}
+    @media (max-width: 520px) {{
+      body {{ padding: 12px; }}
+      .card {{ padding: 22px 18px; }}
+      .brand {{
+        align-items: flex-start;
+        flex-direction: column;
+        gap: 10px;
+      }}
+      h1 {{ font-size: 23px; }}
+      .meta-row {{
+        flex-direction: column;
+        gap: 2px;
+      }}
+    }}
+  </style>
+</head>
+<body>
+  <main class="card">
+    <div class="brand">
+      <div>
+        <div class="brand-name">LINEニュースBot</div>
+        <div class="sub">メンバーシップ登録</div>
+      </div>
+      <div class="badge">Stripe決済</div>
+    </div>
+    <h1>有料メンバーシップを開始します</h1>
+    <p class="lead">このあとStripeの決済画面へ移動します。登録が完了すると、LINEニュースBotの有料機能がこのLINEアカウントで利用できます。</p>
+    {cancel_message}
+    <div class="box">
+      <ul class="checklist">
+        <li>最新ニュースの深掘り解説を利用できます</li>
+        <li>人物・企業・市場テーマについて会話できます</li>
+        <li>登録内容の変更や解約はStripeの管理画面から行えます</li>
+      </ul>
+    </div>
+    <div class="meta">
+      <div class="meta-row"><span>登録先LINE user</span><strong>{safe_user_id}</strong></div>
+      <div class="meta-row"><span>決済処理</span><strong>Stripe Checkout</strong></div>
+    </div>
+    <form method="post" action="/stripe/create-checkout-session">
+      <input type="hidden" name="user_id" value="{safe_user_id}">
+      <button type="submit">Stripeの決済画面へ進む</button>
+    </form>
+    <p class="sub footnote">カード情報はこのページでは保存せず、Stripeの安全な画面で入力します。</p>
+  </main>
+</body>
+</html>"""
+
+
 @app.route("/billing", methods=["GET"])
 def billing_page():
     user_id = (request.args.get("user_id") or "").strip()
@@ -740,7 +957,7 @@ def billing_page():
     if effective_plan == "paid":
         return _billing_already_active_html(user_id)
 
-    return _billing_page_html(user_id, canceled=canceled)
+    return _billing_page_html_clean(user_id, canceled=canceled)
 
 
 @app.route("/stripe/create-checkout-session", methods=["POST"])
