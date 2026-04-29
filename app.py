@@ -822,8 +822,9 @@ _DETAIL_NEW_SCHEMA = {
                             "p1": {"type": "string"},
                             "p2": {"type": "string"},
                             "p3": {"type": "string"},
+                            "stocks": {"type": "string"},
                         },
-                        "required": ["index", "headline", "p1", "p2", "p3"],
+                        "required": ["index", "headline", "p1", "p2", "p3", "stocks"],
                         "additionalProperties": False,
                     },
                 },
@@ -878,11 +879,14 @@ def answer_detail_new(user_id: str, nums: List[int]) -> str:
         "・予測は断定せず『〜可能性』『〜になりそう』で書く\n"
         "・全記事について必ず全フィールドを埋めろ（欠損禁止）\n"
         "・1件でも欠けたら不正とみなす\n"
+        "stocks: このニュースで影響を受けそうな日本株の銘柄・セクターを具体的に列挙（証券コードがあれば添える）\n"
+        "・例: 三菱UFJ(8306)↑、銀行セクター全般↑、REIT売り\n"
+        "・直接関係なければ「関連銘柄なし」と書く\n"
     )
     user_prompt = (
         f"以下のニュース記事を深掘りしろ:\n{news_text}\n\n"
         f"指定番号: {nums}\n"
-        "全記事について必ず headline / p1 / p2 / p3 を埋めろ。\n"
+        "全記事について必ず headline / p1 / p2 / p3 / stocks を埋めろ。\n"
         "1件でも欠けたら失敗。\n"
         "JSONで返せ。"
     )
@@ -919,6 +923,7 @@ def answer_detail_new(user_id: str, nums: List[int]) -> str:
             p1 = (a.get("p1") or "").strip()
             p2 = (a.get("p2") or "").strip()
             p3 = (a.get("p3") or "").strip()
+            stocks = (a.get("stocks") or "").strip()
 
             if not headline:
                 headline = title[:40]
@@ -936,6 +941,8 @@ def answer_detail_new(user_id: str, nums: List[int]) -> str:
                 f"{p2}\n\n"
                 f"{p3}"
             )
+            if stocks and stocks != "関連銘柄なし":
+                block += f"\n\n📌 {stocks}"
             parts.append(block)
 
         return "\n\nーーーーー\n\n".join(parts)
