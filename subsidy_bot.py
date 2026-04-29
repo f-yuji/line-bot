@@ -52,9 +52,17 @@ _SUPABASE_KEY = _mode_env("SUPABASE_KEY", _SUPABASE_MODE, required=True)
 _OPENAI_API_KEY = _opt("OPENAI_API_KEY")
 _LINE_MODE = _opt("LINE_MODE")
 _LINE_TOKEN = _mode_env("LINE_CHANNEL_ACCESS_TOKEN", _LINE_MODE, required=True)
+_OWNER_LINE_USER_ID = _mode_env("OWNER_LINE_USER_ID", _LINE_MODE)
+_BOT_OWNER_ONLY = _opt("BOT_OWNER_ONLY").lower() != "false"
 
 supabase = create_client(_SUPABASE_URL, _SUPABASE_KEY)
 _openai = OpenAI(api_key=_OPENAI_API_KEY) if (_OPENAI_AVAILABLE and _OPENAI_API_KEY) else None
+
+
+def _is_allowed_line_user(user_id: str) -> bool:
+    if not _BOT_OWNER_ONLY:
+        return True
+    return bool(_OWNER_LINE_USER_ID and user_id == _OWNER_LINE_USER_ID)
 
 SUBSIDY_CATEGORIES = [
     "建設",
@@ -445,6 +453,8 @@ def send_subsidy_alerts(new_items: list[dict]) -> None:
         msg = f"補助金の新着\n\n{title}\n\n{summary}\n\n{url}"
 
         for user in users:
+            if not _is_allowed_line_user(user["user_id"]):
+                continue
             if not user.get("active", True):
                 continue
             if _resolve_plan(user, now_utc) != "paid":

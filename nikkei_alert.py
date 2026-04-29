@@ -72,12 +72,20 @@ SUPABASE_URL = _mode_env("SUPABASE_URL", SUPABASE_MODE, required=True)
 SUPABASE_KEY = _mode_env("SUPABASE_KEY", SUPABASE_MODE, required=True)
 LINE_MODE = _opt("LINE_MODE")
 LINE_CHANNEL_ACCESS_TOKEN = _mode_env("LINE_CHANNEL_ACCESS_TOKEN", LINE_MODE, required=True)
+OWNER_LINE_USER_ID = _mode_env("OWNER_LINE_USER_ID", LINE_MODE)
+BOT_OWNER_ONLY = _opt("BOT_OWNER_ONLY").lower() != "false"
 OPENAI_API_KEY = _opt("OPENAI_API_KEY")
 JQUANTS_API_KEY = _opt("JQUANTS_API_KEY") or _opt("JQUANTS_REFRESH_TOKEN")
 JQUANTS_API_BASE = "https://api.jquants.com/v2"
 
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 openai_client = OpenAI(api_key=OPENAI_API_KEY) if (_OPENAI_AVAILABLE and OPENAI_API_KEY) else None
+
+
+def _is_allowed_line_user(user_id: str) -> bool:
+    if not BOT_OWNER_ONLY:
+        return True
+    return bool(OWNER_LINE_USER_ID and user_id == OWNER_LINE_USER_ID)
 
 
 # ─── 日経225銘柄 {証券コード: 会社名} ───
@@ -1060,6 +1068,8 @@ def run_alert() -> None:
     msg = _build_alert_digest(signals, nikkei_pct, financials)
     sent_count = 0
     for u in users:
+        if not _is_allowed_line_user(u["user_id"]):
+            continue
         if not u.get("active", True):
             continue
         if not u.get("drop_alert_enabled", False):

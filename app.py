@@ -106,6 +106,7 @@ STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET", "").strip()
 STRIPE_PRICE_ID = os.getenv("STRIPE_PRICE_ID", "").strip()
 OWNER_LINE_USER_ID = _get_mode_env("OWNER_LINE_USER_ID", LINE_MODE)
 LINE_MEMBERSHIP_USE_API_SYNC = os.getenv("LINE_MEMBERSHIP_USE_API_SYNC", "true").lower() == "true"
+BOT_OWNER_ONLY = os.getenv("BOT_OWNER_ONLY", "true").lower() == "true"
 LINE_API_BASE = "https://api.line.me"
 print("SUPABASE_URL =", SUPABASE_URL)
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
@@ -123,6 +124,19 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+
+def is_allowed_line_user(user_id: str) -> bool:
+    if not BOT_OWNER_ONLY:
+        return True
+    return bool(OWNER_LINE_USER_ID and user_id == OWNER_LINE_USER_ID)
+
+
+def reject_non_owner(user_id: str, source: str) -> bool:
+    if is_allowed_line_user(user_id):
+        return False
+    logger.warning("owner-only block: source=%s user=%s", source, user_id)
+    return True
 
 print("=== 起動確認 ===")
 print(f"環境: {ENV}")
@@ -945,6 +959,8 @@ def billing_page():
 
     if not user_id:
         return "user_id is required", 400
+    if reject_non_owner(user_id, "billing"):
+        return "forbidden", 403
 
     if not stripe_is_enabled():
         fallback_url = build_payment_url()
@@ -968,6 +984,8 @@ def create_checkout_session():
     user_id = (request.form.get("user_id") or request.args.get("user_id") or "").strip()
     if not user_id:
         return "user_id is required", 400
+    if reject_non_owner(user_id, "stripe_checkout"):
+        return "forbidden", 403
 
     user, _ = ensure_user(user_id)
     effective_plan = resolve_effective_plan(user, datetime.now(timezone.utc))
@@ -1149,6 +1167,8 @@ def handle_membership_event(event):
     user_id = event.get("source", {}).get("userId") or event.get("userId")
     if not user_id:
         logger.warning("membership event user_id不明: %s", event)
+        return
+    if reject_non_owner(user_id, "membership_event"):
         return
     event_type = (
         event.get("type")
@@ -2432,6 +2452,8 @@ def callback():
 @handler.add(FollowEvent)
 def handle_follow(event):
     user_id = event.source.user_id
+    if reject_non_owner(user_id, "follow"):
+        return
     user, _ = ensure_user(user_id)
 
     # トライアル開始日が未設定なら登録（新規ユーザー or システム導入前の既存ユーザー）
@@ -2641,6 +2663,8 @@ def handle_message(event):
     text = normalize_user_text(event.message.text)
 
     logger.info("メッセージ受信: user=%s text=%s", user_id, text)
+    if reject_non_owner(user_id, "message"):
+        return
     user, _ = ensure_user(user_id)
 
     now_dt = datetime.now(timezone.utc)
@@ -3686,6 +3710,8 @@ def handle_postback(event):
 
     logger.info("Postback受信: user=%s data=%s", user_id, data)
 
+    if reject_non_owner(user_id, "postback"):
+        return
     user, _ = ensure_user(user_id)
     genres = list(user.get("genres", []) or [])
 
