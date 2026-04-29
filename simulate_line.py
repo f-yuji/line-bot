@@ -2,8 +2,8 @@
 simulate_line.py — handle_message をターミナルから擬似実行するCLIテスト
 
 【単発モード】
-    python simulate_line.py "会話ネタ"
-    python simulate_line.py "彼女との会話ネタ" --user-id U1234567890
+    python simulate_line.py "ニュース"
+    python simulate_line.py "1詳しく" --user-id U1234567890
 
 【REPLモード】（引数なし）
     python simulate_line.py

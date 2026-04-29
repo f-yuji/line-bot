@@ -418,45 +418,6 @@ def extract_source_name(url: str) -> str:
 # 必要になったら is.gd 等で再実装する
 
 
-def normalize_plan(plan: str) -> str:
-    if plan in ["light", "premium", "paid"]:
-        return "paid"
-    return "free"
-
-
-def resolve_effective_plan(user: dict, now_dt) -> str:
-    """membership_status == active なら即 paid。それ以外はトライアル判定へ。"""
-    if user.get("membership_status", "none") == "active":
-        return "paid"
-
-    trial_started_at = user.get("trial_started_at")
-    if trial_started_at:
-        try:
-            trial_dt = datetime.fromisoformat(str(trial_started_at).replace("Z", "+00:00"))
-            if now_dt <= trial_dt + timedelta(days=7):
-                return "paid"
-        except Exception:
-            pass
-
-    extended_until = user.get("trial_extended_until")
-    if extended_until:
-        try:
-            ext_dt = datetime.fromisoformat(str(extended_until).replace("Z", "+00:00"))
-            if now_dt <= ext_dt:
-                return "paid"
-        except Exception:
-            pass
-
-    return "free"
-
-
-def plan_max_items(plan: str) -> int:
-    plan = normalize_plan(plan)
-    return {
-        "free": 5,
-        "paid": 5,
-    }.get(plan, DEFAULT_MAX_ITEMS)
-
 
 def filter_sent(news_list: List[Dict[str, str]]) -> List[Dict[str, str]]:
     """送信済み記事を除外"""
@@ -601,17 +562,11 @@ def load_users() -> Dict[str, Any]:
                 continue
 
             user_id = row["user_id"]
-            plan = row.get("plan", "free")
             users[user_id] = {
                 "user_id": user_id,
-                "plan": normalize_plan(plan),
                 "active": row.get("active", True),
                 "genres": row.get("genres", []) or [],
-                "max_items": plan_max_items(plan),
-                "membership_status": row.get("membership_status", "none"),
-                "membership_expires_at": row.get("membership_expires_at"),
-                "trial_started_at": row.get("trial_started_at"),
-                "trial_extended_until": row.get("trial_extended_until"),
+                "max_items": DEFAULT_MAX_ITEMS,
             }
 
         logger.info(
@@ -1251,8 +1206,9 @@ _ARTICLE_SUMMARY_SCHEMA = {
                         "properties": {
                             "fact": {"type": "string"},
                             "chat": {"type": "string"},
+                            "impact": {"type": "string"},
                         },
-                        "required": ["fact", "chat"],
+                        "required": ["fact", "chat", "impact"],
                         "additionalProperties": False,
                     },
                 },
@@ -1277,6 +1233,7 @@ def get_cached_summaries(links: List[str]) -> Dict[str, str]:
             .gte("updated_at", cutoff)
             .execute()
         )
+        # impactフィールド追加前のキャッシュはimpactなしで返す（後方互換）
         return {row["link"]: row["summary_short"] for row in (res.data or [])}
     except Exception as e:
         logger.error("article_summariesキャッシュ取得失敗: %s", e)
@@ -1318,13 +1275,14 @@ def summarize_articles(news_list: List[Dict[str, str]]) -> tuple:
     links = [n.get("link", "") for n in news_list if n.get("link")]
     cached_raw = get_cached_summaries(links)
 
-    # キャッシュをfact/chatに分解
+    # キャッシュをfact/chat/impactに分解
     summaries: Dict[str, Dict[str, str]] = {}
     for link, summary_short in cached_raw.items():
-        parts = summary_short.split("\n", 1)
+        parts = summary_short.split("\n", 2)
         summaries[link] = {
             "fact": parts[0] if parts else "",
             "chat": parts[1] if len(parts) > 1 else "",
+            "impact": parts[2] if len(parts) > 2 else "",
         }
 
     uncached = [n for n in news_list if n.get("link", "") not in summaries]
@@ -1345,6 +1303,11 @@ def summarize_articles(news_list: List[Dict[str, str]]) -> tuple:
             "・違和感（普通と違う点）\n"
             "・読み（今後どうなりそうか）\n"
             "禁止: タイトルや事実の言い換え／「〜なんだって」「〜らしいよ」などの感想文／情報ゼロの文\n\n"
+            "【impact】市場影響（40文字以内、1〜2文）\n"
+            "投資家視点で株式・不動産・債券・為替などの市場への影響を分析する。\n"
+            "・影響が大きいセクターや資産クラスを具体的に（例: 不動産株↑、REIT売り）\n"
+            "・方向感がある場合は↑↓で示す\n"
+            "・投資に直接関係しない記事（スポーツ・芸能等）は「投資への直接影響は薄い」と記載\n\n"
             f"articlesの数は入力ニュース数（{len(news_list)}件）と一致させること。\n"
             "JSONのみ返してください。\n\n"
             f"{all_titles}"
@@ -1354,7 +1317,7 @@ def summarize_articles(news_list: List[Dict[str, str]]) -> tuple:
                 model="gpt-4o-mini",
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.4,
-                max_tokens=700,
+                max_tokens=1000,
                 timeout=25,
                 response_format=_ARTICLE_SUMMARY_SCHEMA,
             )
@@ -1370,8 +1333,9 @@ def summarize_articles(news_list: List[Dict[str, str]]) -> tuple:
                 a = articles_ai[i] if i < len(articles_ai) else {}
                 fact = str(a.get("fact", "")).strip() or n["title"][:40]
                 chat = str(a.get("chat", "")).strip() or "気になる動きかも"
-                summaries[link] = {"fact": fact, "chat": chat}
-                new_summaries[link] = fact + "\n" + chat
+                impact = str(a.get("impact", "")).strip() or ""
+                summaries[link] = {"fact": fact, "chat": chat, "impact": impact}
+                new_summaries[link] = fact + "\n" + chat + "\n" + impact
 
             save_article_summaries(news_list, new_summaries)
 
@@ -1382,6 +1346,7 @@ def summarize_articles(news_list: List[Dict[str, str]]) -> tuple:
                 summaries[link] = {
                     "fact": n["title"][:40] if n.get("title") else "詳細不明",
                     "chat": "気になる動きかも",
+                    "impact": "",
                 }
             topic = ""
     else:
@@ -1443,9 +1408,12 @@ def build_message(
         s = summaries.get(link, {})
         fact = s.get("fact", "") or n["title"][:40]
         chat = s.get("chat", "") or "気になる動きかも"
+        impact = s.get("impact", "")
         lines.append(f"{num}［{title}］")
         lines.append(f"👉 {fact}")
         lines.append(chat)
+        if impact:
+            lines.append(f"📊 {impact}")
         lines.append("")
 
     if mode == "push":
@@ -1533,11 +1501,7 @@ def main():
             logger.info("非アクティブのためスキップ: %s", user_id)
             continue
 
-        effective_plan = resolve_effective_plan(user, datetime.now(timezone.utc))
-        user["max_items"] = plan_max_items(effective_plan)
-
-        logger.info("ニュース配信開始 user=%s raw_plan=%s effective_plan=%s genres=%s",
-                    user_id, user.get("plan"), effective_plan, user.get("genres"))
+        logger.info("ニュース配信開始 user=%s genres=%s", user_id, user.get("genres"))
         filtered = filter_news(news, user)
         logger.info("送信件数: user=%s %d件", user_id, len(filtered))
 
@@ -1588,39 +1552,15 @@ def send_news_to_user(user_id: str) -> None:
         logger.warning("初回配信: ニュース0件のためスキップ: %s", user_id)
         return
 
-    plan = "free"
     genres: List[str] = []
-    res_data = None
-
     try:
-        res = supabase.table("users").select(
-            "plan,genres,membership_status,membership_expires_at,trial_started_at,trial_extended_until"
-        ).eq("user_id", user_id).single().execute()
-        res_data = res.data
-        if res_data:
-            plan = res_data.get("plan", "free") or "free"
-            genres = res_data.get("genres") or []
+        res = supabase.table("users").select("genres").eq("user_id", user_id).single().execute()
+        if res.data:
+            genres = res.data.get("genres") or []
     except Exception as e:
         logger.warning("send_news_to_user: ユーザー情報取得失敗、デフォルト使用: %s %s", user_id, e)
 
-    membership_status = res_data.get("membership_status", "none") if res_data else "none"
-    membership_expires_at = res_data.get("membership_expires_at") if res_data else None
-    trial_started_at = res_data.get("trial_started_at") if res_data else None
-    trial_extended_until = res_data.get("trial_extended_until") if res_data else None
-
-    user = {
-        "user_id": user_id,
-        "plan": plan,
-        "genres": genres,
-        "membership_status": membership_status,
-        "membership_expires_at": membership_expires_at,
-        "trial_started_at": trial_started_at,
-        "trial_extended_until": trial_extended_until,
-    }
-
-    effective_plan = resolve_effective_plan(user, datetime.now(timezone.utc))
-    user["max_items"] = plan_max_items(effective_plan)
-
+    user = {"user_id": user_id, "genres": genres, "max_items": DEFAULT_MAX_ITEMS}
     filtered = filter_news(news, user)
     if not filtered:
         logger.warning("初回配信: フィルタ後0件のためスキップ: %s", user_id)
@@ -1632,62 +1572,36 @@ def send_news_to_user(user_id: str) -> None:
 
     save_news_context(user_id, filtered, summaries)
     save_last_news_batch(user_id, filtered)
-    logger.info(
-        "初回配信完了: user=%s raw_plan=%s effective_plan=%s",
-        user_id, plan, effective_plan,
-    )
+    logger.info("初回配信完了: user=%s genres=%s", user_id, genres)
 
 
 def fetch_news_for_reply(user_id: str, exclude_links: set = None) -> tuple:
     """手動ニュース取得（reply用）。fetch+filter+summarize+save。(messages, filtered_news)を返す。送信はしない。"""
-    plan = "free"
     genres: List[str] = []
-    membership_status = "none"
-    membership_expires_at = None
-    trial_started_at = None
-    trial_extended_until = None
     try:
-        res = supabase.table("users").select(
-            "plan,genres,membership_status,membership_expires_at,trial_started_at,trial_extended_until"
-        ).eq("user_id", user_id).single().execute()
+        res = supabase.table("users").select("genres").eq("user_id", user_id).single().execute()
         if res.data:
-            plan = res.data.get("plan", "free") or "free"
             genres = res.data.get("genres") or []
-            membership_status = res.data.get("membership_status", "none")
-            membership_expires_at = res.data.get("membership_expires_at")
-            trial_started_at = res.data.get("trial_started_at")
-            trial_extended_until = res.data.get("trial_extended_until")
     except Exception as e:
         logger.warning("fetch_news_for_reply: ユーザー情報取得失敗: %s %s", user_id, e)
 
-    user = {
-        "user_id": user_id,
-        "plan": plan,
-        "genres": genres,
-        "membership_status": membership_status,
-        "membership_expires_at": membership_expires_at,
-        "trial_started_at": trial_started_at,
-        "trial_extended_until": trial_extended_until,
-    }
-    effective_plan = resolve_effective_plan(user, datetime.now(timezone.utc))
-    actual_max = plan_max_items(effective_plan)
+    actual_max = DEFAULT_MAX_ITEMS
     wants_only_overseas = bool(genres) and all(g == "overseas" for g in genres)
     include_domestic = not wants_only_overseas
-    include_overseas = effective_plan == "paid" or "overseas" in genres
+    include_overseas = "overseas" in genres
     if not include_domestic and not include_overseas:
         include_domestic = True
+
+    user = {"user_id": user_id, "genres": genres, "max_items": MAX_FETCH_ITEMS}
 
     news = fetch_news(include_domestic=include_domestic, include_overseas=include_overseas)
     if not news:
         logger.warning("fetch_news_for_reply: ニュース0件: %s", user_id)
         return [], []
 
-    # 重複除外前に十分な候補を確保するため、filter_news には大きめの上限を渡す
-    user["max_items"] = MAX_FETCH_ITEMS
-
     logger.info(
-        "fetch_news_for_reply: 候補取得数=%d user=%s domestic=%s overseas=%s effective_plan=%s genres=%s",
-        len(news), user_id, include_domestic, include_overseas, effective_plan, genres,
+        "fetch_news_for_reply: 候補取得数=%d user=%s domestic=%s overseas=%s genres=%s",
+        len(news), user_id, include_domestic, include_overseas, genres,
     )
     filtered = filter_news(news, user)
     logger.info("fetch_news_for_reply: filter_news後=%d件 user=%s", len(filtered), user_id)
