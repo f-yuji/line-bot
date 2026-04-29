@@ -58,7 +58,6 @@ SUPABASE_URL = _get_mode_env("SUPABASE_URL", SUPABASE_MODE, required=True)
 SUPABASE_KEY = _get_mode_env("SUPABASE_KEY", SUPABASE_MODE, required=True)
 OWNER_LINE_USER_ID = _get_mode_env("OWNER_LINE_USER_ID", LINE_MODE)
 ENV = os.getenv("ENV", "prod")
-BOT_OWNER_ONLY = os.getenv("BOT_OWNER_ONLY", "true").lower() == "true"
 
 
 def _jwt_claims(token: str) -> Dict[str, Any]:
@@ -88,12 +87,6 @@ supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # ─── 定数 ───
 LINE_URL = "https://api.line.me/v2/bot/message/push"
-
-
-def is_allowed_line_user(user_id: str) -> bool:
-    if not BOT_OWNER_ONLY:
-        return True
-    return bool(OWNER_LINE_USER_ID and user_id == OWNER_LINE_USER_ID)
 
 # Google Newsがブロックされた場合のフォールバック付きRSSソース
 RSS_SOURCES = [
@@ -595,8 +588,6 @@ def load_users() -> Dict[str, Any]:
                 continue
 
             user_id = row["user_id"]
-            if not is_allowed_line_user(user_id):
-                continue
             plan = row.get("plan", "free")
             users[user_id] = {
                 "user_id": user_id,
