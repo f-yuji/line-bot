@@ -118,7 +118,6 @@ _NEWS_QUICK_REPLY = {
         {"type": "action", "action": {"type": "message", "label": "リンク", "text": "リンク"}},
         {"type": "action", "action": {"type": "message", "label": "相場", "text": "相場"}},
         {"type": "action", "action": {"type": "message", "label": "急落株", "text": "急落株"}},
-        {"type": "action", "action": {"type": "message", "label": "会話ネタ", "text": "会話ネタ"}},
         {"type": "action", "action": {"type": "message", "label": "補助金", "text": "補助金"}},
         {"type": "action", "action": {"type": "message", "label": "使い方", "text": "使い方"}},
         {"type": "action", "action": {"type": "message", "label": "停止", "text": "停止"}},
@@ -366,6 +365,20 @@ CATEGORY_LABELS: Dict[str, str] = {
     "entertainment":  "芸能",
     "overseas":       "海外",
     "other":          "その他",
+}
+
+INVESTMENT_CATEGORIES = {
+    "real_estate",
+    "construction",
+    "interest_rates",
+    "energy",
+    "ai",
+    "economy",
+    "business",
+    "tech",
+    "international",
+    "materials",
+    "overseas",
 }
 
 CIRCLED = "①②③④⑤⑥⑦⑧⑨⑩"
@@ -1180,11 +1193,13 @@ def filter_news(
     news_list: List[Dict[str, str]], user: Dict[str, Any]
 ) -> List[Dict[str, str]]:
     user_id = user.get("user_id", "?")
-    genres = user.get("genres", []) or []
+    genres = [g for g in (user.get("genres", []) or []) if g in INVESTMENT_CATEGORIES]
     max_items = user.get("max_items", DEFAULT_MAX_ITEMS)
 
     scored = []
     for n in news_list:
+        if n.get("category") not in INVESTMENT_CATEGORIES:
+            continue
         s = score_article(n, genres)
         if s >= SCORE_THRESHOLD:
             scored.append((s, n))
@@ -1241,9 +1256,8 @@ _ARTICLE_SUMMARY_SCHEMA = {
                         "additionalProperties": False,
                     },
                 },
-                "topic": {"type": "string"},
             },
-            "required": ["articles", "topic"],
+            "required": ["articles"],
             "additionalProperties": False,
         },
     },
@@ -1291,41 +1305,12 @@ def save_article_summaries(news_list: List[Dict[str, str]], new_summaries: Dict[
         logger.error("article_summaries保存失敗: %s", e)
 
 
-def _generate_topic(news_list: List[Dict[str, str]]) -> str:
-    """ニュース全体から話題フレーズを1個AI生成"""
-    titles = "\n".join(
-        f"【{CATEGORY_LABELS.get(n.get('category', 'other'), 'その他')}】{n['title']}"
-        for n in news_list
-    )
-    prompt = (
-        "以下のニュース全体から、最も会話で使いやすい話題フレーズを1個だけ出してください。\n"
-        "・30〜50文字、そのまま口に出せる自然な一言\n"
-        "・「」は含めない\n"
-        "・JSONで {\"topic\": \"...\"} の形のみ返してください\n\n"
-        f"{titles}"
-    )
-    try:
-        res = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.6,
-            max_tokens=100,
-            timeout=10,
-            response_format={"type": "json_object"},
-        )
-        data = json.loads(res.choices[0].message.content)
-        return str(data.get("topic", "")).strip()
-    except Exception as e:
-        logger.error("話題フレーズ生成失敗: %s", e)
-        return ""
-
-
 def summarize_articles(news_list: List[Dict[str, str]]) -> tuple:
     """
-    記事ごとの要約とトピックフレーズを返す。キャッシュがあれば再利用。
+    記事ごとの要約を返す。キャッシュがあれば再利用。
     戻り値: (summaries, topic)
       summaries: {link: {"fact": str, "chat": str}}
-      topic: str
+      topic: str  # 互換用。現在は空文字。
     """
     if not news_list:
         return {}, ""
@@ -1360,8 +1345,6 @@ def summarize_articles(news_list: List[Dict[str, str]]) -> tuple:
             "・違和感（普通と違う点）\n"
             "・読み（今後どうなりそうか）\n"
             "禁止: タイトルや事実の言い換え／「〜なんだって」「〜らしいよ」などの感想文／情報ゼロの文\n\n"
-            "【topic】全ニュースから最も会話で使いやすい話題フレーズを1個\n"
-            "・30〜50文字、そのまま口に出せる自然な一言、「」は含めない\n\n"
             f"articlesの数は入力ニュース数（{len(news_list)}件）と一致させること。\n"
             "JSONのみ返してください。\n\n"
             f"{all_titles}"
@@ -1377,7 +1360,7 @@ def summarize_articles(news_list: List[Dict[str, str]]) -> tuple:
             )
             data = json.loads(res.choices[0].message.content)
             articles_ai = data.get("articles", [])
-            topic = str(data.get("topic", "")).strip()
+            topic = ""
 
             new_summaries: Dict[str, str] = {}
             for i, n in enumerate(news_list):
@@ -1400,10 +1383,9 @@ def summarize_articles(news_list: List[Dict[str, str]]) -> tuple:
                     "fact": n["title"][:40] if n.get("title") else "詳細不明",
                     "chat": "気になる動きかも",
                 }
-            topic = _generate_topic(news_list)
+            topic = ""
     else:
-        # 全記事キャッシュ済み → topicだけ生成
-        topic = _generate_topic(news_list)
+        topic = ""
 
     return summaries, topic
 
@@ -1470,10 +1452,6 @@ def build_message(
         lines += [
             "気になる番号をそのまま入力",
             "例：1詳しく",
-            "",
-            "話題に困ったらこれで👇",
-            "",
-            f"「{topic}」" if topic else "",
         ]
     text = "\n".join(lines).strip()
     if len(text) > LINE_TEXT_SAFE_LIMIT:

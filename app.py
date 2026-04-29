@@ -141,8 +141,6 @@ DISPLAY_GENRE_MAP = {
     "国際": ["international"],
     "AI・テック": ["ai", "tech"],
     "暮らし": ["energy", "materials"],
-    "話題": ["entertainment", "scandal", "other"],
-    "スポーツ": ["sports"],
     "海外": ["overseas"],
 }
 
@@ -161,8 +159,6 @@ DISPLAY_GENRE_ALIASES: dict = {
     "テック": "AI・テック",
     "IT": "AI・テック",
     "it": "AI・テック",
-    "芸能": "話題",
-    "エンタメ": "話題",
     "生活": "暮らし",
     "海外ニュース": "海外",
     "world": "海外",
@@ -623,8 +619,8 @@ def _billing_page_html(user_id: str, canceled: bool = False) -> str:
     <div class="box">
       <ul>
         <li>最新ニュースを深掘りで読める</li>
-        <li>人物トピックの会話機能を開放</li>
-        <li>より広い範囲の質問に対応</li>
+        <li>相場・急落株・補助金を確認できる</li>
+        <li>投資関連ニュースの質問に対応</li>
       </ul>
     </div>
     <form method="post" action="/stripe/create-checkout-session">
@@ -920,7 +916,7 @@ def _billing_page_html_clean(user_id: str, canceled: bool = False) -> str:
     <div class="box">
       <ul class="checklist">
         <li>最新ニュースの深掘り解説を利用できます</li>
-        <li>人物・企業・市場テーマについて会話できます</li>
+        <li>企業・市場テーマについて質問できます</li>
         <li>登録内容の変更や解約はStripeの管理画面から行えます</li>
       </ul>
     </div>
@@ -1049,7 +1045,7 @@ def billing_success():
 <body>
   <main class="card">
     <h1>登録ありがとうございます</h1>
-    <p>決済完了を受け付けました。LINEに戻って、ニュースや会話機能をそのまま使ってみてください。</p>
+    <p>決済完了を受け付けました。LINEに戻って、投資ニュースや相場チェックをそのまま使ってみてください。</p>
     <p class="sub">LINE user: {safe_user_id}</p>
   </main>
 </body>
@@ -1212,7 +1208,6 @@ def main_quick_reply() -> QuickReply:
         QuickReplyItem(action=MessageAction(label="リンク", text="リンク")),
         QuickReplyItem(action=MessageAction(label="相場", text="相場")),
         QuickReplyItem(action=MessageAction(label="急落株", text="急落株")),
-        QuickReplyItem(action=MessageAction(label="会話ネタ", text="会話ネタ")),
         QuickReplyItem(action=MessageAction(label="補助金", text="補助金")),
         QuickReplyItem(action=MessageAction(label="使い方", text="使い方")),
         QuickReplyItem(action=MessageAction(label="停止", text="停止")),
@@ -1312,8 +1307,6 @@ GENRE_DESC = {
     "国際": "海外情勢・外交",
     "AI・テック": "AI・IT・科学",
     "暮らし": "医療・教育・生活",
-    "話題": "芸能・SNS・流行",
-    "スポーツ": "メジャー・マイナー",
     "海外": "米・英・韓・亜・印の現地ニュース",
 }
 
@@ -1323,8 +1316,7 @@ def build_genre_flex(current_genres: list) -> FlexMessage:
     layout_rows = [
         ["経済", "仕事"],
         ["国際", "AI・テック"],
-        ["暮らし", "話題"],
-        ["スポーツ", "海外"],
+        ["暮らし", "海外"],
     ]
 
     for chunk in layout_rows:
@@ -2074,269 +2066,6 @@ def answer_news_question(user_id: str, question: str) -> tuple:
         return "今ちょっと返答うまくいかない\n\nもう一回送るか\n「使い方」押してみて", []
 
 
-_CHAT_TOPIC_FOLLOW_UP_FREE = (
-    "\n\n相手に合わせた話題は\n"
-    "メンバーシップで使える"
-)
-
-_CHAT_TOPIC_FOLLOW_UP_PAID = (
-    "\n\nちなみに今日誰かと話す予定ある？\n\n"
-    "誰と話すか教えてくれれば\n"
-    "その人に合わせて話題出すよ。\n"
-)
-
-# ─── 会話ネタ共通 ───
-
-_CHAT_TOPIC_SCHEMA = {
-    "type": "json_schema",
-    "json_schema": {
-        "name": "chat_topic",
-        "strict": True,
-        "schema": {
-            "type": "object",
-            "properties": {
-                "genre":  {"type": "string"},
-                "main":   {"type": "string"},
-                "reply":  {"type": "string"},
-                "next":   {"type": "string"},
-                "point":  {"type": "string"},
-                "trivia": {"type": "string"},
-            },
-            "required": ["genre", "main", "reply", "next", "point", "trivia"],
-            "additionalProperties": False,
-        },
-    },
-}
-
-_CHAT_TOPIC_SYSTEM_BASE = """\
-お前はLINEで使える会話ネタを提案するやつ。
-
-【ルール】
-・会話調
-・そのまま使える形で出す
-・短すぎず薄くしない
-・AIっぽい文章禁止
-・汎用テンプレ禁止。「今っぽさ」を優先
-
-【季節ルール】
-・現在の季節を必ず考慮する（日本基準）
-・季節とズレた会話は禁止（例：夏に寒い話）
-・自然に会話に溶け込ませる（説明しない）
-
-【ジャンル選択】
-生活関連 / 仕事関連 / 世界関連 / AI関連 / 話題関連 / スポーツ関連
-※迷ったら「話題関連」
-※「お金」は使用禁止（生活関連に含める）
-
-【会話フレーズ】
-・必ずニュース内容と具体的に接続する（「〇〇が〜したって聞いた？」「〇〇って影響出てきてるけど、どう思う？」のような形）
-・そのまま口に出せる自然な一文にする
-・問いかけ or 感想共有の形にする
-・抽象的な表現は禁止（「色々あるね」「最近多いよね」のような中身のない感想は使わない）
-
-【よくある返し】
-・現実的な返答。短く自然
-
-【次の一手】
-・会話を広げる or 深める。自然に続く一言
-
-【使いやすいポイント】
-・1行のみ。具体的に
-
-【小ネタ】
-・1文のみ。20〜30文字。「らしい」「っぽい」で柔らかく
-
-【NG】
-・カテゴリ名（例：経済ニュース）
-・説明文
-・長文
-・季節ズレ
-・中身のない雑談
-・「色々あるね」などの抽象的感想
-・ニュースと接続していない汎用フレーズ
-
-必ずJSON形式のみで出力すること。キー：genre / main / reply / next / point / trivia
-"""
-
-
-def format_topic(data: dict) -> str:
-    """会話ネタの dict → LINEメッセージ文字列"""
-    return (
-        f"【{data['genre']}】\n"
-        f"「{data['main']}」\n\n"
-        "ーーー\n\n"
-        f"よくある返し\n『{data['reply']}』\n\n"
-        f"→「{data['next']}」\n\n"
-        "ーーー\n\n"
-        f"・使いやすいポイント\n{data['point']}\n\n"
-        "ーーー\n\n"
-        f"小ネタ\n《{data['trivia']}》"
-    )
-
-
-def _get_season() -> str:
-    month = datetime.now(timezone.utc).month
-    if month in (3, 4, 5):
-        return "春"
-    elif month in (6, 7, 8):
-        return "夏"
-    elif month in (9, 10, 11):
-        return "秋"
-    else:
-        return "冬"
-
-
-def generate_chat_topic_free(user_id: str) -> str:
-    ctx = get_latest_news_context(user_id)
-    if not ctx:
-        return "まだニュースが届いてないから\n一度配信受けてから使ってみて"
-    news_items = ctx.get("payload", {}).get("news_items", [])
-    news_text = "\n".join(f"【{n['category']}】{n['title']}" for n in news_items)
-    season = _get_season()
-    system_prompt = _CHAT_TOPIC_SYSTEM_BASE + f"\n現在の季節：{season}"
-    user_prompt = f"今日のニュース:\n{news_text}\n\nこの中から会話ネタになりそうなものを1つ選んでJSONで出せ。"
-    try:
-        res = openai_client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
-            temperature=0.7,
-            max_tokens=300,
-            timeout=15,
-            response_format=_CHAT_TOPIC_SCHEMA,
-        )
-        data = json.loads(res.choices[0].message.content)
-        return format_topic(data) + _CHAT_TOPIC_FOLLOW_UP_FREE
-    except Exception as e:
-        logger.error("会話ネタ生成エラー: %s", e)
-        return "今ちょっとうまく生成できない\n少し置いてもう一回送って"
-
-
-def generate_chat_topic_paid(user_id: str) -> str:
-    ctx = get_latest_news_context(user_id)
-    if not ctx:
-        return "まだニュースが届いてないから\n一度配信受けてから使ってみて"
-    news_items = ctx.get("payload", {}).get("news_items", [])
-    news_text = "\n".join(f"【{n['category']}】{n['title']}" for n in news_items)
-    season = _get_season()
-    system_prompt = _CHAT_TOPIC_SYSTEM_BASE + f"\n現在の季節：{season}"
-    user_prompt = f"今日のニュース:\n{news_text}\n\nこの中から会話ネタになりそうなものを1つ選んでJSONで出せ。"
-    try:
-        res = openai_client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
-            temperature=0.7,
-            max_tokens=300,
-            timeout=15,
-            response_format=_CHAT_TOPIC_SCHEMA,
-        )
-        data = json.loads(res.choices[0].message.content)
-        return format_topic(data) + _CHAT_TOPIC_FOLLOW_UP_PAID
-    except Exception as e:
-        logger.error("生成エラー: %s", e)
-        return "今ちょっとうまく生成できない\n少し置いてもう一回送って"
-
-
-_POLITE_TONE_RULE = (
-    "【口調ルール】\n"
-    "・会話文は自然な敬語にする\n"
-    "・タメ語は禁止\n"
-    "・先輩、上司、取引先、お客さん相手として不自然な軽さは禁止\n"
-    "・一人称は基本使わない\n"
-    "・『私』『あたし』は禁止\n"
-    "・日本人男性ユーザーがそのまま使って違和感のない自然な言い回しにする\n"
-    "・堅すぎるビジネス文書調は禁止\n"
-    "・実際の雑談で使える、柔らかい丁寧語にする\n"
-)
-
-_CASUAL_TONE_RULE = (
-    "【口調ルール】\n"
-    "・友達や恋人に話すような自然なくだけた口調でよい\n"
-    "・ただし荒い口調は禁止\n"
-    "・一人称は基本使わない\n"
-    "・『私』『あたし』は禁止\n"
-    "・日本人男性ユーザーがそのまま使って違和感のない自然な言い回しにする\n"
-    "・馴れ馴れしすぎる作り物っぽいテンションは禁止\n"
-)
-
-
-def infer_tone_for_person(person_desc: str) -> str:
-    """相手の説明文からカジュアル/丁寧を判定する。"""
-    polite_keywords = [
-        "上司", "部下", "先輩", "後輩", "同僚", "職場", "会社",
-        "仕事相手", "営業", "営業先", "取引先", "お客", "顧客", "客",
-        "初対面", "現場", "近所", "元請け", "社長",
-    ]
-    casual_keywords = [
-        "彼女", "彼氏", "好きな人", "気になる人",
-        "嫁", "妻", "旦那", "夫","友達",
-        "友達", "親友", "知人",
-        "家族", "兄弟", "姉妹", "親", "母親", "父親",
-    ]
-    if any(k in person_desc for k in polite_keywords):
-        return "polite"
-    if any(k in person_desc for k in casual_keywords):
-        return "casual"
-    return "polite"
-
-
-def generate_chat_for_person(user_id: str, person_desc: str) -> str:
-    ctx = get_latest_news_context(user_id)
-    news_text = ""
-    if ctx:
-        news_items = ctx.get("payload", {}).get("news_items", [])
-        news_text = "\n".join(f"【{n['category']}】{n['title']}" for n in news_items)
-    season = _get_season()
-    tone = infer_tone_for_person(person_desc)
-    tone_rule = _POLITE_TONE_RULE if tone == "polite" else _CASUAL_TONE_RULE
-    system_prompt = (
-        _CHAT_TOPIC_SYSTEM_BASE
-        + f"\n現在の季節：{season}\n\n"
-        "【最重要】\n"
-        "・出力するのは『ユーザー本人が相手に送るセリフ』として自然であること\n"
-        "・相手に合わせた口調を最優先すること\n"
-        "・彼女/友達向けなのに女口調にしない\n"
-        "・先輩/上司/取引先向けなのにタメ口にしない\n"
-        "・ユーザー側のセリフで『私』『あたし』は禁止\n"
-        "・日本人男性がそのまま使って違和感のない表現にする\n"
-        "・恋人向けでもベタすぎる作り物感は禁止\n"
-        "・先輩向けは敬語ベースだが、固すぎる文章は禁止\n\n"
-        "【相手ごとの優先ジャンル】\n"
-        "彼女・彼氏・家族・友達：日常、食べ物、休日、エンタメ、軽い流行、身近なニュースを優先。"
-        "地政学・軍事・金利政策のような重い話題は基本避ける\n"
-        "上司・取引先・営業・顧客・初対面：無難で広げやすい話題を優先。"
-        "仕事・景気・AI・生活コスト・スポーツ・季節ネタを優先。"
-        "政治・宗教・下ネタ・重すぎる事件は避ける\n\n"
-        "【追加ルール】\n"
-        "・ニュースに縛られず相手に最適な話題を選ぶ\n"
-        "・相手に合わない重い話題は避ける\n"
-        "・ニュースを使う場合も、そのまま出さず会話向けに軽く変換する\n\n"
-        + tone_rule
-    )
-    user_prompt = (
-        f"話す相手: {person_desc}\n"
-        "話す側: 日本人男性ユーザー\n"
-        "目的: その相手と自然に会話を始めて、返答が返しやすいネタを出す\n"
-        "絶対条件: 相手に失礼のない口調にする。彼女向けで女口調禁止。先輩向けでタメ口禁止。\n\n"
-        + (f"参考ニュース（必要なら使っていい）:\n{news_text}\n\n" if news_text else "")
-        + "この相手に使えそうな会話ネタを1つJSONで出せ。"
-    )
-    try:
-        res = openai_client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
-            temperature=0.7,
-            max_tokens=300,
-            timeout=15,
-            response_format=_CHAT_TOPIC_SCHEMA,
-        )
-        data = json.loads(res.choices[0].message.content)
-        return format_topic(data)
-    except Exception as e:
-        logger.error("相手別会話生成エラー: %s", e)
-        return "今ちょっとうまく生成できない\n少し置いてもう一回送って"
-
-
-
 def can_use_paid_ai(user: dict, effective_plan: str) -> bool:
     return effective_plan == "paid" and user.get("ai_count", 0) < 30
 
@@ -2349,16 +2078,6 @@ def get_paid_usage_tail(ai_count_after: int) -> str:
     return ""
 
 
-def _set_pending_person_topic(user_id: str) -> None:
-    try:
-        supabase.table("users").update({
-            "pending_action": "person_topic",
-            "pending_count": 1,
-        }).eq("user_id", user_id).execute()
-    except Exception:
-        pass
-
-
 def _clear_pending(user_id: str) -> None:
     try:
         supabase.table("users").update({
@@ -2367,13 +2086,6 @@ def _clear_pending(user_id: str) -> None:
         }).eq("user_id", user_id).execute()
     except Exception:
         pass
-
-
-def _is_pending_person_topic(user: dict) -> bool:
-    return (
-        user.get("pending_action") == "person_topic"
-        and (user.get("pending_count") or 0) > 0
-    )
 
 
 def increment_ai_count(user_id: str, count: int, today: str, now_dt) -> None:
@@ -2482,28 +2194,6 @@ def normalize_user_text(text: str) -> str:
 
 _STATUS_WORDS = {"状態", "今どんな感じ", "設定どうなってる", "今の設定"}
 _HELP_WORDS = {"聞く", "使い方", "何できる", "どう使うの", "何聞ける"}
-_CHAT_TOPIC_KW = ["会話ネタ", "話のネタ", "雑談ネタ", "ネタ教えて", "何話せばいい", "何話す"]
-_CHAT_TOPIC_EXACT = {"会話", "会話ネタ", "雑談", "ネタ"}
-_PERSON_KW = [
-    # 恋愛・パートナー
-    "彼女", "彼氏", "好きな人", "気になる人", "嫁", "妻", "旦那", "夫",
-    # 友人・知人
-    "友達", "親友", "知人",
-    # 職場・ビジネス
-    "上司", "部下", "先輩", "後輩", "同僚", "職場の人", "会社の人", "仕事相手",
-    "営業", "営業先", "取引先", "お客さん", "顧客", "客", "初対面",
-    # 関係が難しい人
-    "きまずい人", "苦手な人", "微妙な人", "仲悪い人", "距離ある人",
-    # 家族
-    "親", "母親", "父親", "家族", "兄弟", "姉妹",
-    # その他
-    "現場の人", "近所の人",
-]
-_DIRECT_TOPIC_KW = [
-    "会話", "話す", "話題", "雑談", "ネタ",
-    "何話", "なに話", "何しゃべ", "何喋",
-    "使える話題", "向けの話題", "どう話す", "どう会話する",
-]
 
 
 def looks_like_feedback(text: str) -> bool:
@@ -2549,28 +2239,6 @@ def looks_like_feedback(text: str) -> bool:
     return len(t) >= 10
 
 
-def is_direct_person_chat_request(text: str) -> bool:
-    """会話ネタ意図＋相手説明を含む一発入力を判定する（辞書不要の自由記述対応）。"""
-    # 会話ネタ意図がなければ問答無用でFalse
-    topic_hit = any(k in text for k in _DIRECT_TOPIC_KW)
-    if not topic_hit:
-        return False
-
-    # 辞書一致があればTrue
-    if any(kw in text for kw in _PERSON_KW):
-        return True
-
-    # 「と」「向け」「相手」があればTrue
-    if any(p in text for p in ("と", "向け", "相手")):
-        return True
-
-    # 会話ワードを除いた残り文字が4文字以上あればTrue（自由記述）
-    stripped = text
-    for k in _DIRECT_TOPIC_KW:
-        stripped = stripped.replace(k, "")
-    return len(stripped.strip()) >= 4
-
-
 _NEWS_TRIGGER_KW = {"ニュース", "ニュースくれ", "最新"}
 
 # 強コマンド — pending を問答無用でスキップ・クリアする
@@ -2584,10 +2252,6 @@ _MAIN_COMMANDS = {
     "急落株",
     "急落",
     "急落銘柄",
-    "会話ネタ",
-    "会話",
-    "雑談",
-    "ネタ",
     "補助金",
     "助成金",
     "補助金続き",
@@ -2820,8 +2484,8 @@ def handle_message(event):
                 "月400円でやってる\n\n"
                 "メンバーシップだと\n"
                 "・ニュースを深掘りできる\n"
-                "・会話ネタの返しまで出せる\n"
-                "・相手に合わせた話題も出せる",
+                "・相場と急落株を確認できる\n"
+                "・補助金と投資関連ニュースを追える",
                 quick_reply=qr,
             )
         elif any(w in text for w in ["入り方", "登録"]):
@@ -2845,8 +2509,8 @@ def handle_message(event):
                 _msg = (
                     "今使えるのはこんな感じ\n\n"
                     "・ニュースを深掘りできる\n"
-                    "・会話ネタの返しまで出せる\n"
-                    "・相手に合わせた話題も出せる\n\n"
+                    "・相場と急落株を確認できる\n"
+                    "・補助金と投資関連ニュースを追える\n\n"
                     "そのまま送ればOK"
                 )
             else:
@@ -2854,8 +2518,8 @@ def handle_message(event):
                     "無料でも使えるけど\n\n"
                     "メンバーシップだと\n"
                     "・ニュースを深掘りできる\n"
-                    "・会話ネタの返しまで出せる\n"
-                    "・相手に合わせた話題も出せる\n\n"
+                    "・相場と急落株を確認できる\n"
+                    "・補助金と投資関連ニュースを追える\n\n"
                     "気になるならそのまま聞いてくれればOK\n\n"
                     "ちなみに\n"
                     "メンバーシップはここから",
@@ -2871,8 +2535,8 @@ def handle_message(event):
                 "無料でも使えるけど\n\n"
                 "メンバーシップだと\n"
                 "・ニュースを深掘りできる\n"
-                "・会話ネタの返しまで出せる\n"
-                "・相手に合わせた話題も出せる\n\n"
+                "・相場と急落株を確認できる\n"
+                "・補助金と投資関連ニュースを追える\n\n"
                 "気になるならそのまま聞いてくれればOK\n\n"
                 "ちなみに\n"
                 "メンバーシップはここから",
@@ -2892,7 +2556,6 @@ def handle_message(event):
                 "・毎朝ニュース要約配信\n"
                 "・優良株急落通知\n\n"
                 "ニュース → 今日のニュースを見る\n"
-                "会話ネタ → 話題に使えるネタを見る\n"
                 "リンク → 直近ニュースのURLを見る\n"
                 "補助金 → 今使える制度を探す\n"
                 "相場 → 市場の動きを見る\n"
@@ -2934,7 +2597,6 @@ def handle_message(event):
                 "・追加ニュース 無制限\n"
                 "・記事を深掘り\n"
                 "・ニュースに質問できる\n"
-                "・会話ネタ作成\n"
                 "・補助金検索\n"
                 "・相場チェック\n"
                 "・急落株チェック\n"
@@ -3038,7 +2700,7 @@ def handle_message(event):
         if not new_genres:
             reply_text(
                 event.reply_token,
-                "ジャンル認識できなかった\n例: ジャンル 経済,AI・テック,スポーツ",
+                "ジャンル認識できなかった\n例: ジャンル 経済,AI・テック,海外",
                 quick_reply=qr,
             )
             try:
@@ -3075,7 +2737,7 @@ def handle_message(event):
             user_id,
             "トライアルはここまで\n\n"
             "free会員でもニュースは見れるけど\n"
-            "メンバーシップなら、会話ネタとか深掘りまで全部使える\n\n"
+            "メンバーシップなら、投資ニュースの深掘りや相場チェックまで使える\n\n"
             "よければ感想もらえたら\n"
             "もう1週間トライアルが延長できる\n\n"
             "コピペして軽くでOK👇\n\n"
@@ -3125,108 +2787,11 @@ def handle_message(event):
                 user_id,
                 "延長分はここまで\n\n"
                 "freeでもニュースは見れるけど\n"
-                "メンバーシップなら、会話ネタとか深掘りまで全部使える\n\n"
+                "メンバーシップなら、投資ニュースの深掘りや相場チェックまで使える\n\n"
                 "よかったらこのまま続けてみて",
                 quick_reply=qr,
             )
             return
-
-    # ★2.4 相手別会話ネタ直発火（「彼女と会話」のような一発入力）
-    if is_direct_person_chat_request(text):
-        if plan != "paid":
-            reply_text(
-                event.reply_token,
-                "相手別の会話ネタはトライアルかメンバーシップで使える\n\n無料版はニュース受け取りまで",
-                quick_reply=qr,
-            )
-            try:
-                supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
-            except Exception:
-                pass
-            return
-        if not can_use_paid_ai(user, plan):
-            reply_text(
-                event.reply_token,
-                "今日はここまでにしよ\nまた明日使えるようになってる",
-                quick_reply=qr,
-            )
-            try:
-                supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
-            except Exception:
-                pass
-            return
-        if user.get("pending_action"):
-            _clear_pending(user_id)
-            user["pending_action"] = None
-            user["pending_count"] = None
-        answer = generate_chat_for_person(user_id, text)
-        next_count = user.get("ai_count", 0) + 1
-        reply_text(event.reply_token, answer + get_paid_usage_tail(next_count), quick_reply=qr)
-        increment_ai_count(user_id, user.get("ai_count", 0), today, now_dt)
-        try:
-            supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
-        except Exception:
-            pass
-        return
-
-    # ★2.5 会話ネタ完全一致トリガー（Q&Aより前に処理）
-    if text in _CHAT_TOPIC_EXACT or any(kw in text for kw in _CHAT_TOPIC_KW):
-        if plan != "paid":
-            reply_text(
-                event.reply_token,
-                "会話ネタはトライアルかメンバーシップで使える\n\n無料版はニュース受け取りまで",
-                quick_reply=qr,
-            )
-            try:
-                supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
-            except Exception:
-                pass
-            return
-        if not can_use_paid_ai(user, plan):
-            reply_text(
-                event.reply_token,
-                "今日はここまでにしよ\nまた明日使えるようになってる",
-                quick_reply=qr,
-            )
-            try:
-                supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
-            except Exception:
-                pass
-            return
-        answer = generate_chat_topic_paid(user_id)
-        next_count = user.get("ai_count", 0) + 1
-        reply_text(event.reply_token, answer + get_paid_usage_tail(next_count), quick_reply=qr)
-        _set_pending_person_topic(user_id)
-        increment_ai_count(user_id, user.get("ai_count", 0), today, now_dt)
-        try:
-            supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
-        except Exception:
-            pass
-        return
-
-    # ★3 相手別会話ネタ（paid only）— pending中の次の1ターン限定
-    if plan == "paid" and _is_pending_person_topic(user):
-        _qa_would_fire = bool(re.match(r"^[①-⑩1-9]", text)) or is_related_to_news_context(user_id, text)
-        if not _qa_would_fire:
-            if not can_use_paid_ai(user, plan):
-                reply_text(
-                    event.reply_token,
-                    "今日はここまでにしよ\nまた明日使えるようになってる",
-                    quick_reply=qr,
-                )
-                _clear_pending(user_id)
-                try:
-                    supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
-                except Exception:
-                    pass
-                return
-            answer = generate_chat_for_person(user_id, text)
-            next_count = user.get("ai_count", 0) + 1
-            reply_text(event.reply_token, answer + get_paid_usage_tail(next_count), quick_reply=qr)
-            _clear_pending(user_id)
-            increment_ai_count(user_id, user.get("ai_count", 0), today, now_dt)
-            return
-        # _qa_would_fire の場合は ★7 Q&A 側でクリア
 
     # ★補助金 都道府県入力待ち
     if _user_subsidy_state.get(user_id) == "await_prefecture":
