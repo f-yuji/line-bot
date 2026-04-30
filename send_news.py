@@ -56,7 +56,6 @@ LINE_CHANNEL_ACCESS_TOKEN = _get_mode_env("LINE_CHANNEL_ACCESS_TOKEN", LINE_MODE
 OPENAI_API_KEY = os.environ["OPENAI_API_KEY"]
 SUPABASE_URL = _get_mode_env("SUPABASE_URL", SUPABASE_MODE, required=True)
 SUPABASE_KEY = _get_mode_env("SUPABASE_KEY", SUPABASE_MODE, required=True)
-OWNER_LINE_USER_ID = _get_mode_env("OWNER_LINE_USER_ID", LINE_MODE)
 ENV = os.getenv("ENV", "prod")
 
 
@@ -1534,23 +1533,6 @@ def main():
     logger.info("配信完了: %d/%d ユーザー", sent_count, len(users))
 
 
-def notify_owner(text: str) -> None:
-    if not OWNER_LINE_USER_ID:
-        return
-    try:
-        requests.post(
-            LINE_URL,
-            headers={
-                "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}",
-                "Content-Type": "application/json",
-            },
-            json={"to": OWNER_LINE_USER_ID, "messages": [{"type": "text", "text": text}]},
-            timeout=10,
-        )
-    except Exception as e:
-        logger.error("オーナー通知失敗: %s", e)
-
-
 def send_news_to_user(user_id: str) -> None:
     """1ユーザーへの即時配信（初回登録時など）"""
     news = fetch_news()
@@ -1669,4 +1651,3 @@ if __name__ == "__main__":
             main()
         except Exception as e:
             logger.error("main()で予期しないエラー: %s", e)
-            notify_owner(f"[send_news] エラー発生\n{type(e).__name__}: {e}")
