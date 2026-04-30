@@ -70,8 +70,9 @@ def _mode_env(base: str, mode: str, *, required: bool = False) -> str:
 SUPABASE_MODE = _opt("SUPABASE_MODE") or _opt("ENV")
 SUPABASE_URL = _mode_env("SUPABASE_URL", SUPABASE_MODE, required=True)
 SUPABASE_KEY = _mode_env("SUPABASE_KEY", SUPABASE_MODE, required=True)
-LINE_MODE = _opt("LINE_MODE")
-LINE_CHANNEL_ACCESS_TOKEN = _mode_env("LINE_CHANNEL_ACCESS_TOKEN", LINE_MODE, required=True)
+LINE_CHANNEL_ACCESS_TOKEN = _opt("LINE_CHANNEL_ACCESS_TOKEN")
+if not LINE_CHANNEL_ACCESS_TOKEN:
+    raise KeyError("LINE_CHANNEL_ACCESS_TOKEN")
 OPENAI_API_KEY = _opt("OPENAI_API_KEY")
 JQUANTS_API_KEY = _opt("JQUANTS_API_KEY") or _opt("JQUANTS_REFRESH_TOKEN")
 JQUANTS_API_BASE = "https://api.jquants.com/v2"

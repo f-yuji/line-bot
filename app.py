@@ -86,9 +86,12 @@ def _get_mode_env(base_name: str, mode: str, *, required: bool = False) -> str:
 SUPABASE_MODE = _get_optional_env("SUPABASE_MODE") or _get_optional_env("ENV")
 SUPABASE_URL = _get_mode_env("SUPABASE_URL", SUPABASE_MODE, required=True)
 SUPABASE_KEY = _get_mode_env("SUPABASE_KEY", SUPABASE_MODE, required=True)
-LINE_MODE = _get_optional_env("LINE_MODE")
-LINE_CHANNEL_ACCESS_TOKEN = _get_mode_env("LINE_CHANNEL_ACCESS_TOKEN", LINE_MODE, required=True)
-LINE_CHANNEL_SECRET = _get_mode_env("LINE_CHANNEL_SECRET", LINE_MODE, required=True)
+LINE_CHANNEL_ACCESS_TOKEN = _get_optional_env("LINE_CHANNEL_ACCESS_TOKEN")
+LINE_CHANNEL_SECRET = _get_optional_env("LINE_CHANNEL_SECRET")
+if not LINE_CHANNEL_ACCESS_TOKEN:
+    raise KeyError("LINE_CHANNEL_ACCESS_TOKEN")
+if not LINE_CHANNEL_SECRET:
+    raise KeyError("LINE_CHANNEL_SECRET")
 OPENAI_API_KEY = os.environ["OPENAI_API_KEY"]
 ENV = os.getenv("ENV", "prod")
 LINE_API_BASE = "https://api.line.me"
@@ -110,7 +113,6 @@ logger = logging.getLogger(__name__)
 print("=== 起動確認 ===")
 print(f"環境: {ENV}")
 print(f"SUPABASE_MODE: {SUPABASE_MODE or 'legacy'}")
-print(f"LINE_MODE: {LINE_MODE or 'legacy'}")
 if ENV == "test":
     print("◎ テスト環境で実行中")
 elif ENV == "prod":

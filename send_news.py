@@ -51,8 +51,9 @@ logger = logging.getLogger(__name__)
 
 # ─── 環境変数 ───
 SUPABASE_MODE = _get_optional_env("SUPABASE_MODE") or _get_optional_env("ENV")
-LINE_MODE = _get_optional_env("LINE_MODE")
-LINE_CHANNEL_ACCESS_TOKEN = _get_mode_env("LINE_CHANNEL_ACCESS_TOKEN", LINE_MODE, required=True)
+LINE_CHANNEL_ACCESS_TOKEN = _get_optional_env("LINE_CHANNEL_ACCESS_TOKEN")
+if not LINE_CHANNEL_ACCESS_TOKEN:
+    raise KeyError("LINE_CHANNEL_ACCESS_TOKEN")
 OPENAI_API_KEY = os.environ["OPENAI_API_KEY"]
 SUPABASE_URL = _get_mode_env("SUPABASE_URL", SUPABASE_MODE, required=True)
 SUPABASE_KEY = _get_mode_env("SUPABASE_KEY", SUPABASE_MODE, required=True)
@@ -71,10 +72,9 @@ def _jwt_claims(token: str) -> Dict[str, Any]:
 def log_runtime_config() -> None:
     claims = _jwt_claims(SUPABASE_KEY)
     logger.info(
-        "Runtime config: env=%s supabase_mode=%s line_mode=%s supabase_host=%s supabase_ref=%s supabase_role=%s",
+        "Runtime config: env=%s supabase_mode=%s supabase_host=%s supabase_ref=%s supabase_role=%s",
         ENV,
         SUPABASE_MODE or "legacy",
-        LINE_MODE or "legacy",
         urlparse(SUPABASE_URL).netloc,
         claims.get("ref", "unknown"),
         claims.get("role", "unknown"),

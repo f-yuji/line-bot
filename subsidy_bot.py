@@ -50,8 +50,9 @@ _SUPABASE_MODE = _opt("SUPABASE_MODE") or _opt("ENV")
 _SUPABASE_URL = _mode_env("SUPABASE_URL", _SUPABASE_MODE, required=True)
 _SUPABASE_KEY = _mode_env("SUPABASE_KEY", _SUPABASE_MODE, required=True)
 _OPENAI_API_KEY = _opt("OPENAI_API_KEY")
-_LINE_MODE = _opt("LINE_MODE")
-_LINE_TOKEN = _mode_env("LINE_CHANNEL_ACCESS_TOKEN", _LINE_MODE, required=True)
+_LINE_TOKEN = _opt("LINE_CHANNEL_ACCESS_TOKEN")
+if not _LINE_TOKEN:
+    raise KeyError("LINE_CHANNEL_ACCESS_TOKEN")
 
 supabase = create_client(_SUPABASE_URL, _SUPABASE_KEY)
 _openai = OpenAI(api_key=_OPENAI_API_KEY) if (_OPENAI_AVAILABLE and _OPENAI_API_KEY) else None
