@@ -947,9 +947,9 @@ def get_ai_comment(
 
 # ─── プッシュ通知 ───
 
-def _push_text(user_id: str, text: str) -> None:
+def _push_text(user_id: str, text: str) -> bool:
     try:
-        _requests.post(
+        res = _requests.post(
             f"{LINE_API_BASE}/v2/bot/message/push",
             headers={
                 "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}",
@@ -958,8 +958,19 @@ def _push_text(user_id: str, text: str) -> None:
             json={"to": user_id, "messages": [{"type": "text", "text": text}]},
             timeout=10,
         )
-    except Exception as e:
-        logger.error("push失敗: user=%s %s", user_id, e)
+        if res.status_code >= 400:
+            logger.error(
+                "LINE push failed user=%s status=%s body=%s",
+                user_id,
+                res.status_code,
+                res.text[:300],
+            )
+            return False
+        logger.info("LINE push sent user=%s status=%s", user_id, res.status_code)
+        return True
+    except _requests.RequestException as e:
+        logger.error("LINE push error user=%s %s", user_id, e)
+        return False
 
 
 def _build_alert_digest(signals: list[dict], nikkei_pct: float | None, financials: dict) -> str:
@@ -1058,7 +1069,9 @@ def run_alert() -> None:
 
     now_utc = datetime.now(timezone.utc)
     msg = _build_alert_digest(signals, nikkei_pct, financials)
+    eligible_count = 0
     sent_count = 0
+    failed_count = 0
     for u in users:
         if not u.get("active", True):
             continue
@@ -1066,8 +1079,18 @@ def run_alert() -> None:
             continue
         if _resolve_plan(u, now_utc) != "paid":
             continue
-        _push_text(u["user_id"], msg)
-        sent_count += 1
+        eligible_count += 1
+        if _push_text(u["user_id"], msg):
+            sent_count += 1
+        else:
+            failed_count += 1
+
+    logger.info(
+        "LINE alert targets eligible=%d sent=%d failed=%d",
+        eligible_count,
+        sent_count,
+        failed_count,
+    )
 
     notified_codes: set[str] = set()
     if sent_count > 0:
