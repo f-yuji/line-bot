@@ -1,6 +1,7 @@
 name: cron jobs
 
 on:
+  workflow_dispatch:
   schedule:
     - cron: "0 23 * * 0-4"
     - cron: "0 5 * * 1-5"
