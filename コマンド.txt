@@ -55,3 +55,5 @@ git clean -fd
 # ===== 再起動 =====
 Ctrl + C
 python app.py
+
+fly deploy --remote-only
