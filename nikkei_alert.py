@@ -544,6 +544,56 @@ def get_drop_list(threshold: float = DROP_LIST_THRESHOLD) -> list[dict]:
     return sorted(drops, key=lambda x: x["change_pct"])
 
 
+def save_to_watchlist(stock: dict, nikkei_pct: float | None) -> bool:
+    """
+    急落銘柄を stock_drop_watchlist に保存する。
+    同一コードが watching / rebound_signal で既に存在する場合はスキップ。
+    戻り値: 新規追加したか否か
+    """
+    code = str(stock.get("code") or "")
+    if not code:
+        return False
+    try:
+        # 同一銘柄が監視中でないか確認
+        res = (
+            supabase.table("stock_drop_watchlist")
+            .select("id")
+            .eq("code", code)
+            .in_("status", ["watching", "rebound_signal"])
+            .execute()
+        )
+        if res.data:
+            return False  # 既に監視中 → スキップ
+
+        now_utc = datetime.now(timezone.utc)
+        profile = get_company_profile(code)
+        sector = profile.get("sector") if profile else None
+
+        row = {
+            "code": code,
+            "name": stock.get("name") or NIKKEI225.get(code, ""),
+            "market": "nikkei225",
+            "source_index": "nikkei",
+            "drop_detected_at": now_utc.isoformat(),
+            "drop_pct": stock.get("change_pct"),
+            "price_at_drop": stock.get("price"),
+            "nikkei_pct": nikkei_pct,
+            "sector": sector,
+            "status": "watching",
+            "last_checked_at": now_utc.isoformat(),
+            "updated_at": now_utc.isoformat(),
+        }
+        supabase.table("stock_drop_watchlist").insert(row).execute()
+        logger.info(
+            "watchlist追加: %s %s %.1f%%",
+            code, stock.get("name", ""), stock.get("change_pct", 0),
+        )
+        return True
+    except Exception as e:
+        logger.error("watchlist保存エラー: code=%s %s", code, e)
+        return False
+
+
 def save_drop_cache(drops: list[dict], nikkei_pct: float | None) -> None:
     """cronで取得した急落一覧をDBへ保存する。LINE表示はこのキャッシュを読む。"""
     now_utc = datetime.now(timezone.utc)
@@ -744,12 +794,23 @@ def _load_financials_cache() -> dict[str, dict]:
 
 # ─── 買いシグナル判定 ───
 
-def is_buy_signal(stock: dict, nikkei_pct: float | None, financials: dict | None = None) -> bool:
-    """買いシグナル条件を全て満たすか判定"""
-    if stock["change_pct"] > ALERT_THRESHOLD:
+def is_buy_signal(
+    stock: dict,
+    nikkei_pct: float | None,
+    financials: dict | None = None,
+    *,
+    alert_threshold: float | None = None,
+    gap_threshold: float | None = None,
+) -> bool:
+    """買いシグナル条件を全て満たすか判定。
+    alert_threshold / gap_threshold を省略するとモジュール定数を使う。
+    """
+    _alert = alert_threshold if alert_threshold is not None else ALERT_THRESHOLD
+    _gap = gap_threshold if gap_threshold is not None else NIKKEI_GAP_THRESHOLD
+    if stock["change_pct"] > _alert:
         return False
     if nikkei_pct is not None:
-        if stock["change_pct"] - nikkei_pct > NIKKEI_GAP_THRESHOLD:
+        if stock["change_pct"] - nikkei_pct > _gap:
             return False
     # 財務キャッシュがあれば赤字銘柄を除外（J-Quants有料プランで精度向上予定）
     if financials:
@@ -1028,6 +1089,18 @@ def run_alert() -> None:
         logger.error("yfinanceが未インストール。pip install yfinance")
         return
 
+    # 設定読み込み（strategy_settings DB → なければデフォルト定数）
+    try:
+        from settings_loader import get_settings as _get_settings
+        cfg = _get_settings(force_reload=True)
+    except Exception as _cfg_err:
+        logger.warning("設定読み込みエラー（デフォルト値使用）: %s", _cfg_err)
+        cfg = {}
+
+    _drop_list_thr = float(cfg.get("drop_list_threshold", DROP_LIST_THRESHOLD))
+    _alert_thr = float(cfg.get("alert_threshold", ALERT_THRESHOLD))
+    _gap_thr = float(cfg.get("index_gap_threshold", NIKKEI_GAP_THRESHOLD))
+
     nikkei_pct = get_nikkei_change_pct()
     logger.info("日経平均: %s%%", nikkei_pct)
 
@@ -1037,11 +1110,16 @@ def run_alert() -> None:
         return
 
     drops = sorted(
-        [s for s in stocks.values() if s["change_pct"] <= DROP_LIST_THRESHOLD],
+        [s for s in stocks.values() if s["change_pct"] <= _drop_list_thr],
         key=lambda x: x["change_pct"],
     )
     drops = _enrich_drop_valuations(drops)
     save_drop_cache(drops, nikkei_pct)
+
+    # watchlist 保存（急落検知のたびに新規銘柄のみ追加）
+    _wl_added = sum(1 for s in drops if save_to_watchlist(s, nikkei_pct))
+    if _wl_added:
+        logger.info("watchlist新規追加: %d銘柄", _wl_added)
 
     financials = _load_financials_cache()
     logger.info("財務キャッシュ: %d銘柄", len(financials))
@@ -1049,7 +1127,11 @@ def run_alert() -> None:
     notified_today = get_notified_codes_today()
     signals = [
         s for s in stocks.values()
-        if is_buy_signal(s, nikkei_pct, financials) and s["code"] not in notified_today
+        if is_buy_signal(
+            s, nikkei_pct, financials,
+            alert_threshold=_alert_thr, gap_threshold=_gap_thr,
+        )
+        and s["code"] not in notified_today
     ]
     signals = sorted(signals, key=lambda x: x["change_pct"])[:MAX_ALERT_SIGNALS]
     signals = _enrich_drop_valuations(signals, limit=MAX_ALERT_SIGNALS)

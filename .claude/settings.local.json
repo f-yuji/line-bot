@@ -15,7 +15,9 @@
       "Bash(python -c ' *)",
       "Bash(git checkout *)",
       "Bash(git push *)",
-      "Bash(git stash *)"
+      "Bash(git stash *)",
+      "Bash(python3 -c ' *)",
+      "Bash(python3 -m py_compile c:/Users/f-yuj/dev/line_bot/send_news.py)"
     ]
   }
 }

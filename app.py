@@ -1437,6 +1437,12 @@ def handle_message(event):
             comment = get_stock_ai_comment(stock["code"], stock["name"], change_pct, nikkei_pct)
             company_profile = format_company_profile_text(stock["code"])
             company_block = f"{company_profile}\n\n" if company_profile else ""
+            week_pct = stock.get("week_pct")
+            month_pct = stock.get("month_pct")
+            from_high_pct = stock.get("from_high_pct")
+            week_text = f"{week_pct:+.1f}%" if week_pct is not None else "N/A"
+            month_text = f"{month_pct:+.1f}%" if month_pct is not None else "N/A"
+            from_high_text = f"{from_high_pct:+.1f}%" if from_high_pct is not None else "N/A"
             reply_text(
                 event.reply_token,
                 f"{stock['code']} {stock['name']}\n"
@@ -1444,9 +1450,9 @@ def handle_message(event):
                 f"取得: {stock.get('fetched_at', '-')}\n\n"
                 f"価格   {stock['price']:,.0f}円\n"
                 f"前日比 {_format_day_change_text(stock.get('price'), stock.get('day_pct'))}\n"
-                f"週次   {(f'{stock.get("week_pct"):+.1f}%') if stock.get('week_pct') is not None else 'N/A'}\n"
-                f"月次   {(f'{stock.get("month_pct"):+.1f}%') if stock.get('month_pct') is not None else 'N/A'}\n"
-                f"高値差 {(f'{stock.get("from_high_pct"):+.1f}%') if stock.get('from_high_pct') is not None else 'N/A'}\n\n{comment}",
+                f"週次   {week_text}\n"
+                f"月次   {month_text}\n"
+                f"高値差 {from_high_text}\n\n{comment}",
                 quick_reply=qr,
             )
         except Exception as e:

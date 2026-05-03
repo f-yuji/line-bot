@@ -21,9 +21,9 @@ python send_news.py --dry-run
 # ===== Git 基本 =====
 git status
 git add .
-git commit -m "最新マージ後"
-git pull
+git commit -m "ローンチ"
 git push
+git pull
 
 # ===== ブランチ =====
 git checkout dev
