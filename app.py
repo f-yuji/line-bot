@@ -1696,35 +1696,9 @@ def handle_postback(event):
 
 # ─── Web UI ───────────────────────────────────────────────────────────────
 
-def _web_auth(f):
-    @functools.wraps(f)
-    def _inner(*args, **kwargs):
-        if not session.get("web_authed"):
-            return redirect(url_for("web_login", next=request.path))
-        return f(*args, **kwargs)
-    return _inner
-
-
-@app.route("/web/login", methods=["GET", "POST"])
-def web_login():
-    if request.method == "POST":
-        token = request.form.get("token", "").strip()
-        if WEB_ADMIN_TOKEN and token == WEB_ADMIN_TOKEN:
-            session["web_authed"] = True
-            return redirect(request.args.get("next") or url_for("web_dashboard"))
-        flash("トークンが違います", "danger")
-    return render_template("web/login.html")
-
-
-@app.route("/web/logout")
-def web_logout():
-    session.clear()
-    return redirect(url_for("web_login"))
-
 
 @app.route("/web/")
 @app.route("/web/dashboard")
-@_web_auth
 def web_dashboard():
     try:
         rows = (
@@ -1755,7 +1729,6 @@ def web_dashboard():
 
 
 @app.route("/web/watchlist")
-@_web_auth
 def web_watchlist():
     status_filter = request.args.get("status", "all")
     try:
@@ -1770,7 +1743,6 @@ def web_watchlist():
 
 
 @app.route("/web/watchlist/<item_id>/close", methods=["POST"])
-@_web_auth
 def web_watchlist_close(item_id):
     try:
         supabase.table("stock_drop_watchlist").update({
@@ -1784,7 +1756,6 @@ def web_watchlist_close(item_id):
 
 
 @app.route("/web/signals")
-@_web_auth
 def web_signals():
     try:
         rows = (
@@ -1803,7 +1774,6 @@ def web_signals():
 
 
 @app.route("/web/settings", methods=["GET", "POST"])
-@_web_auth
 def web_settings():
     if request.method == "POST":
         bool_fields = {
@@ -1832,7 +1802,6 @@ def web_settings():
 
 
 @app.route("/web/virtual-trades")
-@_web_auth
 def web_virtual_trades():
     try:
         open_trades = (
@@ -1858,7 +1827,6 @@ def web_virtual_trades():
 
 
 @app.route("/web/portfolio")
-@_web_auth
 def web_portfolio():
     return render_template("web/stub.html", title="ポートフォリオ", message="Phase 3 で実装予定")
 
