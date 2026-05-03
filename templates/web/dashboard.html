@@ -1,0 +1,108 @@
+{% extends "web/base.html" %}
+{% block title %}ダッシュボード{% endblock %}
+{% block page_label %}ダッシュボード{% endblock %}
+
+{% macro spark(seed, trend) -%}
+  {%- set pts = [] -%}
+  {%- for i in range(30) -%}
+    {%- set x = i * 80 / 29 -%}
+    {%- set base = 11 + (((seed|int) * 7 + i * 13) % 11) - 5 -%}
+    {%- set y = 11 + base -%}
+    {%- if pts.append(x|round(1)|string ~ "," ~ y|round(1)|string) %}{% endif -%}
+  {%- endfor -%}
+  <svg class="spark-cell {{ trend }}" viewBox="0 0 80 22" preserveAspectRatio="none" style="width:80px;height:22px">
+    <polyline class="pl" points="{{ pts|join(' ') }}" fill="none"/>
+  </svg>
+{%- endmacro %}
+
+{% macro status_badge(s) -%}
+  {%- set m = {'watching':['watching','WATCH'],'rebound_signal':['signal','SIGNAL'],'notified':['notified','NOTIFIED'],'closed':['closed','CLOSED']} -%}
+  {%- set v = m.get(s, ['watching','WATCH']) -%}
+  <span class="badge {{ v[0] }}">{{ v[1] }}</span>
+{%- endmacro %}
+
+{% macro score_bar(score) -%}
+  {%- set cls = 'high' if score >= 80 else ('mid' if score >= 65 else 'low') -%}
+  <div class="score-bar {{ cls }}">
+    <div class="track"><div class="fill" style="width:{{ score }}%"></div></div>
+    <span class="num">{{ score }}</span>
+  </div>
+{%- endmacro %}
+
+{% macro delta(v, suffix='%') -%}
+  {%- if v is none -%}<span class="muted">—</span>
+  {%- else -%}
+    {%- set cls = 'up-text' if v > 0 else ('down-text' if v < 0 else 'muted') -%}
+    {%- set sign = '+' if v > 0 else '' -%}
+    <span class="delta {{ cls }}">{{ sign }}{{ "%.1f"|format(v) }}{{ suffix }}</span>
+  {%- endif -%}
+{%- endmacro %}
+
+{% block content %}
+<div class="page-head">
+  <h1 class="page-title">ダッシュボード<small>OVERVIEW · {{ now.strftime("%Y-%m-%d") if now else "" }}</small></h1>
+  <div class="page-actions">
+    <a class="btn ghost sm" href="/web/dashboard">更新</a>
+    <a class="btn primary sm" href="/web/signals">シグナル一覧</a>
+  </div>
+</div>
+
+<div class="stat-grid">
+  <div class="stat-tile info">
+    <div class="label">監視中銘柄</div>
+    <div class="value">{{ stats.watching if stats else 0 }}</div>
+    <div class="sub muted">WATCHING</div>
+  </div>
+  <div class="stat-tile accent">
+    <div class="label">シグナル発生</div>
+    <div class="value">{{ stats.rebound_signal if stats else 0 }}</div>
+    <div class="sub muted">SIGNAL</div>
+  </div>
+  <div class="stat-tile up">
+    <div class="label">通知済み</div>
+    <div class="value">{{ stats.notified if stats else 0 }}</div>
+    <div class="sub muted">NOTIFIED</div>
+  </div>
+  <div class="stat-tile">
+    <div class="label">クローズ</div>
+    <div class="value">{{ stats.closed if stats and stats.closed is defined else 0 }}</div>
+    <div class="sub muted">CLOSED</div>
+  </div>
+</div>
+
+<div class="panel">
+  <div class="panel-head">
+    <div class="panel-title">監視中 / シグナル発生銘柄<span class="tag">最新50件</span></div>
+    <a class="btn sm" href="/web/watchlist">全件 →</a>
+  </div>
+  <div class="table-wrap">
+    <table class="tbl">
+      <thead>
+        <tr>
+          <th>コード</th><th>名称</th><th>急落日</th>
+          <th class="right">急落率</th><th class="right">急落時株価</th>
+          <th class="right">日経%</th><th>セクター</th>
+          <th class="center">推移</th><th>ステータス</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in rows %}
+        <tr class="{{ 'signal-row' if r.status == 'rebound_signal' else '' }}">
+          <td class="code">{{ r.code }}</td>
+          <td class="name">{{ r.name or "" }}</td>
+          <td class="muted num">{{ r.drop_detected_at[:10] if r.drop_detected_at else "" }}</td>
+          <td class="right num">{{ delta(r.drop_pct) }}</td>
+          <td class="right num">{{ "%.0f"|format(r.price_at_drop) if r.price_at_drop is not none else "" }}</td>
+          <td class="right num">{{ delta(r.nikkei_pct) }}</td>
+          <td class="muted">{{ r.sector or "" }}</td>
+          <td class="center">{{ spark(r.code, 'up' if r.status in ['rebound_signal','notified'] else 'down') }}</td>
+          <td>{{ status_badge(r.status) }}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="9" class="center muted" style="padding:28px">データなし</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

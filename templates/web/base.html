@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}{% endblock %} - 投資補助ツール</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Noto+Sans+JP:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>{% include "web/_styles.css" %}</style>
+</head>
+<body data-theme="dark" data-color="jp" data-density="comfortable" data-accent="amber">
+<div class="app">
+
+  <div class="logo-cell">
+    <div class="logo-mark">投</div>
+    <div class="logo-text">投資補助ツール<small>REBOUND TERMINAL</small></div>
+  </div>
+
+  <div class="topbar">
+    <div class="topbar-title">
+      <span class="crumb">Markets</span>
+      <span class="crumb-sep">/</span>
+      <span>{% block page_label %}{% endblock %}</span>
+    </div>
+    <div style="flex:1"></div>
+    <div class="market-indicators">
+      <div class="mkt-item"><div class="mkt-label">N225</div><div class="mkt-value">{{ market.n225 if market else "—" }} <span class="mkt-change {{ 'up-text' if market and market.n225_pct >= 0 else 'down-text' }}">{{ "%+.2f"|format(market.n225_pct) if market else "" }}%</span></div></div>
+      <div class="mkt-item"><div class="mkt-label">TOPIX</div><div class="mkt-value">{{ market.topix if market else "—" }} <span class="mkt-change {{ 'up-text' if market and market.topix_pct >= 0 else 'down-text' }}">{{ "%+.2f"|format(market.topix_pct) if market else "" }}%</span></div></div>
+      <div class="mkt-item"><div class="mkt-label">USD/JPY</div><div class="mkt-value">{{ market.usdjpy if market else "—" }}</div></div>
+    </div>
+    <div class="topbar-actions">
+      <div class="clock"><span class="live-dot"></span>LIVE {{ now.strftime("%H:%M:%S") if now else "" }}</div>
+      <a class="icon-btn" href="#" data-tip="検索"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg></a>
+      <a class="icon-btn" href="/web/signals" data-tip="通知"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>{% if alerts and alerts > 0 %}<span class="badge-dot"></span>{% endif %}</a>
+    </div>
+  </div>
+
+  <nav class="sidebar">
+    <div class="side-section">Markets</div>
+    <a class="side-link {% if request.path in ['/web/', '/web/dashboard'] %}active{% endif %}" href="/web/dashboard">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="9"/><rect x="14" y="3" width="7" height="5"/><rect x="14" y="12" width="7" height="9"/><rect x="3" y="16" width="7" height="5"/></svg>
+      <span>ダッシュボード</span>
+    </a>
+    <a class="side-link {% if request.path.startswith('/web/watchlist') %}active{% endif %}" href="/web/watchlist">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>
+      <span>ウォッチリスト</span>
+      {% if counts and counts.watchlist is defined %}<span class="count">{{ counts.watchlist }}</span>{% endif %}
+    </a>
+    <a class="side-link {% if request.path == '/web/signals' %}active{% endif %}" href="/web/signals">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+      <span>シグナル</span>
+      {% if counts and counts.signals is defined %}<span class="count alert">{{ counts.signals }}</span>{% endif %}
+    </a>
+
+    <div class="side-section">Trading</div>
+    <a class="side-link {% if request.path == '/web/virtual-trades' %}active{% endif %}" href="/web/virtual-trades">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 1l4 4-4 4"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><path d="M7 23l-4-4 4-4"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>
+      <span>仮想売買</span>
+      {% if counts and counts.trades is defined %}<span class="count">{{ counts.trades }}</span>{% endif %}
+    </a>
+    <a class="side-link {% if request.path == '/web/portfolio' %}active{% endif %}" href="/web/portfolio">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/></svg>
+      <span>ポートフォリオ</span>
+      {% if counts and counts.portfolio is defined %}<span class="count">{{ counts.portfolio }}</span>{% endif %}
+    </a>
+
+    <div class="side-section">System</div>
+    <a class="side-link {% if request.path == '/web/settings' %}active{% endif %}" href="/web/settings">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h0a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h0a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v0a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+      <span>設定</span>
+    </a>
+    <a class="side-link" href="/web/logout">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+      <span>ログアウト</span>
+    </a>
+
+    <div class="sidebar-foot">
+      <div class="row"><span>SESSION</span><span style="color:var(--down)">● ACTIVE</span></div>
+      <div class="row"><span>API</span><span>200 OK</span></div>
+    </div>
+  </nav>
+
+  <main class="main">
+    <div class="main-inner">
+      {% with messages = get_flashed_messages(with_categories=true) %}
+        {% for category, msg in messages %}
+          <div class="panel" style="border-left:3px solid var(--accent); padding:8px 12px; margin-bottom:12px; font-size:11px;">{{ msg }}</div>
+        {% endfor %}
+      {% endwith %}
+      {% block content %}{% endblock %}
+    </div>
+  </main>
+
+  <div class="statusbar">
+    <div class="seg"><span class="live-dot"></span>MARKET OPEN</div>
+    <div class="seg">JPX · 東証プライム</div>
+    <div class="seg">{{ counts.watchlist if counts else 0 }} symbols</div>
+    <div style="flex:1"></div>
+    <div class="seg">last sync {{ now.strftime("%H:%M:%S") if now else "—" }}</div>
+    <div class="seg">v2.4.1</div>
+  </div>
+
+</div>
+</body>
+</html>

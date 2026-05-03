@@ -1,0 +1,13 @@
+{% extends "web/base.html" %}
+{% block title %}{{ title }}{% endblock %}
+{% block page_label %}{{ title }}{% endblock %}
+{% block content %}
+<div class="page-head">
+  <h1 class="page-title">{{ title }}</h1>
+</div>
+<div class="panel">
+  <div class="panel-body" style="text-align:center;padding:48px 16px">
+    <div class="muted" style="font-size:11px;font-family:var(--font-mono);letter-spacing:.08em">{{ message }}</div>
+  </div>
+</div>
+{% endblock %}

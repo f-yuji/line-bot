@@ -1,0 +1,102 @@
+{% extends "web/base.html" %}
+{% block title %}仮想売買{% endblock %}
+{% block content %}
+<h5 class="mb-4">💹 仮想売買</h5>
+
+<div class="row mb-4">
+  <div class="col-md-4 mb-3">
+    <div class="card p-3 text-center">
+      <div class="h2 text-info mb-1">{{ open_trades|length }}</div>
+      <div class="text-muted small">保有中</div>
+    </div>
+  </div>
+  <div class="col-md-4 mb-3">
+    <div class="card p-3 text-center">
+      <div class="h2 {% if total_pnl >= 0 %}text-success{% else %}text-danger{% endif %} mb-1">
+        {{ "{:+,.0f}".format(total_pnl) }}円
+      </div>
+      <div class="text-muted small">累計損益（決済済み）</div>
+    </div>
+  </div>
+  <div class="col-md-4 mb-3">
+    <div class="card p-3 text-center">
+      <div class="h2 text-warning mb-1">
+        {% if closed_trades|length > 0 %}
+          {{ win_count }} / {{ closed_trades|length }}
+        {% else %}
+          -
+        {% endif %}
+      </div>
+      <div class="text-muted small">勝敗（決済済み）</div>
+    </div>
+  </div>
+</div>
+
+<h6 class="mb-2">保有中ポジション</h6>
+<div class="table-responsive mb-4">
+  <table class="table table-hover table-sm">
+    <thead class="text-muted small">
+      <tr>
+        <th>コード</th><th>名称</th><th>買い日</th><th>買い値</th><th>買いスコア</th>
+      </tr>
+    </thead>
+    <tbody class="small">
+      {% for t in open_trades %}
+      <tr>
+        <td>{{ t.code }}</td>
+        <td>{{ t.name or "" }}</td>
+        <td>{{ t.buy_date[:10] if t.buy_date else "" }}</td>
+        <td>{{ "{:,.0f}".format(t.buy_price) }}円</td>
+        <td>
+          {% if t.buy_score %}
+            <span class="badge {% if t.buy_score >= 80 %}bg-danger{% elif t.buy_score >= 70 %}bg-warning text-dark{% else %}bg-secondary{% endif %}">
+              {{ "{:.0f}".format(t.buy_score) }}
+            </span>
+          {% endif %}
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="5" class="text-center text-muted py-3">保有なし</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<h6 class="mb-2">決済済みトレード（最新100件）</h6>
+<div class="table-responsive">
+  <table class="table table-hover table-sm">
+    <thead class="text-muted small">
+      <tr>
+        <th>コード</th><th>名称</th><th>買い日</th><th>決済日</th>
+        <th>買い値</th><th>売り値</th><th>損益</th><th>損益率</th><th>理由</th>
+      </tr>
+    </thead>
+    <tbody class="small">
+      {% for t in closed_trades %}
+      <tr>
+        <td>{{ t.code }}</td>
+        <td>{{ t.name or "" }}</td>
+        <td>{{ t.buy_date[:10] if t.buy_date else "" }}</td>
+        <td>{{ t.sell_date[:10] if t.sell_date else "" }}</td>
+        <td>{{ "{:,.0f}".format(t.buy_price) }}円</td>
+        <td>{{ "{:,.0f}".format(t.sell_price) if t.sell_price else "-" }}円</td>
+        <td class="{% if (t.profit_loss or 0) >= 0 %}text-success{% else %}text-danger{% endif %}">
+          {{ "{:+,.0f}".format(t.profit_loss) if t.profit_loss is not none else "-" }}円
+        </td>
+        <td class="{% if (t.profit_loss_pct or 0) >= 0 %}text-success{% else %}text-danger{% endif %}">
+          {{ "{:+.1f}%".format(t.profit_loss_pct) if t.profit_loss_pct is not none else "-" }}
+        </td>
+        <td>
+          {% set reason_map = {"take_profit": "利確", "stop_loss": "損切", "expired": "期限", "manual": "手動"} %}
+          <span class="badge {% if t.sell_reason == 'take_profit' %}bg-success{% elif t.sell_reason == 'stop_loss' %}bg-danger{% else %}bg-secondary{% endif %}">
+            {{ reason_map.get(t.sell_reason, t.sell_reason or "-") }}
+          </span>
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="9" class="text-center text-muted py-3">データなし</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

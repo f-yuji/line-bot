@@ -3,8 +3,14 @@ name: cron jobs
 on:
   workflow_dispatch:
   schedule:
+    
     - cron: "0 23 * * 0-4"
     - cron: "0 5 * * 1-5"
+    - cron: "40 6 * * 1-5"  # 15:40 JST (scan_prime)
+    - cron: "0 0 * * 1-5"   # 09:00 JST
+    - cron: "0 3 * * 1-5"   # 12:00 JST
+    - cron: "30 6 * * 1-5"  # 15:30 JST
+    - cron: "0 9 * * 1-5"   # 18:00 JST
 
 jobs:
   run-financials:
@@ -36,3 +42,39 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
           LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
+
+  scan-prime:
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '40 6 * * 1-5'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -r requirements.txt
+      - run: python scripts/scan_prime.py
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
+          JQUANTS_API_KEY: ${{ secrets.JQUANTS_API_KEY }}
+          ENV: prod
+          SUPABASE_MODE: prod
+
+  monitor-rebound:
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '0 0 * * 1-5' || github.event.schedule == '0 3 * * 1-5' || github.event.schedule == '30 6 * * 1-5' || github.event.schedule == '0 9 * * 1-5'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -r requirements.txt
+      - run: python scripts/monitor_rebound.py
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ENV: prod
+          SUPABASE_MODE: prod

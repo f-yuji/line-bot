@@ -1,3 +1,4 @@
+import functools
 import json
 import logging
 import os
@@ -7,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
 from dotenv import load_dotenv
-from flask import Flask, request, abort
+from flask import Flask, request, abort, render_template, redirect, url_for, session, flash
 from openai import OpenAI
 from supabase import create_client
 
@@ -31,6 +32,7 @@ from linebot.v3.messaging import (
 )
 from linebot.v3.webhooks import FollowEvent, MessageEvent, PostbackEvent, TextMessageContent
 
+import settings_loader as _settings_loader
 from send_news import fetch_news_for_reply, get_recent_sent_links
 from nikkei_alert import (
     get_drop_list_for_reply,
@@ -100,6 +102,8 @@ supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 openai_client = OpenAI(api_key=OPENAI_API_KEY)
 
 app = Flask(__name__)
+app.secret_key = _get_optional_env("SECRET_KEY") or _get_optional_env("WEB_ADMIN_TOKEN") or "changeme"
+WEB_ADMIN_TOKEN = _get_optional_env("WEB_ADMIN_TOKEN")
 configuration = Configuration(access_token=LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
@@ -1688,6 +1692,168 @@ def handle_postback(event):
     elif data == "clear_genres":
         supabase.table("users").update({"genres": []}).eq("user_id", user_id).execute()
         reply_flex(event.reply_token, build_genre_flex([]))
+
+
+# ─── Web UI ───────────────────────────────────────────────────────────────
+
+def _web_auth(f):
+    @functools.wraps(f)
+    def _inner(*args, **kwargs):
+        if not session.get("web_authed"):
+            return redirect(url_for("web_login", next=request.path))
+        return f(*args, **kwargs)
+    return _inner
+
+
+@app.route("/web/login", methods=["GET", "POST"])
+def web_login():
+    if request.method == "POST":
+        token = request.form.get("token", "").strip()
+        if WEB_ADMIN_TOKEN and token == WEB_ADMIN_TOKEN:
+            session["web_authed"] = True
+            return redirect(request.args.get("next") or url_for("web_dashboard"))
+        flash("トークンが違います", "danger")
+    return render_template("web/login.html")
+
+
+@app.route("/web/logout")
+def web_logout():
+    session.clear()
+    return redirect(url_for("web_login"))
+
+
+@app.route("/web/")
+@app.route("/web/dashboard")
+@_web_auth
+def web_dashboard():
+    try:
+        rows = (
+            supabase.table("stock_drop_watchlist")
+            .select("*")
+            .neq("status", "closed")
+            .order("drop_detected_at", desc=True)
+            .limit(50)
+            .execute()
+            .data or []
+        )
+    except Exception as e:
+        logger.error("dashboard error: %s", e)
+        rows = []
+    stats = {"watching": 0, "rebound_signal": 0, "notified": 0}
+    for r in rows:
+        s = r.get("status", "")
+        if s in stats:
+            stats[s] += 1
+    return render_template("web/dashboard.html", rows=rows, stats=stats)
+
+
+@app.route("/web/watchlist")
+@_web_auth
+def web_watchlist():
+    status_filter = request.args.get("status", "all")
+    try:
+        q = supabase.table("stock_drop_watchlist").select("*").order("drop_detected_at", desc=True)
+        if status_filter != "all":
+            q = q.eq("status", status_filter)
+        rows = q.limit(200).execute().data or []
+    except Exception as e:
+        logger.error("watchlist error: %s", e)
+        rows = []
+    return render_template("web/watchlist.html", rows=rows, status_filter=status_filter)
+
+
+@app.route("/web/watchlist/<item_id>/close", methods=["POST"])
+@_web_auth
+def web_watchlist_close(item_id):
+    try:
+        supabase.table("stock_drop_watchlist").update({
+            "status": "closed",
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }).eq("id", item_id).execute()
+        flash("クローズした", "success")
+    except Exception as e:
+        flash(f"エラー: {e}", "danger")
+    return redirect(url_for("web_watchlist", status=request.args.get("status", "all")))
+
+
+@app.route("/web/signals")
+@_web_auth
+def web_signals():
+    try:
+        rows = (
+            supabase.table("stock_drop_watchlist")
+            .select("*")
+            .in_("status", ["rebound_signal", "notified"])
+            .order("last_checked_at", desc=True)
+            .limit(100)
+            .execute()
+            .data or []
+        )
+    except Exception as e:
+        logger.error("signals error: %s", e)
+        rows = []
+    return render_template("web/signals.html", rows=rows)
+
+
+@app.route("/web/settings", methods=["GET", "POST"])
+@_web_auth
+def web_settings():
+    if request.method == "POST":
+        bool_fields = {
+            "ma5_cross_enabled", "drop_notify_enabled", "rebound_notify_enabled",
+            "morning_summary_enabled", "portfolio_notify_enabled",
+        }
+        int_fields = {"watch_days_limit"}
+        try:
+            data: dict = {"updated_at": datetime.now(timezone.utc).isoformat()}
+            for key, default in _settings_loader.DEFAULTS.items():
+                if key in bool_fields:
+                    data[key] = key in request.form
+                elif key in int_fields:
+                    data[key] = int(request.form.get(key, default))
+                else:
+                    data[key] = float(request.form.get(key, default))
+            supabase.table("strategy_settings").update(data).eq("user_id", "global").execute()
+            _settings_loader._cache = None
+            flash("設定を保存した", "success")
+        except Exception as e:
+            logger.error("settings save error: %s", e)
+            flash(f"保存失敗: {e}", "danger")
+        return redirect(url_for("web_settings"))
+    cfg = _settings_loader.get_settings()
+    return render_template("web/settings.html", cfg=cfg)
+
+
+@app.route("/web/virtual-trades")
+@_web_auth
+def web_virtual_trades():
+    try:
+        open_trades = (
+            supabase.table("virtual_trades").select("*")
+            .eq("status", "open").order("buy_date", desc=True).execute().data or []
+        )
+        closed_trades = (
+            supabase.table("virtual_trades").select("*")
+            .eq("status", "closed").order("sell_date", desc=True).limit(100).execute().data or []
+        )
+    except Exception as e:
+        logger.error("virtual_trades error: %s", e)
+        open_trades, closed_trades = [], []
+    total_pnl = sum(t.get("profit_loss") or 0 for t in closed_trades)
+    win_count = sum(1 for t in closed_trades if (t.get("profit_loss") or 0) > 0)
+    return render_template(
+        "web/virtual_trades.html",
+        open_trades=open_trades,
+        closed_trades=closed_trades,
+        total_pnl=total_pnl,
+        win_count=win_count,
+    )
+
+
+@app.route("/web/portfolio")
+@_web_auth
+def web_portfolio():
+    return render_template("web/stub.html", title="ポートフォリオ", message="Phase 3 で実装予定")
 
 
 if __name__ == "__main__":
