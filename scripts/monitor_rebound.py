@@ -50,6 +50,7 @@ _IS_TEST = _opt("ENV").upper() == "TEST"
 SUPABASE_URL = (_opt(f"SUPABASE_URL_{_mode_upper}") if _mode_upper else "") or _opt("SUPABASE_URL")
 SUPABASE_KEY = (_opt(f"SUPABASE_KEY_{_mode_upper}") if _mode_upper else "") or _opt("SUPABASE_KEY")
 LINE_TOKEN = _opt("LINE_CHANNEL_ACCESS_TOKEN")
+_WEB_URL = _opt("WEB_URL") or "https://line-bot-ukz5kw.fly.dev/web/dashboard"
 
 if not SUPABASE_URL or not SUPABASE_KEY:
     raise KeyError("SUPABASE_URL / SUPABASE_KEY が未設定です")
@@ -239,33 +240,32 @@ def _eligible_users() -> list[dict]:
         return []
 
 
-def _build_msg(item: dict, signals: list[str], is_strong: bool, current: float, score_data: dict | None = None) -> str:
-    code = item.get("code", "")
-    name = item.get("name", "")
-    drop_pct = item.get("drop_pct") or 0.0
-    price_at_drop = item.get("price_at_drop") or 0.0
+def _build_summary_msg(to_notify: list) -> str:
+    sorted_n = sorted(to_notify, key=lambda x: x[4].get("total", 0), reverse=True)
+    top_item, _, is_strong, _, top_score = sorted_n[0]
 
-    recovery_line = ""
-    if price_at_drop > 0:
-        rec = (current - price_at_drop) / price_at_drop * 100
-        recovery_line = f"現在: {rec:+.1f}%（急落時比）\n"
+    code = top_item.get("code", "")
+    name = top_item.get("name", "")
+    drop_pct = top_item.get("drop_pct") or 0.0
+    score = top_score.get("total", 0)
+    label = top_score.get("label", "")
+    strength = "強シグナル★★" if is_strong else "シグナル"
 
-    sig_lines = "\n".join(f"・{s}" for s in signals)
-    strength = "強シグナル★★" if is_strong else "シグナル検知"
+    lines = [
+        f"⚡ リバウンド候補",
+        f"{code} {name}",
+        f"急落 {drop_pct:+.1f}%　スコア {score:.0f}点（{label}）",
+        f"判定: {strength}",
+    ]
 
-    score_line = ""
-    if score_data and score_data.get("total", 0) > 0:
-        score_line = f"スコア: {score_data['total']:.0f}点（{score_data['label']}）\n"
+    others = len(sorted_n) - 1
+    if others > 0:
+        other_codes = " / ".join(x[0].get("code", "") for x in sorted_n[1:4])
+        suffix = f"…他{others - 3}件" if others > 3 else ""
+        lines.append(f"他 {others}銘柄: {other_codes}{suffix}")
 
-    return (
-        f"【リバウンド候補】\n"
-        f"{code} {name}\n\n"
-        f"急落: {drop_pct:+.1f}%\n"
-        f"{recovery_line}"
-        f"\nシグナル:\n{sig_lines}\n\n"
-        f"{score_line}"
-        f"判定:\n{strength}\n短期反発候補"
-    )
+    lines.append(f"詳細 → {_WEB_URL}")
+    return "\n".join(lines)
 
 
 # ─── 仮想売買 ───
@@ -514,11 +514,11 @@ def run_monitor() -> None:
     users = _eligible_users()
     logger.info("通知対象ユーザー: %d人", len(users))
 
-    for item, signals, is_strong, current, score_data in to_notify:
-        msg = _build_msg(item, signals, is_strong, current, score_data)
-        sent = sum(1 for u in users if _push(u["user_id"], msg))
-        logger.info("通知送信: %s → %d人", item.get("code"), sent)
+    msg = _build_summary_msg(to_notify)
+    sent = sum(1 for u in users if _push(u["user_id"], msg))
+    logger.info("通知送信: %d銘柄まとめ → %d人", len(to_notify), sent)
 
+    for item, _, _, current, score_data in to_notify:
         if sent > 0 or not users:
             try:
                 supabase.table("stock_drop_watchlist").update({
@@ -529,7 +529,6 @@ def run_monitor() -> None:
             except Exception as e:
                 logger.error("notified 更新エラー: %s %s", item.get("code"), e)
 
-        # 強シグナル → 仮想買い
         if score_data["total"] >= strong_thr:
             _create_virtual_trade(item, current, score_data["total"], now_utc)
 
