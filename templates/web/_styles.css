@@ -443,7 +443,8 @@ input, select, textarea { font-family: inherit; }
   padding: 2px;
   gap: 0;
 }
-.segmented button {
+.segmented button,
+.segmented a {
   background: transparent;
   border: none;
   color: var(--text-2);
@@ -455,19 +456,25 @@ input, select, textarea { font-family: inherit; }
   display: inline-flex;
   align-items: center;
   gap: 5px;
+  text-decoration: none;
+  cursor: pointer;
 }
-.segmented button:hover { color: var(--text); }
-.segmented button.active {
+.segmented button:hover,
+.segmented a:hover { color: var(--text); }
+.segmented button.active,
+.segmented a.active {
   background: var(--bg-4);
   color: var(--text);
   box-shadow: 0 1px 0 0 var(--line-strong) inset;
 }
-.segmented button .count {
+.segmented button .count,
+.segmented a .count {
   font-family: var(--font-mono);
   font-size: 9px;
   color: var(--text-3);
 }
-.segmented button.active .count { color: var(--accent); }
+.segmented button.active .count,
+.segmented a.active .count { color: var(--accent); }
 
 /* === Cards / Panels === */
 .panel {
@@ -1349,4 +1356,109 @@ td.num { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
 /* Selection frame in tables */
 table.tbl tbody tr.signal-row td:first-child {
   box-shadow: inset 2px 0 0 0 var(--accent);
+}
+
+/* === Hamburger (desktop: hidden) === */
+.hamburger {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: 36px; height: 36px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  color: var(--text-2);
+  cursor: pointer;
+  flex-shrink: 0;
+  padding: 0;
+}
+.hamburger:hover { background: var(--bg-2); border-color: var(--line); }
+.hamburger svg { width: 18px; height: 18px; }
+
+/* Sidebar overlay (mobile only) */
+.sidebar-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  z-index: 290;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s;
+}
+
+/* Bootstrap table-responsive compat */
+.table-responsive { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+
+/* === Mobile layout === */
+@media (max-width: 768px) {
+  body { overflow: auto; }
+
+  .app {
+    display: flex;
+    flex-direction: column;
+    height: auto;
+    min-height: 100dvh;
+    width: 100%;
+  }
+
+  .logo-cell { display: none; }
+
+  .topbar {
+    position: sticky;
+    top: 0;
+    z-index: 100;
+    height: 48px;
+    padding: 0 10px;
+    gap: 8px;
+    flex-shrink: 0;
+  }
+
+  /* Hide heavy topbar items */
+  .market-indicators { display: none; }
+  .topbar-actions .clock { display: none; }
+  .topbar-title .crumb,
+  .topbar-title .crumb-sep { display: none; }
+
+  /* Show hamburger */
+  .hamburger { display: flex; }
+
+  /* Sidebar: slide-in overlay */
+  .sidebar {
+    position: fixed;
+    top: 0; left: 0; bottom: 0;
+    width: 220px;
+    z-index: 300;
+    transform: translateX(-100%);
+    transition: transform 0.25s ease;
+    overflow-y: auto;
+    border-right: 1px solid var(--line);
+  }
+  .sidebar.open { transform: translateX(0); }
+
+  .sidebar-overlay { display: block; }
+  .sidebar-overlay.open { opacity: 1; pointer-events: auto; }
+
+  /* Main scrollable */
+  .main { flex: 1; overflow: visible; }
+  .main-inner { padding: 12px 10px 24px; }
+
+  /* Hide statusbar */
+  .statusbar { display: none; }
+
+  /* Responsive grids */
+  .stat-grid { grid-template-columns: repeat(2, 1fr); }
+  .form-grid { grid-template-columns: 1fr; }
+  .dash-grid { grid-template-columns: 1fr; }
+
+  /* Tables scroll horizontally */
+  .table-wrap,
+  .table-responsive { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+
+  /* Bootstrap Bootstrap row/col compat */
+  .row { display: flex; flex-wrap: wrap; margin: 0 -6px; }
+  .col-md-4 { width: 50%; padding: 0 6px; box-sizing: border-box; }
+
+  /* Login card full width */
+  .login-card { width: 92vw; padding: 24px 20px; }
 }

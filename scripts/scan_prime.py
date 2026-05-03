@@ -41,6 +41,7 @@ def _opt(name: str) -> str:
 
 _SUPABASE_MODE = _opt("SUPABASE_MODE") or _opt("ENV")
 _mode_upper = (_SUPABASE_MODE or "").upper()
+_IS_TEST = _opt("ENV").upper() == "TEST"
 SUPABASE_URL = (_opt(f"SUPABASE_URL_{_mode_upper}") if _mode_upper else "") or _opt("SUPABASE_URL")
 SUPABASE_KEY = (_opt(f"SUPABASE_KEY_{_mode_upper}") if _mode_upper else "") or _opt("SUPABASE_KEY")
 LINE_TOKEN = _opt("LINE_CHANNEL_ACCESS_TOKEN")
@@ -178,7 +179,7 @@ def run_scan() -> None:
     logger.info("=== TSEプライム急落スキャン開始 ===")
     now_jst = datetime.now(JST)
 
-    if now_jst.weekday() >= 5:
+    if now_jst.weekday() >= 5 and not _IS_TEST:
         logger.info("土日のためスキップ")
         return
 

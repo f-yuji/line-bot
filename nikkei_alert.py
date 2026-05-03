@@ -68,6 +68,7 @@ def _mode_env(base: str, mode: str, *, required: bool = False) -> str:
 
 
 SUPABASE_MODE = _opt("SUPABASE_MODE") or _opt("ENV")
+_IS_TEST = _opt("ENV").upper() == "TEST"
 SUPABASE_URL = _mode_env("SUPABASE_URL", SUPABASE_MODE, required=True)
 SUPABASE_KEY = _mode_env("SUPABASE_KEY", SUPABASE_MODE, required=True)
 LINE_CHANNEL_ACCESS_TOKEN = _opt("LINE_CHANNEL_ACCESS_TOKEN")
@@ -724,7 +725,7 @@ def fetch_and_cache_financials() -> None:
     """J-Quantsから財務データを取得してSupabaseにキャッシュ（8:00 cron）"""
     logger.info("=== 財務データ取得開始 ===")
     now_jst = datetime.now(JST)
-    if now_jst.weekday() >= 5:
+    if now_jst.weekday() >= 5 and not _IS_TEST:
         logger.info("土日のためスキップ")
         return
 
@@ -1081,7 +1082,7 @@ def run_alert() -> None:
     logger.info("=== 日経225急落チェック開始 ===")
     now_jst = datetime.now(JST)
 
-    if now_jst.weekday() >= 5:
+    if now_jst.weekday() >= 5 and not _IS_TEST:
         logger.info("土日のためスキップ")
         return
 

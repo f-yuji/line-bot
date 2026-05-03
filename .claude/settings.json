@@ -12,7 +12,8 @@
       "Bash(mkdir -p c:/Users/f-yuj/dev/line_bot/dev_launcher)",
       "Bash(mkdir -p c:/Users/f-yuj/dev/line_bot/.vscode)",
       "Bash(git add *)",
-      "Bash(git commit *)"
+      "Bash(git commit *)",
+      "Bash(xargs ls *)"
     ]
   }
 }

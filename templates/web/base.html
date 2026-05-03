@@ -17,7 +17,14 @@
     <div class="logo-text">投資補助ツール<small>REBOUND TERMINAL</small></div>
   </div>
 
+  <div class="sidebar-overlay" id="sidebarOverlay" onclick="closeSidebar()"></div>
+
   <div class="topbar">
+    <button class="hamburger" onclick="toggleSidebar()" aria-label="メニュー">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/>
+      </svg>
+    </button>
     <div class="topbar-title">
       <span class="crumb">Markets</span>
       <span class="crumb-sep">/</span>
@@ -102,5 +109,19 @@
   </div>
 
 </div>
+<script>
+function toggleSidebar() {
+  document.querySelector('.sidebar').classList.toggle('open');
+  document.getElementById('sidebarOverlay').classList.toggle('open');
+}
+function closeSidebar() {
+  document.querySelector('.sidebar').classList.remove('open');
+  document.getElementById('sidebarOverlay').classList.remove('open');
+}
+// Close sidebar on nav link tap (mobile)
+document.querySelectorAll('.side-link').forEach(function(el) {
+  el.addEventListener('click', closeSidebar);
+});
+</script>
 </body>
 </html>
