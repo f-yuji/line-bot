@@ -162,16 +162,20 @@ def _get_score(item: dict, closes: "pd.Series", volumes: "pd.Series", cfg: dict)
         from nikkei_alert import get_valuation_metrics, _load_financials_cache as _load_fin
         val = get_valuation_metrics(item.get("code", "")) or {}
         fin = _load_fin().get(item.get("code", ""), {})
-        return calculate_score(
+        score = calculate_score(
             item, closes, volumes, cfg,
             per=val.get("per"),
             pbr=val.get("pbr"),
             div_yield_pct=val.get("dividend_yield_pct"),
             is_deficit=fin.get("is_deficit"),
         )
+        score["per"] = val.get("per")
+        score["pbr"] = val.get("pbr")
+        score["div_yield_pct"] = val.get("dividend_yield_pct")
+        return score
     except Exception as e:
         logger.debug("スコア計算エラー: %s %s", item.get("code"), e)
-    return {"total": 0.0, "technical": 0.0, "fundamental": 0.0, "market": 0.0, "label": "-"}
+    return {"total": 0.0, "technical": 0.0, "fundamental": 0.0, "market": 0.0, "label": "-", "per": None, "pbr": None, "div_yield_pct": None}
 
 
 # ─── LINE 通知 ───
@@ -470,6 +474,7 @@ def run_monitor() -> None:
             " [悪材料]" if bad_news else "",
         )
 
+        closes_list = [round(float(v), 2) for v in closes.tail(10).tolist()]
         update_data: dict = {
             "last_checked_at": now_utc.isoformat(),
             "updated_at": now_utc.isoformat(),
@@ -479,6 +484,10 @@ def run_monitor() -> None:
             "score_market": score_data["market"],
             "score_label": score_data["label"],
             "has_bad_news": bad_news,
+            "price_history": closes_list,
+            "per": score_data.get("per"),
+            "pbr": score_data.get("pbr"),
+            "div_yield_pct": score_data.get("div_yield_pct"),
         }
 
         if signals and not bad_news:

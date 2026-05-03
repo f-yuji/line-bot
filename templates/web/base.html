@@ -113,7 +113,141 @@
   </div>
 
 </div>
+{# ── 共通銘柄詳細モーダル ── #}
+<div class="modal-overlay" id="detailOverlay" style="display:none" onclick="if(event.target===this)closeDetail()">
+  <div class="modal" style="width:560px">
+    <div class="modal-head">
+      <div class="title">
+        <span class="ticker" id="m-code"></span>
+        <span class="name" id="m-name"></span>
+      </div>
+      <div style="display:flex;align-items:center;gap:8px">
+        <span id="m-status-badge"></span>
+        <button onclick="closeDetail()" style="background:transparent;border:none;color:var(--text-3);font-size:18px;cursor:pointer;line-height:1">×</button>
+      </div>
+    </div>
+    <div style="padding:14px 16px;overflow-y:auto;max-height:75vh">
+
+      <div id="m-bad-news" style="display:none;background:rgba(255,59,59,.1);border:1px solid rgba(255,59,59,.3);border-radius:4px;padding:8px 12px;margin-bottom:10px;font-size:11px;color:var(--up)">
+        ⚠ 悪材料が検出されています。通知はスキップされています。
+      </div>
+
+      <div class="score-block" id="m-score-block">
+        <div class="h">
+          <span class="t">スコア</span>
+          <span class="n" id="m-score-total"></span>
+        </div>
+        <div id="m-score-label" style="font-size:10px;color:var(--text-3);margin-bottom:6px"></div>
+        <div class="ring-row">
+          <div class="item"><div class="lab">テクニカル</div><div class="val" id="m-score-tech"></div></div>
+          <div class="item"><div class="lab">ファンダ</div><div class="val" id="m-score-fund"></div></div>
+          <div class="item"><div class="lab">地合い</div><div class="val" id="m-score-mkt"></div></div>
+        </div>
+      </div>
+
+      <div class="kv-grid" style="margin-top:10px;border-top:none">
+        <div class="kv"><span class="k">セクター</span><span class="v" id="m-sector"></span></div>
+        <div class="kv"><span class="k">急落日</span><span class="v" id="m-drop-date"></span></div>
+        <div class="kv"><span class="k">急落率</span><span class="v" id="m-drop-pct"></span></div>
+        <div class="kv"><span class="k">急落時株価</span><span class="v" id="m-price-drop"></span></div>
+        <div class="kv"><span class="k">日経乖離</span><span class="v" id="m-nikkei-gap"></span></div>
+        <div class="kv"><span class="k">最終確認</span><span class="v" id="m-last-checked"></span></div>
+        <div class="kv"><span class="k">PER</span><span class="v" id="m-per"></span></div>
+        <div class="kv"><span class="k">PBR</span><span class="v" id="m-pbr"></span></div>
+        <div class="kv"><span class="k">配当利回り</span><span class="v" id="m-div"></span></div>
+        <div class="kv" style="grid-column:span 2"></div>
+      </div>
+
+      <div style="margin-top:12px">
+        <div style="font-size:10px;color:var(--text-3);letter-spacing:.06em;text-transform:uppercase;margin-bottom:6px">直近推移</div>
+        <div id="m-chart" style="background:var(--bg-0);border:1px solid var(--line);border-radius:4px;padding:8px"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
 <script>
+const _BADGE_MAP = {
+  watching: ['watching','WATCH'],
+  rebound_signal: ['signal','SIGNAL'],
+  notified: ['notified','NOTIFIED'],
+  closed: ['closed','CLOSED']
+};
+
+function _fmt(v, digits, suffix) {
+  if (v == null) return '—';
+  digits = digits ?? 1; suffix = suffix ?? '%';
+  return (v > 0 ? '+' : '') + v.toFixed(digits) + suffix;
+}
+function _fmtAbs(v, digits, suffix) {
+  if (v == null) return '—';
+  digits = digits ?? 1; suffix = suffix ?? 'x';
+  return v.toFixed(digits) + suffix;
+}
+function _colorCls(v) {
+  return v == null ? '' : (v > 0 ? 'up-text' : (v < 0 ? 'down-text' : 'muted'));
+}
+
+function _renderSpark(prices, isUp) {
+  if (!prices || prices.length < 2) return '<span class="muted" style="font-size:11px">データなし</span>';
+  const W = 320, H = 60;
+  const mn = Math.min(...prices), mx = Math.max(...prices);
+  const rng = mx !== mn ? mx - mn : 1;
+  const n = prices.length;
+  const pts = prices.map((p, i) =>
+    (i * W / (n-1)).toFixed(1) + ',' + ((H-4) - (p-mn)/rng*(H-8)).toFixed(1)
+  ).join(' ');
+  return `<svg class="spark-cell ${isUp?'up':'down'}" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" style="width:100%;height:${H}px;display:block"><polyline class="pl" points="${pts}" fill="none"/></svg>`;
+}
+
+function openDetail(r) {
+  if (!r) return;
+  document.getElementById('m-code').textContent = r.code || '';
+  document.getElementById('m-name').textContent = r.name || '';
+  const bm = _BADGE_MAP[r.status] || ['watching','WATCH'];
+  document.getElementById('m-status-badge').innerHTML = `<span class="badge ${bm[0]}">${bm[1]}</span>`;
+
+  document.getElementById('m-bad-news').style.display = r.has_bad_news ? '' : 'none';
+
+  const hasScore = r.score != null;
+  document.getElementById('m-score-block').style.display = hasScore ? '' : 'none';
+  if (hasScore) {
+    document.getElementById('m-score-total').textContent = Math.round(r.score) + '点';
+    document.getElementById('m-score-label').textContent = r.score_label || '';
+    document.getElementById('m-score-tech').textContent = r.score_technical != null ? Math.round(r.score_technical) : '—';
+    document.getElementById('m-score-fund').textContent = r.score_fundamental != null ? Math.round(r.score_fundamental) : '—';
+    document.getElementById('m-score-mkt').textContent = r.score_market != null ? Math.round(r.score_market) : '—';
+  }
+
+  document.getElementById('m-sector').textContent = r.sector || '—';
+  document.getElementById('m-drop-date').textContent = r.drop_detected_at ? r.drop_detected_at.slice(0,10) : '—';
+
+  const dpEl = document.getElementById('m-drop-pct');
+  dpEl.textContent = _fmt(r.drop_pct); dpEl.className = 'v ' + _colorCls(r.drop_pct);
+
+  document.getElementById('m-price-drop').textContent = r.price_at_drop != null ? Math.round(r.price_at_drop).toLocaleString() + '円' : '—';
+
+  const gap = (r.drop_pct != null && r.nikkei_pct != null) ? r.drop_pct - r.nikkei_pct : null;
+  const gEl = document.getElementById('m-nikkei-gap');
+  gEl.textContent = _fmt(gap); gEl.className = 'v ' + _colorCls(gap);
+
+  document.getElementById('m-last-checked').textContent = r.last_checked_at ? r.last_checked_at.slice(0,10) : '—';
+  document.getElementById('m-per').textContent = r.per != null ? r.per.toFixed(1) + '倍' : '—';
+  document.getElementById('m-pbr').textContent = r.pbr != null ? r.pbr.toFixed(2) + '倍' : '—';
+  document.getElementById('m-div').textContent = r.div_yield_pct != null ? r.div_yield_pct.toFixed(2) + '%' : '—';
+
+  const isUp = ['rebound_signal','notified'].includes(r.status);
+  document.getElementById('m-chart').innerHTML = _renderSpark(r.price_history, isUp);
+
+  document.getElementById('detailOverlay').style.display = 'grid';
+}
+
+function closeDetail() {
+  document.getElementById('detailOverlay').style.display = 'none';
+}
+
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeDetail(); });
+
 function toggleSidebar() {
   document.querySelector('.sidebar').classList.toggle('open');
   document.getElementById('sidebarOverlay').classList.toggle('open');

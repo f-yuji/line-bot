@@ -2,31 +2,30 @@
 {% block title %}ダッシュボード{% endblock %}
 {% block page_label %}ダッシュボード{% endblock %}
 
-{% macro spark(seed, trend) -%}
-  {%- set pts = [] -%}
-  {%- for i in range(30) -%}
-    {%- set x = i * 80 / 29 -%}
-    {%- set base = 11 + (((seed|int) * 7 + i * 13) % 11) - 5 -%}
-    {%- set y = 11 + base -%}
-    {%- if pts.append(x|round(1)|string ~ "," ~ y|round(1)|string) %}{% endif -%}
-  {%- endfor -%}
-  <svg class="spark-cell {{ trend }}" viewBox="0 0 80 22" preserveAspectRatio="none" style="width:80px;height:22px">
-    <polyline class="pl" points="{{ pts|join(' ') }}" fill="none"/>
-  </svg>
+{% macro spark(prices, trend, w=80, h=22) -%}
+  {%- if prices and prices|length >= 2 -%}
+    {%- set mn = prices|min -%}
+    {%- set mx = prices|max -%}
+    {%- set rng = (mx - mn) if mx != mn else 1 -%}
+    {%- set n = prices|length -%}
+    {%- set pts = [] -%}
+    {%- for p in prices -%}
+      {%- set x = (loop.index0 * w / (n - 1))|round(1) -%}
+      {%- set y = ((h - 2) - (p - mn) / rng * (h - 4))|round(1) -%}
+      {%- if pts.append(x|string ~ "," ~ y|string) %}{% endif -%}
+    {%- endfor -%}
+    <svg class="spark-cell {{ trend }}" viewBox="0 0 {{ w }} {{ h }}" preserveAspectRatio="none" style="width:{{ w }}px;height:{{ h }}px">
+      <polyline class="pl" points="{{ pts|join(' ') }}" fill="none"/>
+    </svg>
+  {%- else -%}
+    <span class="muted" style="font-size:10px">—</span>
+  {%- endif -%}
 {%- endmacro %}
 
 {% macro status_badge(s) -%}
   {%- set m = {'watching':['watching','WATCH'],'rebound_signal':['signal','SIGNAL'],'notified':['notified','NOTIFIED'],'closed':['closed','CLOSED']} -%}
   {%- set v = m.get(s, ['watching','WATCH']) -%}
   <span class="badge {{ v[0] }}">{{ v[1] }}</span>
-{%- endmacro %}
-
-{% macro score_bar(score) -%}
-  {%- set cls = 'high' if score >= 80 else ('mid' if score >= 65 else 'low') -%}
-  <div class="score-bar {{ cls }}">
-    <div class="track"><div class="fill" style="width:{{ score }}%"></div></div>
-    <span class="num">{{ score }}</span>
-  </div>
 {%- endmacro %}
 
 {% macro delta(v, suffix='%') -%}
@@ -43,7 +42,6 @@
   <h1 class="page-title">ダッシュボード<small>OVERVIEW · {{ now.strftime("%Y-%m-%d") if now else "" }}</small></h1>
   <div class="page-actions">
     <a class="btn ghost sm" href="/web/dashboard">更新</a>
-    <a class="btn primary sm" href="/web/signals">シグナル一覧</a>
   </div>
 </div>
 
@@ -64,39 +62,94 @@
     <div class="sub muted">NOTIFIED</div>
   </div>
   <div class="stat-tile">
-    <div class="label">クローズ</div>
-    <div class="value">{{ stats.closed if stats and stats.closed is defined else 0 }}</div>
-    <div class="sub muted">CLOSED</div>
+    <div class="label">合計</div>
+    <div class="value">{{ (stats.watching + stats.rebound_signal + stats.notified) if stats else 0 }}</div>
+    <div class="sub muted">TOTAL</div>
   </div>
 </div>
 
-<div class="panel">
-  <div class="panel-head">
-    <div class="panel-title">監視中 / シグナル発生銘柄<span class="tag">最新50件</span></div>
-    <a class="btn sm" href="/web/watchlist">全件 →</a>
-  </div>
+{# ── シグナル発生セクション ── #}
+{% if signal_rows %}
+<div class="section-h" style="color:var(--accent)">
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:12px;height:12px"><polyline points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+  リバウンドシグナル
+</div>
+<div class="panel" style="border-color:var(--accent-dim)">
   <div class="table-wrap">
     <table class="tbl">
       <thead>
         <tr>
           <th>コード</th><th>名称</th><th>急落日</th>
           <th class="right">急落率</th><th class="right">急落時株価</th>
-          <th class="right">日経%</th><th>セクター</th>
-          <th class="center">推移</th><th>ステータス</th>
+          <th class="right">日経乖離</th><th>セクター</th>
+          <th class="center">スコア</th><th class="center">推移</th><th>ステータス</th>
         </tr>
       </thead>
       <tbody>
-        {% for r in rows %}
-        <tr class="{{ 'signal-row' if r.status == 'rebound_signal' else '' }}">
+        {% for r in signal_rows %}
+        <tr class="signal-row" style="cursor:pointer" data-idx="{{ loop.index0 }}" data-group="signal">
           <td class="code">{{ r.code }}</td>
           <td class="name">{{ r.name or "" }}</td>
           <td class="muted num">{{ r.drop_detected_at[:10] if r.drop_detected_at else "" }}</td>
           <td class="right num">{{ delta(r.drop_pct) }}</td>
           <td class="right num">{{ "%.0f"|format(r.price_at_drop) if r.price_at_drop is not none else "" }}</td>
-          <td class="right num">{{ delta(r.nikkei_pct) }}</td>
+          <td class="right num">{{ delta((r.drop_pct - r.nikkei_pct) if r.drop_pct is not none and r.nikkei_pct is not none else none) }}</td>
           <td class="muted">{{ r.sector or "" }}</td>
-          <td class="center">{{ spark(r.code, 'up' if r.status in ['rebound_signal','notified'] else 'down') }}</td>
+          <td class="center">
+            {% if r.score is not none %}
+              {%- set cls = 'high' if r.score >= 80 else ('mid' if r.score >= 65 else 'low') -%}
+              <div class="score-bar {{ cls }}">
+                <div class="track"><div class="fill" style="width:{{ r.score }}%"></div></div>
+                <span class="num">{{ "%.0f"|format(r.score) }}</span>
+              </div>
+            {% else %}<span class="muted">—</span>{% endif %}
+          </td>
+          <td class="center">{{ spark(r.price_history, 'up') }}</td>
           <td>{{ status_badge(r.status) }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
+
+{# ── 監視中セクション ── #}
+<div class="section-h" style="margin-top:{% if signal_rows %}16px{% else %}0{% endif %}">
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:12px;height:12px"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>
+  監視中
+</div>
+<div class="panel">
+  <div class="table-wrap">
+    <table class="tbl">
+      <thead>
+        <tr>
+          <th>コード</th><th>名称</th><th>急落日</th>
+          <th class="right">急落率</th><th class="right">急落時株価</th>
+          <th class="right">日経乖離</th><th>セクター</th>
+          <th class="center">スコア</th><th class="center">推移</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in watching_rows %}
+        <tr style="cursor:pointer" data-idx="{{ loop.index0 }}" data-group="watching">
+          <td class="code">{{ r.code }}</td>
+          <td class="name">{{ r.name or "" }}</td>
+          <td class="muted num">{{ r.drop_detected_at[:10] if r.drop_detected_at else "" }}</td>
+          <td class="right num">{{ delta(r.drop_pct) }}</td>
+          <td class="right num">{{ "%.0f"|format(r.price_at_drop) if r.price_at_drop is not none else "" }}</td>
+          <td class="right num">{{ delta((r.drop_pct - r.nikkei_pct) if r.drop_pct is not none and r.nikkei_pct is not none else none) }}</td>
+          <td class="muted">{{ r.sector or "" }}</td>
+          <td class="center">
+            {% if r.score is not none %}
+              {%- set cls = 'high' if r.score >= 80 else ('mid' if r.score >= 65 else 'low') -%}
+              <div class="score-bar {{ cls }}">
+                <div class="track"><div class="fill" style="width:{{ r.score }}%"></div></div>
+                <span class="num">{{ "%.0f"|format(r.score) }}</span>
+              </div>
+            {% else %}<span class="muted">—</span>{% endif %}
+          </td>
+          <td class="center">{{ spark(r.price_history, 'down') }}</td>
         </tr>
         {% else %}
         <tr><td colspan="9" class="center muted" style="padding:28px">データなし</td></tr>
@@ -105,4 +158,17 @@
     </table>
   </div>
 </div>
+
+<script>
+const _SIGNAL_ROWS = {{ signal_rows | tojson }};
+const _WATCHING_ROWS = {{ watching_rows | tojson }};
+
+document.querySelectorAll('.tbl tbody tr[data-idx]').forEach(function(tr) {
+  tr.addEventListener('click', function() {
+    const idx = parseInt(this.dataset.idx);
+    const group = this.dataset.group;
+    openDetail(group === 'signal' ? _SIGNAL_ROWS[idx] : _WATCHING_ROWS[idx]);
+  });
+});
+</script>
 {% endblock %}

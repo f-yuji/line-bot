@@ -1731,20 +1731,27 @@ def web_dashboard():
             supabase.table("stock_drop_watchlist")
             .select("*")
             .neq("status", "closed")
-            .order("drop_detected_at", desc=True)
-            .limit(50)
+            .order("drop_pct", desc=False)
+            .limit(100)
             .execute()
             .data or []
         )
     except Exception as e:
         logger.error("dashboard error: %s", e)
         rows = []
-    stats = {"watching": 0, "rebound_signal": 0, "notified": 0}
-    for r in rows:
-        s = r.get("status", "")
-        if s in stats:
-            stats[s] += 1
-    return render_template("web/dashboard.html", rows=rows, stats=stats)
+    signal_rows = [r for r in rows if r.get("status") in ("rebound_signal", "notified")]
+    watching_rows = [r for r in rows if r.get("status") == "watching"]
+    stats = {
+        "watching": len(watching_rows),
+        "rebound_signal": len([r for r in rows if r.get("status") == "rebound_signal"]),
+        "notified": len([r for r in rows if r.get("status") == "notified"]),
+    }
+    return render_template("web/dashboard.html",
+        rows=rows,
+        signal_rows=signal_rows,
+        watching_rows=watching_rows,
+        stats=stats,
+    )
 
 
 @app.route("/web/watchlist")
@@ -1752,7 +1759,7 @@ def web_dashboard():
 def web_watchlist():
     status_filter = request.args.get("status", "all")
     try:
-        q = supabase.table("stock_drop_watchlist").select("*").order("drop_detected_at", desc=True)
+        q = supabase.table("stock_drop_watchlist").select("*").order("drop_pct", desc=False)
         if status_filter != "all":
             q = q.eq("status", status_filter)
         rows = q.limit(200).execute().data or []

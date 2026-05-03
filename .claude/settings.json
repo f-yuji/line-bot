@@ -13,7 +13,8 @@
       "Bash(mkdir -p c:/Users/f-yuj/dev/line_bot/.vscode)",
       "Bash(git add *)",
       "Bash(git commit *)",
-      "Bash(xargs ls *)"
+      "Bash(xargs ls *)",
+      "Bash(python -c \"from flask import Flask; app = Flask\\(__name__\\); print\\('tojson' in app.jinja_env.filters\\)\")"
     ]
   }
 }

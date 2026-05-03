@@ -37,19 +37,20 @@
         <tr>
           <th>コード</th><th>名称</th><th>急落日</th>
           <th class="right">急落率</th><th class="right">急落時株価</th>
-          <th class="right">日経%</th><th>セクター</th>
+          <th class="right">日経乖離</th><th>セクター</th>
           <th>ステータス</th><th>最終確認</th><th></th>
         </tr>
       </thead>
       <tbody>
         {% for r in rows %}
-        <tr class="{{ 'signal-row' if r.status == 'rebound_signal' else '' }}">
+        <tr class="{{ 'signal-row' if r.status == 'rebound_signal' else '' }}"
+            style="cursor:pointer" data-idx="{{ loop.index0 }}">
           <td class="code">{{ r.code }}</td>
           <td class="name">{{ r.name or "" }}</td>
           <td class="muted num">{{ r.drop_detected_at[:10] if r.drop_detected_at else "" }}</td>
           <td class="right num">{{ delta(r.drop_pct) }}</td>
           <td class="right num">{{ "%.0f"|format(r.price_at_drop) if r.price_at_drop is not none else "" }}</td>
-          <td class="right num">{{ delta(r.nikkei_pct) }}</td>
+          <td class="right num">{{ delta((r.drop_pct - r.nikkei_pct) if r.drop_pct is not none and r.nikkei_pct is not none else none) }}</td>
           <td class="muted">{{ r.sector or "" }}</td>
           <td>{{ status_badge(r.status) }}</td>
           <td class="muted num">{{ r.last_checked_at[:10] if r.last_checked_at else "" }}</td>
@@ -68,4 +69,13 @@
     </table>
   </div>
 </div>
+
+<script>
+const ROWS = {{ rows | tojson }};
+document.querySelector('.tbl tbody').addEventListener('click', function(e) {
+  if (e.target.closest('button, form')) return;
+  const tr = e.target.closest('tr[data-idx]');
+  if (tr) openDetail(ROWS[parseInt(tr.dataset.idx)]);
+});
+</script>
 {% endblock %}

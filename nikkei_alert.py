@@ -560,7 +560,7 @@ def save_to_watchlist(stock: dict, nikkei_pct: float | None) -> bool:
             supabase.table("stock_drop_watchlist")
             .select("id")
             .eq("code", code)
-            .in_("status", ["watching", "rebound_signal"])
+            .in_("status", ["watching", "rebound_signal", "notified"])
             .execute()
         )
         if res.data:
