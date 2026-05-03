@@ -733,7 +733,23 @@ def fetch_and_cache_financials() -> None:
         logger.error("JQUANTS_API_KEY未設定。中断")
         return
 
-    headers = {"x-api-key": JQUANTS_API_KEY}
+    # refresh token → idToken → Bearer（prime_stocks.py と同方式）
+    try:
+        _token_res = _requests.post(
+            "https://api.jquants.com/v2/token/auth_refresh",
+            params={"refreshtoken": JQUANTS_API_KEY},
+            timeout=15,
+        )
+        id_token = _token_res.json().get("idToken") if _token_res.status_code == 200 else None
+    except Exception as _te:
+        logger.error("J-Quants idToken取得失敗: %s", _te)
+        id_token = None
+
+    if not id_token:
+        logger.error("J-Quants idToken取得失敗。中断")
+        return
+
+    headers = {"Authorization": f"Bearer {id_token}"}
     today = now_jst.date().isoformat()
 
     # 銘柄ごとに最新財務サマリーを取得（赤字判定に使用）

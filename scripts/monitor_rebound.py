@@ -91,11 +91,13 @@ def _biz_days(from_dt: datetime, to_dt: datetime) -> int:
     return days
 
 
-def _fetch_history(code: str) -> "tuple[pd.Series, pd.Series] | None":
+def _fetch_history(code: str, market: str = "") -> "tuple[pd.Series, pd.Series] | None":
     if not HAS_YFINANCE:
         return None
+    # US株（ダウ等）はティッカーそのまま、日本株は .T を付加
+    ticker = code if market == "dow" else f"{code}.T"
     try:
-        hist = yf.Ticker(f"{code}.T").history(period="3mo", interval="1d", auto_adjust=True)
+        hist = yf.Ticker(ticker).history(period="3mo", interval="1d", auto_adjust=True)
         if len(hist) < 10:
             logger.warning("データ不足: %s (%d件)", code, len(hist))
             return None
@@ -226,13 +228,12 @@ def _resolve_plan(user: dict, now_utc: datetime) -> str:
 def _eligible_users() -> list[dict]:
     try:
         res = supabase.table("users").select(
-            "user_id, plan, trial_started_at, trial_extended_until, membership_status, active, drop_alert_enabled"
+            "user_id, plan, trial_started_at, trial_extended_until, membership_status, active"
         ).execute()
         now_utc = datetime.now(timezone.utc)
         return [
             u for u in (res.data or [])
             if u.get("active")
-            and u.get("drop_alert_enabled")
             and _resolve_plan(u, now_utc) == "paid"
         ]
     except Exception as e:
@@ -316,7 +317,7 @@ def _manage_virtual_trades(cfg: dict, now_utc: datetime) -> None:
 
     for trade in open_trades:
         code = trade.get("code", "")
-        hist = _fetch_history(code)
+        hist = _fetch_history(code, trade.get("market", ""))
         if hist is None:
             continue
         closes, _ = hist
@@ -407,7 +408,7 @@ def run_monitor() -> None:
 
         # rebound_signal → 通知失敗リトライ
         if status == "rebound_signal":
-            hist = _fetch_history(code)
+            hist = _fetch_history(code, item.get("market", ""))
             if hist:
                 closes, volumes = hist
                 current = float(closes.iloc[-1])
@@ -439,7 +440,7 @@ def run_monitor() -> None:
                 logger.warning("期限チェックエラー: %s %s", code, e)
 
         # 株価取得
-        hist = _fetch_history(code)
+        hist = _fetch_history(code, item.get("market", ""))
         if hist is None:
             supabase.table("stock_drop_watchlist").update({
                 "last_checked_at": now_utc.isoformat(),

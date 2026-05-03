@@ -1390,6 +1390,46 @@ table.tbl tbody tr.signal-row td:first-child {
 /* Bootstrap table-responsive compat */
 .table-responsive { overflow-x: auto; -webkit-overflow-scrolling: touch; }
 
+/* === Score legend (settings page) === */
+.score-legend {
+  margin-top: 12px;
+  border-top: 1px solid var(--line-dim);
+  padding-top: 10px;
+}
+.score-legend summary {
+  font-size: 10.5px;
+  color: var(--text-dim);
+  cursor: pointer;
+  user-select: none;
+  letter-spacing: 0.03em;
+  list-style: none;
+}
+.score-legend summary::before {
+  content: "▸ ";
+}
+details[open].score-legend summary::before {
+  content: "▾ ";
+}
+.score-legend-body {
+  margin-top: 10px;
+  font-size: 10.5px;
+  color: var(--text-dim);
+  line-height: 1.7;
+}
+.score-legend-body p {
+  margin: 8px 0 2px;
+}
+.score-legend-body p strong {
+  color: var(--text-3);
+}
+.score-legend-body ul {
+  margin: 0 0 4px;
+  padding-left: 16px;
+}
+.score-legend-body li {
+  margin: 1px 0;
+}
+
 /* === Mobile layout === */
 @media (max-width: 768px) {
   body { overflow: auto; }

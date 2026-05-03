@@ -15,7 +15,17 @@
       "Bash(git commit *)",
       "Bash(xargs ls *)",
       "Bash(python -c \"from flask import Flask; app = Flask\\(__name__\\); print\\('tojson' in app.jinja_env.filters\\)\")",
-      "Bash(python -c ' *)"
+      "Bash(python -c ' *)",
+      "Bash(python -m py_compile scripts/scan_dow.py)",
+      "Bash(python -m py_compile dow_stocks.py)",
+      "Bash(fly cron *)",
+      "Bash(fly machines *)",
+      "Bash(fly scheduled-machines *)",
+      "Bash(fly help *)",
+      "Bash(git -C \"c:\\\\Users\\\\f-yuj\\\\dev\\\\line_bot\" status --short)",
+      "Bash(Select-String -Path \"c:\\\\Users\\\\f-yuj\\\\dev\\\\line_bot\\\\templates\\\\web\\\\_styles.css\" -Pattern \"form-card|form-row|form-grid\")",
+      "Bash(Select-Object -First 5)",
+      "Bash(git -C \"c:\\\\Users\\\\f-yuj\\\\dev\\\\line_bot\" diff --stat HEAD)"
     ]
   }
 }

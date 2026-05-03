@@ -11,6 +11,7 @@ on:
     - cron: "0 3 * * 1-5"   # 12:00 JST
     - cron: "30 6 * * 1-5"  # 15:30 JST
     - cron: "0 9 * * 1-5"   # 18:00 JST
+    - cron: "30 21 * * 1-5" # 06:30 JST 翌日 (scan_dow: NY引け後)
 
 jobs:
   run-financials:
@@ -76,5 +77,22 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
           LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ENV: prod
+          SUPABASE_MODE: prod
+
+  scan-dow:
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '30 21 * * 1-5'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -r requirements.txt
+      - run: python scripts/scan_dow.py
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
           ENV: prod
           SUPABASE_MODE: prod

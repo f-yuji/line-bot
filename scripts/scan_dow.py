@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-TSE プライム全銘柄 急落検知・watchlist 保存・LINE 通知
-cron: 平日 15:40 JST
-実行: python scripts/scan_prime.py
+DJIA（ダウ平均）構成銘柄 急落検知・watchlist 保存・LINE 通知
+cron: 平日 6:30 JST（NY市場引け後）
+実行: python scripts/scan_dow.py
 """
 import logging
 import os
@@ -24,15 +24,13 @@ except ImportError:
 import requests as _req
 from supabase import create_client
 from settings_loader import get_settings
-from prime_stocks import get_prime_tickers
-from nikkei_alert import NIKKEI225, get_nikkei_change_pct
+from dow_stocks import DOW30
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
 
 JST = timezone(timedelta(hours=9))
 LINE_API_BASE = "https://api.line.me"
-BATCH_SIZE = 200
 
 
 def _opt(name: str) -> str:
@@ -45,6 +43,7 @@ _IS_TEST = _opt("ENV").upper() == "TEST"
 SUPABASE_URL = (_opt(f"SUPABASE_URL_{_mode_upper}") if _mode_upper else "") or _opt("SUPABASE_URL")
 SUPABASE_KEY = (_opt(f"SUPABASE_KEY_{_mode_upper}") if _mode_upper else "") or _opt("SUPABASE_KEY")
 LINE_TOKEN = _opt("LINE_CHANNEL_ACCESS_TOKEN")
+_WEB_URL = _opt("WEB_URL") or "https://line-bot-ukz5kw.fly.dev/web/dashboard"
 
 if not SUPABASE_URL or not SUPABASE_KEY:
     raise KeyError("SUPABASE_URL / SUPABASE_KEY が未設定です")
@@ -102,11 +101,22 @@ def _eligible_users() -> list[dict]:
         return []
 
 
-def _batch_day_change(codes: list[str]) -> dict[str, float]:
-    """コードリスト → {code: day_pct}。失敗銘柄は除外。"""
-    if not codes:
+def _get_dow_change_pct() -> float | None:
+    """ダウ平均の前日比（%）を取得"""
+    try:
+        hist = yf.Ticker("^DJI").history(period="5d", interval="1d", auto_adjust=True)
+        closes = hist["Close"].dropna()
+        if len(closes) >= 2:
+            return round((float(closes.iloc[-1]) - float(closes.iloc[-2])) / float(closes.iloc[-2]) * 100, 2)
+    except Exception as e:
+        logger.warning("ダウ平均取得失敗: %s", e)
+    return None
+
+
+def _batch_day_change(tickers: list[str]) -> dict[str, float]:
+    """ティッカーリスト → {ticker: day_pct}"""
+    if not tickers:
         return {}
-    tickers = [f"{c}.T" for c in codes]
     result: dict[str, float] = {}
     try:
         data = yf.download(
@@ -118,69 +128,68 @@ def _batch_day_change(codes: list[str]) -> dict[str, float]:
             progress=False,
             threads=True,
         )
-        for code, ticker in zip(codes, tickers):
+        for ticker in tickers:
             try:
-                closes = (data["Close"].dropna() if len(tickers) == 1 else data[ticker]["Close"].dropna())
+                closes = (
+                    data["Close"].dropna()
+                    if len(tickers) == 1
+                    else data[ticker]["Close"].dropna()
+                )
                 if len(closes) >= 2:
                     prev = float(closes.iloc[-2])
                     cur = float(closes.iloc[-1])
                     if prev > 0:
-                        result[code] = round((cur - prev) / prev * 100, 2)
+                        result[ticker] = round((cur - prev) / prev * 100, 2)
             except Exception:
                 pass
     except Exception as e:
-        logger.warning("batch download エラー（batch %d): %s", len(codes), e)
+        logger.warning("batch download エラー: %s", e)
     return result
 
 
-def _save_to_watchlist(code: str, name: str, sector: str, drop_pct: float, nikkei_pct: float | None) -> bool:
+def _save_to_watchlist(
+    ticker: str, name: str, drop_pct: float, dow_pct: float | None, price: float | None
+) -> bool:
     try:
         existing = (
             supabase.table("stock_drop_watchlist")
             .select("id")
-            .eq("code", code)
-            .in_("status", ["watching", "rebound_signal"])
+            .eq("code", ticker)
+            .in_("status", ["watching", "rebound_signal", "notified"])
             .execute()
         )
         if existing.data:
             return False
 
         now = datetime.now(timezone.utc)
-        price = None
-        try:
-            hist = yf.Ticker(f"{code}.T").history(period="2d", auto_adjust=True)
-            closes = hist["Close"].dropna()
-            if len(closes) >= 1:
-                price = float(closes.iloc[-1])
-        except Exception:
-            pass
-
         supabase.table("stock_drop_watchlist").insert({
-            "code": code,
+            "code": ticker,
             "name": name,
-            "market": "prime",
-            "source_index": "prime",
+            "market": "dow",
+            "source_index": "dow",
             "drop_detected_at": now.isoformat(),
             "drop_pct": drop_pct,
             "price_at_drop": price,
-            "nikkei_pct": nikkei_pct,
-            "sector": sector or None,
+            "nikkei_pct": dow_pct,
+            "sector": None,
             "status": "watching",
             "last_checked_at": now.isoformat(),
             "updated_at": now.isoformat(),
         }).execute()
         return True
     except Exception as e:
-        logger.error("watchlist保存エラー: code=%s %s", code, e)
+        logger.error("watchlist保存エラー: ticker=%s %s", ticker, e)
         return False
 
 
 def run_scan() -> None:
-    logger.info("=== TSEプライム急落スキャン開始 ===")
+    logger.info("=== ダウ急落スキャン開始 ===")
     now_jst = datetime.now(JST)
 
-    if now_jst.weekday() >= 5 and not _IS_TEST:
-        logger.info("土日のためスキップ")
+    # NY市場は JST で月曜朝〜土曜朝に開くため、土曜朝の実行は許可
+    # 日曜は確実に休場
+    if now_jst.weekday() == 6 and not _IS_TEST:
+        logger.info("日曜のためスキップ")
         return
 
     if not HAS_YFINANCE:
@@ -191,43 +200,36 @@ def run_scan() -> None:
     drop_list_thr = float(cfg.get("drop_list_threshold", -2.0))
     alert_thr = float(cfg.get("alert_threshold", -9.0))
 
-    nikkei_pct = get_nikkei_change_pct()
+    dow_pct = _get_dow_change_pct()
+    logger.info("ダウ平均: %s%%", f"{dow_pct:+.2f}" if dow_pct is not None else "取得失敗")
 
-    # 月曜日はキャッシュを強制更新
-    force_refresh = (now_jst.weekday() == 0)
-    stocks = get_prime_tickers(supabase, force_refresh=force_refresh)
-
-    # Nikkei225 と重複するコードは nikkei_alert.py が処理済みのためスキップ
-    nikkei_codes = set(NIKKEI225.keys())
-    prime_only = [s for s in stocks if s["code"] not in nikkei_codes]
-    logger.info("スキャン対象: %d銘柄（Nikkei225除く）", len(prime_only))
-
-    if not prime_only:
-        logger.info("スキャン対象なし")
-        return
-
-    codes = [s["code"] for s in prime_only]
-    code_to_info = {s["code"]: s for s in prime_only}
+    tickers = list(DOW30.keys())
+    day_changes = _batch_day_change(tickers)
+    logger.info("取得済み: %d銘柄", len(day_changes))
 
     drops: list[tuple[str, float]] = []
     alerts: list[tuple[str, float]] = []
 
-    for i in range(0, len(codes), BATCH_SIZE):
-        batch = codes[i:i + BATCH_SIZE]
-        logger.info("batch %d〜%d を処理中...", i, i + len(batch))
-        day_changes = _batch_day_change(batch)
-        for code, pct in day_changes.items():
-            if pct <= drop_list_thr:
-                drops.append((code, pct))
-                if pct <= alert_thr:
-                    alerts.append((code, pct))
+    for ticker, pct in day_changes.items():
+        if pct <= drop_list_thr:
+            drops.append((ticker, pct))
+            if pct <= alert_thr:
+                alerts.append((ticker, pct))
 
     logger.info("急落: %d銘柄 / 通知対象: %d銘柄", len(drops), len(alerts))
 
+    # 価格取得してwatchlist保存
     saved = 0
-    for code, pct in drops:
-        info = code_to_info.get(code, {})
-        if _save_to_watchlist(code, info.get("name", ""), info.get("sector", ""), pct, nikkei_pct):
+    for ticker, pct in drops:
+        price = None
+        try:
+            hist = yf.Ticker(ticker).history(period="2d", auto_adjust=True)
+            closes = hist["Close"].dropna()
+            if len(closes) >= 1:
+                price = float(closes.iloc[-1])
+        except Exception:
+            pass
+        if _save_to_watchlist(ticker, DOW30.get(ticker, ticker), pct, dow_pct, price):
             saved += 1
     logger.info("watchlist保存: %d銘柄", saved)
 
@@ -240,17 +242,17 @@ def run_scan() -> None:
         logger.info("=== スキャン完了（通知対象ユーザーなし）===")
         return
 
-    lines = ["【TSEプライム急落】"]
-    for code, pct in sorted(alerts, key=lambda x: x[1])[:10]:
-        info = code_to_info.get(code, {})
-        lines.append(f"・{code} {info.get('name', '')} {pct:+.1f}%")
-    if nikkei_pct is not None:
-        lines.append(f"\n日経平均: {nikkei_pct:+.1f}%")
+    lines = ["【ダウ急落】"]
+    for ticker, pct in sorted(alerts, key=lambda x: x[1])[:10]:
+        lines.append(f"・{ticker} {DOW30.get(ticker, ticker)} {pct:+.1f}%")
+    if dow_pct is not None:
+        lines.append(f"\nダウ平均: {dow_pct:+.1f}%")
+    lines.append(f"詳細 → {_WEB_URL}")
     msg = "\n".join(lines)
 
     sent = sum(1 for u in users if _push(u["user_id"], msg))
     logger.info("通知送信: %d人", sent)
-    logger.info("=== TSEプライム急落スキャン完了 ===")
+    logger.info("=== ダウ急落スキャン完了 ===")
 
 
 if __name__ == "__main__":

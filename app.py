@@ -271,7 +271,6 @@ def main_quick_reply() -> QuickReply:
         QuickReplyItem(action=MessageAction(label="急落株", text="急落株")),
         QuickReplyItem(action=MessageAction(label="補助金", text="補助金")),
         QuickReplyItem(action=MessageAction(label="使い方", text="使い方")),
-        QuickReplyItem(action=MessageAction(label="停止", text="停止")),
     ])
 
 
@@ -1128,8 +1127,6 @@ def handle_follow(event):
     )
 
 
-_STOP_WORDS = {"停止", "止めて", "停止して", "配信止めて", "もういい", "オフ"}
-_START_WORDS = {"開始", "スタート", "再開", "もう一回", "配信して", "オン", "はじめて", "始めて"}
 _GENRE_WORDS = {"ジャンル", "ジャンル変えたい", "ジャンル変える", "ジャンル設定", "ジャンル選びたい", "設定したい"}
 
 def normalize_user_text(text: str) -> str:
@@ -1172,14 +1169,10 @@ _MAIN_COMMANDS = {
     "解約",
     "プラン",
     "設定",
-    "急落通知オン",
-    "急落通知オフ",
 }
 
 _STRONG_COMMANDS = (
-    _STOP_WORDS
-    | _START_WORDS
-    | _GENRE_WORDS
+    _GENRE_WORDS
     | _STATUS_WORDS
     | _HELP_WORDS
     | _NEWS_TRIGGER_KW
@@ -1207,54 +1200,13 @@ def handle_message(event):
         except Exception:
             pass
 
-    active = user.get("active", True)
     genres = user.get("genres", [])
-    drop_alert_enabled = bool(user.get("drop_alert_enabled", False))
     qr = main_quick_reply()
 
     if text in _STRONG_COMMANDS and user.get("pending_action"):
         _clear_pending(user_id)
         user["pending_action"] = None
         user["pending_count"] = None
-
-    if text in _STOP_WORDS:
-        supabase.table("users").update({"active": False}).eq("user_id", user_id).execute()
-        clear_last_news_question_targets(user_id)
-        reply_text(event.reply_token, "配信を停止した", quick_reply=qr)
-        try:
-            supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
-        except Exception:
-            pass
-        return
-
-    if text in _START_WORDS:
-        supabase.table("users").update({"active": True}).eq("user_id", user_id).execute()
-        reply_text(event.reply_token, "配信再開した", quick_reply=qr)
-        try:
-            supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
-        except Exception:
-            pass
-        return
-
-    if text == "急落通知オン":
-        supabase.table("users").update({"drop_alert_enabled": True}).eq("user_id", user_id).execute()
-        user["drop_alert_enabled"] = True
-        reply_text(event.reply_token, "急落株通知をオンにした", quick_reply=qr)
-        try:
-            supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
-        except Exception:
-            pass
-        return
-
-    if text == "急落通知オフ":
-        supabase.table("users").update({"drop_alert_enabled": False}).eq("user_id", user_id).execute()
-        user["drop_alert_enabled"] = False
-        reply_text(event.reply_token, "急落株通知をオフにした", quick_reply=qr)
-        try:
-            supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
-        except Exception:
-            pass
-        return
 
     if text == "使い方":
         _help_text = (
@@ -1264,21 +1216,15 @@ def handle_message(event):
             "補助金 → 今使える制度を探す\n"
             "相場 → 市場の動きを見る\n"
             "急落株 → 急落録柄を見る\n"
-            "急落通知オン → 急落株通知を受け取る\n"
-            "急落通知オフ → 急落株通知を止める\n"
-            "停止 → 配信停止\n"
-            "再開 → 配信再開\n"
             "状態 → 設定確認\n\n"
             "――――――\n\n"
             "[ニュース活用]\n"
             "1詳しく → 記事を深掘り\n"
-            "「「ｏｏってなに？」 → 用語解説\n"
+            "「ｏｏってなに？」 → 用語解説\n"
             "今後どうなる？ → 追加質問OK\n\n"
             "――――――\n\n"
             "[今の状態]\n"
-            f"配信：{'オン' if active else 'オフ'}\n"
-            f"ジャンル：{format_genres(genres) if genres else '全ジャンル'}\n"
-            f"急落通知：{'オン' if drop_alert_enabled else 'オフ'}"
+            f"ジャンル：{format_genres(genres) if genres else '全ジャンル'}"
         )
         try:
             with ApiClient(configuration) as api_client:
@@ -1351,9 +1297,7 @@ def handle_message(event):
 
     if text in _STATUS_WORDS:
         genre_label = f"ジャンル: {format_genres(genres)}" if genres else "ジャンル: 未設定（全部配信）"
-        active_label = "配信：オン" if active else "配信：オフ"
-        drop_alert_label = "急落通知：オン" if drop_alert_enabled else "急落通知：オフ"
-        reply_text(event.reply_token, f"今こんな感じ\n\n{active_label}\n{genre_label}\n{drop_alert_label}", quick_reply=qr)
+        reply_text(event.reply_token, f"今こんな感じ\n\n{genre_label}", quick_reply=qr)
         try:
             supabase.table("users").update({"last_reply_time": now_dt.isoformat()}).eq("user_id", user_id).execute()
         except Exception:
@@ -1361,7 +1305,7 @@ def handle_message(event):
         return
 
     if _user_subsidy_state.get(user_id) == "await_prefecture":
-        _KNOWN_CMDS = {"急落株", "急落", "急落録柄", "相場", "補助金", "助成金", "ニュース", "停止", "配信停止", "都道府県変更", "業種変更"}
+        _KNOWN_CMDS = {"急落株", "急落", "急落録柄", "相場", "補助金", "助成金", "ニュース", "都道府県変更", "業種変更"}
         if text not in _KNOWN_CMDS:
             pref = normalize_prefecture(text)
             if pref:
@@ -1790,7 +1734,7 @@ def web_settings():
                     data[key] = int(request.form.get(key, default))
                 else:
                     data[key] = float(request.form.get(key, default))
-            supabase.table("strategy_settings").update(data).eq("user_id", "global").execute()
+            supabase.table("strategy_settings").upsert({**data, "user_id": "global"}).execute()
             _settings_loader._cache = None
             flash("設定を保存した", "success")
         except Exception as e:
