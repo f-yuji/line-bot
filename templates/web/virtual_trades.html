@@ -1,102 +1,137 @@
 {% extends "web/base.html" %}
 {% block title %}仮想売買{% endblock %}
+{% block page_label %}仮想売買{% endblock %}
+
+{% macro delta(v, suffix='%') -%}
+  {%- if v is none -%}<span class="muted">—</span>
+  {%- else -%}
+    {%- set cls = 'up-text' if v > 0 else ('down-text' if v < 0 else 'muted') -%}
+    {%- set sign = '+' if v > 0 else '' -%}
+    <span class="{{ cls }}" style="font-family:var(--font-mono)">{{ sign }}{{ "%.1f"|format(v) }}{{ suffix }}</span>
+  {%- endif -%}
+{%- endmacro %}
+
 {% block content %}
-<h5 class="mb-4">💹 仮想売買</h5>
+<div class="page-head">
+  <h1 class="page-title">仮想売買<small>VIRTUAL TRADING</small></h1>
+</div>
 
-<div class="row mb-4">
-  <div class="col-md-4 mb-3">
-    <div class="card p-3 text-center">
-      <div class="h2 text-info mb-1">{{ open_trades|length }}</div>
-      <div class="text-muted small">保有中</div>
-    </div>
+{# ── サマリー ── #}
+{% set win_rate = (win_count / closed_trades|length * 100) if closed_trades|length > 0 else none %}
+<div class="stat-grid">
+  <div class="stat-tile info">
+    <div class="label">保有中</div>
+    <div class="value">{{ open_trades|length }}</div>
+    <div class="sub muted">OPEN</div>
   </div>
-  <div class="col-md-4 mb-3">
-    <div class="card p-3 text-center">
-      <div class="h2 {% if total_pnl >= 0 %}text-success{% else %}text-danger{% endif %} mb-1">
-        {{ "{:+,.0f}".format(total_pnl) }}円
-      </div>
-      <div class="text-muted small">累計損益（決済済み）</div>
-    </div>
+  <div class="stat-tile {% if total_pnl >= 0 %}up{% else %}down{% endif %}">
+    <div class="label">累計損益</div>
+    <div class="value" style="font-size:18px">{{ "{:+,.0f}".format(total_pnl) }}円</div>
+    <div class="sub muted">TOTAL PnL</div>
   </div>
-  <div class="col-md-4 mb-3">
-    <div class="card p-3 text-center">
-      <div class="h2 text-warning mb-1">
-        {% if closed_trades|length > 0 %}
-          {{ win_count }} / {{ closed_trades|length }}
+  <div class="stat-tile accent">
+    <div class="label">勝率</div>
+    <div class="value">
+      {%- if win_rate is not none -%}{{ "%.0f"|format(win_rate) }}%{%- else -%}—{%- endif -%}
+    </div>
+    <div class="sub muted">{{ win_count }}勝 {{ (closed_trades|length - win_count) }}敗</div>
+  </div>
+  <div class="stat-tile">
+    <div class="label">決済済み</div>
+    <div class="value">{{ closed_trades|length }}</div>
+    <div class="sub muted">CLOSED</div>
+  </div>
+</div>
+
+{# ── 保有中ポジション ── #}
+<div class="section-h" style="margin-top:20px">
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:12px;height:12px"><polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/></svg>
+  保有中ポジション
+</div>
+<div class="panel">
+  <div class="table-wrap">
+    <table class="tbl">
+      <thead>
+        <tr>
+          <th>コード</th><th>名称</th><th>買い日</th>
+          <th class="right">買い値</th><th class="right">数量</th>
+          <th class="center">買いスコア</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for t in open_trades %}
+        <tr>
+          <td class="code">{{ t.code }}</td>
+          <td class="name">{{ t.name or "" }}</td>
+          <td class="muted num">{{ t.buy_date[:10] if t.buy_date else "" }}</td>
+          <td class="right num">{{ "{:,.0f}".format(t.buy_price) }}円</td>
+          <td class="right num">{{ t.quantity or 100 }}株</td>
+          <td class="center">
+            {% if t.buy_score is not none %}
+              {%- set cls = 'high' if t.buy_score >= 80 else ('mid' if t.buy_score >= 70 else 'low') -%}
+              <div class="score-bar {{ cls }}">
+                <div class="track"><div class="fill" style="width:{{ t.buy_score }}%"></div></div>
+                <span class="num">{{ "%.0f"|format(t.buy_score) }}</span>
+              </div>
+            {% else %}<span class="muted">—</span>{% endif %}
+          </td>
+        </tr>
         {% else %}
-          -
-        {% endif %}
-      </div>
-      <div class="text-muted small">勝敗（決済済み）</div>
-    </div>
+        <tr><td colspan="6" class="center muted" style="padding:28px">保有なし</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
   </div>
 </div>
 
-<h6 class="mb-2">保有中ポジション</h6>
-<div class="table-responsive mb-4">
-  <table class="table table-hover table-sm">
-    <thead class="text-muted small">
-      <tr>
-        <th>コード</th><th>名称</th><th>買い日</th><th>買い値</th><th>買いスコア</th>
-      </tr>
-    </thead>
-    <tbody class="small">
-      {% for t in open_trades %}
-      <tr>
-        <td>{{ t.code }}</td>
-        <td>{{ t.name or "" }}</td>
-        <td>{{ t.buy_date[:10] if t.buy_date else "" }}</td>
-        <td>{{ "{:,.0f}".format(t.buy_price) }}円</td>
-        <td>
-          {% if t.buy_score %}
-            <span class="badge {% if t.buy_score >= 80 %}bg-danger{% elif t.buy_score >= 70 %}bg-warning text-dark{% else %}bg-secondary{% endif %}">
-              {{ "{:.0f}".format(t.buy_score) }}
-            </span>
-          {% endif %}
-        </td>
-      </tr>
-      {% else %}
-      <tr><td colspan="5" class="text-center text-muted py-3">保有なし</td></tr>
-      {% endfor %}
-    </tbody>
-  </table>
+{# ── 決済済みトレード ── #}
+<div class="section-h" style="margin-top:16px">
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:12px;height:12px"><rect x="3" y="3" width="18" height="18" rx="2"/><polyline points="9 9 15 15"/><polyline points="15 9 9 15"/></svg>
+  決済済みトレード
+  <span class="muted" style="font-size:11px;margin-left:4px">最新100件</span>
 </div>
-
-<h6 class="mb-2">決済済みトレード（最新100件）</h6>
-<div class="table-responsive">
-  <table class="table table-hover table-sm">
-    <thead class="text-muted small">
-      <tr>
-        <th>コード</th><th>名称</th><th>買い日</th><th>決済日</th>
-        <th>買い値</th><th>売り値</th><th>損益</th><th>損益率</th><th>理由</th>
-      </tr>
-    </thead>
-    <tbody class="small">
-      {% for t in closed_trades %}
-      <tr>
-        <td>{{ t.code }}</td>
-        <td>{{ t.name or "" }}</td>
-        <td>{{ t.buy_date[:10] if t.buy_date else "" }}</td>
-        <td>{{ t.sell_date[:10] if t.sell_date else "" }}</td>
-        <td>{{ "{:,.0f}".format(t.buy_price) }}円</td>
-        <td>{{ "{:,.0f}".format(t.sell_price) if t.sell_price else "-" }}円</td>
-        <td class="{% if (t.profit_loss or 0) >= 0 %}text-success{% else %}text-danger{% endif %}">
-          {{ "{:+,.0f}".format(t.profit_loss) if t.profit_loss is not none else "-" }}円
-        </td>
-        <td class="{% if (t.profit_loss_pct or 0) >= 0 %}text-success{% else %}text-danger{% endif %}">
-          {{ "{:+.1f}%".format(t.profit_loss_pct) if t.profit_loss_pct is not none else "-" }}
-        </td>
-        <td>
-          {% set reason_map = {"take_profit": "利確", "stop_loss": "損切", "expired": "期限", "manual": "手動"} %}
-          <span class="badge {% if t.sell_reason == 'take_profit' %}bg-success{% elif t.sell_reason == 'stop_loss' %}bg-danger{% else %}bg-secondary{% endif %}">
-            {{ reason_map.get(t.sell_reason, t.sell_reason or "-") }}
-          </span>
-        </td>
-      </tr>
-      {% else %}
-      <tr><td colspan="9" class="text-center text-muted py-3">データなし</td></tr>
-      {% endfor %}
-    </tbody>
-  </table>
+<div class="panel">
+  <div class="table-wrap">
+    <table class="tbl">
+      <thead>
+        <tr>
+          <th>コード</th><th>名称</th><th>買い日</th><th>決済日</th>
+          <th class="right">買い値</th><th class="right">売り値</th>
+          <th class="right">損益</th><th class="right">損益率</th><th>理由</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for t in closed_trades %}
+        {% set pnl = t.profit_loss %}
+        {% set pnl_pct = t.profit_loss_pct %}
+        <tr>
+          <td class="code">{{ t.code }}</td>
+          <td class="name">{{ t.name or "" }}</td>
+          <td class="muted num">{{ t.buy_date[:10] if t.buy_date else "" }}</td>
+          <td class="muted num">{{ t.sell_date[:10] if t.sell_date else "" }}</td>
+          <td class="right num">{{ "{:,.0f}".format(t.buy_price) }}円</td>
+          <td class="right num">{{ "{:,.0f}".format(t.sell_price) if t.sell_price is not none else "—" }}円</td>
+          <td class="right num {% if (pnl or 0) >= 0 %}up-text{% else %}down-text{% endif %}">
+            {{ "{:+,.0f}".format(pnl) if pnl is not none else "—" }}円
+          </td>
+          <td class="right num">{{ delta(pnl_pct) }}</td>
+          <td>
+            {%- if t.sell_reason == 'take_profit' -%}
+              <span class="badge notified">利確</span>
+            {%- elif t.sell_reason == 'stop_loss' -%}
+              <span class="badge" style="color:#ff3b3b;border-color:rgba(255,59,59,.35);background:rgba(255,59,59,.08)">損切</span>
+            {%- elif t.sell_reason == 'expired' -%}
+              <span class="badge closed">期限</span>
+            {%- else -%}
+              <span class="badge closed">{{ t.sell_reason or "—" }}</span>
+            {%- endif -%}
+          </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="9" class="center muted" style="padding:28px">データなし</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
 </div>
 {% endblock %}
