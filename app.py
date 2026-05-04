@@ -1705,8 +1705,8 @@ def web_signals():
         rows = (
             supabase.table("stock_drop_watchlist")
             .select("*")
-            .in_("status", ["rebound_signal", "notified"])
-            .order("last_checked_at", desc=True)
+            .eq("status", "rebound_signal")
+            .order("drop_detected_at", desc=True)
             .limit(100)
             .execute()
             .data or []
