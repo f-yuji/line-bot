@@ -1759,6 +1759,30 @@ def web_virtual_trades():
     except Exception as e:
         logger.error("virtual_trades error: %s", e)
         open_trades, closed_trades = [], []
+
+    # 保有中の現在価格・含み損益を取得
+    try:
+        import yfinance as yf
+        for t in open_trades:
+            code = t.get("code", "")
+            market = t.get("market", "")
+            ticker = code if market == "dow" else f"{code}.T"
+            try:
+                hist = yf.Ticker(ticker).history(period="2d", auto_adjust=True)
+                if not hist.empty:
+                    current = float(hist["Close"].iloc[-1])
+                    buy = float(t.get("buy_price") or 0)
+                    qty = int(t.get("quantity") or 100)
+                    t["current_price"] = current
+                    t["unrealized_pct"] = (current - buy) / buy * 100 if buy > 0 else None
+                    t["unrealized_pnl"] = (current - buy) * qty if buy > 0 else None
+            except Exception:
+                t["current_price"] = None
+                t["unrealized_pct"] = None
+                t["unrealized_pnl"] = None
+    except ImportError:
+        pass
+
     total_pnl = sum(t.get("profit_loss") or 0 for t in closed_trades)
     win_count = sum(1 for t in closed_trades if (t.get("profit_loss") or 0) > 0)
     return render_template(

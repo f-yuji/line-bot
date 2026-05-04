@@ -287,6 +287,7 @@ def _create_virtual_trade(item: dict, price: float, score: float, now_utc: datet
             "watchlist_id": item.get("id"),
             "code": code,
             "name": item.get("name", ""),
+            "market": item.get("market", ""),
             "buy_price": price,
             "buy_date": now_utc.isoformat(),
             "quantity": 100,
