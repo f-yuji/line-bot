@@ -1657,11 +1657,11 @@ def web_dashboard():
     except Exception as e:
         logger.error("dashboard error: %s", e)
         rows = []
-    signal_rows = [r for r in rows if r.get("status") in ("rebound_signal", "notified")]
+    signal_rows = [r for r in rows if r.get("status") == "rebound_signal"]
     watching_rows = [r for r in rows if r.get("status") == "watching"]
     stats = {
         "watching": len(watching_rows),
-        "rebound_signal": len([r for r in rows if r.get("status") == "rebound_signal"]),
+        "rebound_signal": len(signal_rows),
         "notified": len([r for r in rows if r.get("status") == "notified"]),
     }
     return render_template("web/dashboard.html",

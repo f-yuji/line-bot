@@ -404,40 +404,24 @@ def run_monitor() -> None:
     for item in watchlist:
         code = item.get("code", "")
         item_id = item.get("id")
-        status = item.get("status", "watching")
+        prev_status = item.get("status", "watching")
 
-        # rebound_signal → 通知失敗リトライ
-        if status == "rebound_signal":
-            hist = _fetch_history(code, item.get("market", ""))
-            if hist:
-                closes, volumes = hist
-                current = float(closes.iloc[-1])
-                signals = check_rebound(item.get("price_at_drop"), closes, volumes, cfg)
-                if not signals:
-                    signals = ["リバウンドシグナル（継続）"]
-                score_data = _get_score(item, closes, volumes, cfg)
-                to_notify.append((item, signals, len(signals) >= 2, current, score_data))
-            else:
-                logger.warning("リトライ中の株価取得失敗: %s", code)
-            continue
-
-        # ── watching の処理 ──
-
-        # 監視期限チェック
-        drop_detected_at = item.get("drop_detected_at")
-        if drop_detected_at:
-            try:
-                drop_dt = datetime.fromisoformat(str(drop_detected_at).replace("Z", "+00:00"))
-                biz = _biz_days(drop_dt, now_utc)
-                if biz > watch_days_limit:
-                    supabase.table("stock_drop_watchlist").update({
-                        "status": "closed",
-                        "updated_at": now_utc.isoformat(),
-                    }).eq("id", item_id).execute()
-                    logger.info("監視終了（%d営業日経過）: %s", biz, code)
-                    continue
-            except Exception as e:
-                logger.warning("期限チェックエラー: %s %s", code, e)
+        # 監視期限チェック（watching のみ）
+        if prev_status == "watching":
+            drop_detected_at = item.get("drop_detected_at")
+            if drop_detected_at:
+                try:
+                    drop_dt = datetime.fromisoformat(str(drop_detected_at).replace("Z", "+00:00"))
+                    biz = _biz_days(drop_dt, now_utc)
+                    if biz > watch_days_limit:
+                        supabase.table("stock_drop_watchlist").update({
+                            "status": "closed",
+                            "updated_at": now_utc.isoformat(),
+                        }).eq("id", item_id).execute()
+                        logger.info("監視終了（%d営業日経過）: %s", biz, code)
+                        continue
+                except Exception as e:
+                    logger.warning("期限チェックエラー: %s %s", code, e)
 
         # 株価取得
         hist = _fetch_history(code, item.get("market", ""))
@@ -449,18 +433,39 @@ def run_monitor() -> None:
             continue
 
         closes, volumes = hist
+        if len(closes) < 2:
+            continue
+
         current = float(closes.iloc[-1])
+        prev_close = float(closes.iloc[-2])
 
-        # リバウンド条件チェック
-        signals = check_rebound(item.get("price_at_drop"), closes, volumes, cfg)
-        is_strong = len(signals) >= 2
+        # テクニカル指標
+        day_pct = (current - prev_close) / prev_close * 100 if prev_close > 0 else 0.0
+        price_at_drop = item.get("price_at_drop")
+        from_drop = (
+            (current - float(price_at_drop)) / float(price_at_drop) * 100
+            if price_at_drop and float(price_at_drop) > 0 else 0.0
+        )
+        volume_ratio = 0.0
+        if len(volumes) >= 21:
+            avg_vol = float(volumes.iloc[-21:-1].mean())
+            if avg_vol > 0:
+                volume_ratio = float(volumes.iloc[-1]) / avg_vol
 
-        # スコア計算
         score_data = _get_score(item, closes, volumes, cfg)
+        score = score_data["total"]
 
-        # 悪材料チェック（スコアが watch_score 以上の場合のみ API を叩く）
+        # 4条件 AND 判定
+        is_signal = (
+            day_pct >= float(cfg.get("daily_rebound_threshold", 3.0))
+            and from_drop >= float(cfg.get("drop_rebound_threshold", 5.0))
+            and volume_ratio >= float(cfg.get("volume_ratio_threshold", 1.5))
+            and score >= float(cfg.get("watch_score", 70.0))
+        )
+
+        # 悪材料チェック（シグナル候補のみ）
         bad_news = False
-        if signals and score_data["total"] >= float(cfg.get("watch_score", 70.0)):
+        if is_signal:
             try:
                 bad_news = has_bad_news(item)
                 if bad_news:
@@ -468,18 +473,27 @@ def run_monitor() -> None:
             except Exception as e:
                 logger.debug("悪材料チェックエラー: %s %s", code, e)
 
+        # 新しいステータス決定（状態上書き）
+        if is_signal and not bad_news:
+            new_status = "rebound_signal"
+        elif prev_status == "rebound_signal":
+            new_status = "watching"  # 条件外れ → 監視に戻す
+        else:
+            new_status = "watching"
+
         logger.info(
-            "チェック: %s signals=%d score=%.1f%s%s",
-            code, len(signals), score_data["total"],
-            f" [{', '.join(signals)}]" if signals else "",
+            "チェック: %s %s→%s day=%.1f%% drop=%.1f%% vol=%.1fx score=%.0f%s",
+            code, prev_status, new_status,
+            day_pct, from_drop, volume_ratio, score,
             " [悪材料]" if bad_news else "",
         )
 
         closes_list = [round(float(v), 2) for v in closes.tail(10).tolist()]
         update_data: dict = {
+            "status": new_status,
             "last_checked_at": now_utc.isoformat(),
             "updated_at": now_utc.isoformat(),
-            "score": score_data["total"],
+            "score": score,
             "score_technical": score_data["technical"],
             "score_fundamental": score_data["fundamental"],
             "score_market": score_data["market"],
@@ -491,25 +505,32 @@ def run_monitor() -> None:
             "div_yield_pct": score_data.get("div_yield_pct"),
         }
 
-        if signals and not bad_news:
-            update_data["status"] = "rebound_signal"
-            to_notify.append((item, signals, is_strong, current, score_data))
-
         try:
             supabase.table("stock_drop_watchlist").update(update_data).eq("id", item_id).execute()
         except Exception as e:
             logger.error("watchlist 更新エラー: %s %s", code, e)
 
-    logger.info("リバウンドシグナル: %d銘柄", len(to_notify))
+        # 未通知の rebound_signal のみ通知キューへ（通知失敗リトライも含む）
+        if new_status == "rebound_signal" and not item.get("rebound_notified_at"):
+            signals = [
+                f"前日比+{day_pct:.1f}%",
+                f"急落時+{from_drop:.1f}%",
+                f"出来高{volume_ratio:.1f}倍",
+                f"スコア{score:.0f}点",
+            ]
+            is_strong = score >= strong_thr
+            to_notify.append((item, signals, is_strong, current, score_data))
+
+    logger.info("新規シグナル: %d銘柄", len(to_notify))
+
+    _manage_virtual_trades(cfg, now_utc)
 
     if not to_notify:
-        logger.info("通知対象なし。仮想売買チェックへ")
-        _manage_virtual_trades(cfg, now_utc)
+        logger.info("通知対象なし。終了")
         return
 
     if not cfg.get("rebound_notify_enabled", True):
         logger.info("rebound_notify_enabled=False → LINE 通知スキップ")
-        _manage_virtual_trades(cfg, now_utc)
         return
 
     users = _eligible_users()
@@ -519,8 +540,8 @@ def run_monitor() -> None:
     sent = sum(1 for u in users if _push(u["user_id"], msg))
     logger.info("通知送信: %d銘柄まとめ → %d人", len(to_notify), sent)
 
-    for item, _, _, current, score_data in to_notify:
-        if sent > 0 or not users:
+    if sent > 0 or not users:
+        for item, _, _, current, score_data in to_notify:
             try:
                 supabase.table("stock_drop_watchlist").update({
                     "status": "notified",
@@ -530,11 +551,9 @@ def run_monitor() -> None:
             except Exception as e:
                 logger.error("notified 更新エラー: %s %s", item.get("code"), e)
 
-        if score_data["total"] >= strong_thr:
-            _create_virtual_trade(item, current, score_data["total"], now_utc)
+            if score_data["total"] >= strong_thr:
+                _create_virtual_trade(item, current, score_data["total"], now_utc)
 
-    # 保有中仮想ポジションの P&L チェック
-    _manage_virtual_trades(cfg, now_utc)
     logger.info("=== リバウンド監視完了 ===")
 
 
