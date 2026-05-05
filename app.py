@@ -1663,6 +1663,7 @@ def web_dashboard():
         "watching": len(watching_rows),
         "rebound_signal": len(signal_rows),
         "notified": len([r for r in rows if r.get("status") == "notified"]),
+        "excluded": len([r for r in rows if r.get("status") == "excluded" or r.get("is_excluded")]),
     }
     return render_template("web/dashboard.html",
         rows=rows,
@@ -1723,8 +1724,10 @@ def web_settings():
         bool_fields = {
             "ma5_cross_enabled", "drop_notify_enabled", "rebound_notify_enabled",
             "morning_summary_enabled", "portfolio_notify_enabled",
+            "ai_predict_enabled", "ai_notify_enabled", "ai_notify_early_enabled",
+            "jquants_enabled", "jquants_prefer_source", "jquants_fallback_yfinance",
         }
-        int_fields = {"watch_days_limit"}
+        int_fields = {"watch_days_limit", "jquants_max_retry"}
         try:
             data: dict = {"updated_at": datetime.now(timezone.utc).isoformat()}
             for key, default in _settings_loader.DEFAULTS.items():
@@ -1792,6 +1795,24 @@ def web_virtual_trades():
         total_pnl=total_pnl,
         win_count=win_count,
     )
+
+
+@app.route("/admin/models")
+@app.route("/web/models")
+def web_models():
+    try:
+        rows = (
+            supabase.table("ml_models")
+            .select("*")
+            .order("created_at", desc=True)
+            .limit(50)
+            .execute()
+            .data or []
+        )
+    except Exception as e:
+        logger.error("models error: %s", e)
+        rows = []
+    return render_template("web/models.html", rows=rows)
 
 
 @app.route("/web/portfolio")

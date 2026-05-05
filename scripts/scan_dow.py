@@ -233,6 +233,9 @@ def run_scan() -> None:
             saved += 1
     logger.info("watchlist保存: %d銘柄", saved)
 
+    logger.info("Dow notifications are disabled; watchlist logging only.")
+    return
+
     if not alerts or not cfg.get("drop_notify_enabled", True):
         logger.info("=== スキャン完了（通知なし）===")
         return

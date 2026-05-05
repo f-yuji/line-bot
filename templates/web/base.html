@@ -76,6 +76,10 @@
     </a>
 
     <div class="side-section">System</div>
+    <a class="side-link {% if request.path in ['/web/models', '/admin/models'] %}active{% endif %}" href="/web/models">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v20"/><path d="M2 12h20"/><circle cx="12" cy="12" r="4"/></svg>
+      <span>AI Models</span>
+    </a>
     <a class="side-link {% if request.path == '/web/settings' %}active{% endif %}" href="/web/settings">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h0a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h0a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v0a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
       <span>設定</span>
@@ -166,7 +170,15 @@ const _BADGE_MAP = {
   watching: ['watching','WATCH'],
   rebound_signal: ['signal','SIGNAL'],
   notified: ['notified','NOTIFIED'],
-  closed: ['closed','CLOSED']
+  closed: ['closed','CLOSED'],
+  excluded: ['closed','EXCLUDED']
+};
+
+const _STAGE_MAP = {
+  none: 'シグナルなし',
+  early: '初動',
+  confirmed: '本命',
+  strong_confirmed: '強本命'
 };
 
 function _fmt(v, digits, suffix) {
@@ -202,7 +214,7 @@ function openDetail(r) {
   const bm = _BADGE_MAP[r.status] || ['watching','WATCH'];
   document.getElementById('m-status-badge').innerHTML = `<span class="badge ${bm[0]}">${bm[1]}</span>`;
 
-  document.getElementById('m-bad-news').style.display = r.has_bad_news ? '' : 'none';
+  document.getElementById('m-bad-news').style.display = (r.has_bad_news || r.is_excluded) ? '' : 'none';
 
   const hasScore = r.score != null;
   document.getElementById('m-score-block').style.display = hasScore ? '' : 'none';
@@ -230,6 +242,24 @@ function openDetail(r) {
   document.getElementById('m-per').textContent = r.per != null ? r.per.toFixed(1) + '倍' : '—';
   document.getElementById('m-pbr').textContent = r.pbr != null ? r.pbr.toFixed(2) + '倍' : '—';
   document.getElementById('m-div').textContent = r.div_yield_pct != null ? r.div_yield_pct.toFixed(2) + '%' : '—';
+
+  const extra = [
+    ['段階', _STAGE_MAP[r.signal_stage || 'none'] || 'シグナルなし'],
+    ['シグナルスコア', r.signal_score != null ? Math.round(r.signal_score) : '—'],
+    ['条件数', r.signal_count != null ? r.signal_count : '—'],
+    ['悪材料スコア', r.bad_news_score != null ? Math.round(r.bad_news_score) : '—'],
+    ['モード', r.mode || 'normal'],
+    ['除外理由', r.exclude_reason || '—']
+  ];
+  let extraBox = document.getElementById('m-signal-extra');
+  if (!extraBox) {
+    extraBox = document.createElement('div');
+    extraBox.id = 'm-signal-extra';
+    extraBox.className = 'kv-grid';
+    extraBox.style.marginTop = '10px';
+    document.getElementById('m-chart').parentElement.before(extraBox);
+  }
+  extraBox.innerHTML = extra.map(([k, v]) => `<div class="kv"><span class="k">${k}</span><span class="v">${v}</span></div>`).join('');
 
   const isUp = ['rebound_signal','notified'].includes(r.status);
   document.getElementById('m-chart').innerHTML = _renderSpark(r.price_history, isUp);

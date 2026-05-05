@@ -1,52 +1,193 @@
 """
-悪材料フィルター。yfinance のニュース取得 + キーワードマッチングで判定。
-個別要因での急落（市場全体が安定しているのに -15% 以上下落）のみチェック対象。
+Bad-news filter for rebound candidates.
+
+This module keeps the old has_bad_news(item) boolean API, and adds
+analyze_bad_news(item) for severity, score, keywords, and future features.
+Naphtha and energy-related terms are recorded as feature candidates only;
+they do not exclude a stock in this phase.
 """
 import logging
 
 logger = logging.getLogger(__name__)
 
-BAD_NEWS_KEYWORDS = [
-    "不祥事", "不正", "粉飾", "下方修正", "業績悪化", "赤字転落",
-    "倒産", "民事再生", "上場廃止", "行政処分", "課徴金", "逮捕",
-    "虚偽記載", "リコール", "自主回収", "大幅減益", "経営危機",
-    "債務超過", "特別損失", "不正会計", "損失計上",
+STRONG_BAD_NEWS_KEYWORDS = [
+    "下方修正",
+    "赤字転落",
+    "不祥事",
+    "不正",
+    "粉飾",
+    "上場廃止",
+    "債務超過",
+    "民事再生",
+    "行政処分",
+    "課徴金",
+    "逮捕",
+    "虚偽記載",
+    "大幅減益",
+    "経営危機",
+    "不正会計",
+    "特別損失",
+    "減損",
 ]
 
-# 個別要因急落の判定基準
-_INDIVIDUAL_DROP_THR = -15.0   # 下落率
-_MARKET_SAFE_THR = -3.0        # この値より市場が安定していれば個別要因とみなす
+MEDIUM_BAD_NEWS_KEYWORDS = [
+    "減収",
+    "減益",
+    "受注減",
+    "需要減",
+    "販売不振",
+    "通期見通し",
+    "業績予想",
+    "ガイダンス",
+    "未達",
+    "下振れ",
+    "減配",
+    "無配",
+    "延期",
+    "中止",
+    "撤退",
+]
+
+WEAK_BAD_NEWS_KEYWORDS = [
+    "リコール",
+    "自主回収",
+    "訴訟",
+    "調査",
+    "警告",
+]
+
+NAPHTHA_KEYWORDS = [
+    "ナフサ",
+    "原油高",
+    "樹脂",
+    "塗料",
+    "溶剤",
+    "防水材",
+    "建材",
+]
+
+BAD_NEWS_KEYWORDS = (
+    STRONG_BAD_NEWS_KEYWORDS + MEDIUM_BAD_NEWS_KEYWORDS + WEAK_BAD_NEWS_KEYWORDS
+)
 
 
-def _is_individual_issue(item: dict) -> bool:
-    """市場全体が安定しているのに大幅下落 → 個別悪材料の可能性"""
-    drop = float(item.get("drop_pct") or 0.0)
-    nikkei = float(item.get("nikkei_pct") or -999.0)
-    return drop <= _INDIVIDUAL_DROP_THR and nikkei > _MARKET_SAFE_THR
-
-
-def _check_yfinance_news(code: str) -> bool:
+def _to_float(value, default: float = 0.0) -> float:
     try:
-        import yfinance as yf
-        ticker = yf.Ticker(f"{code}.T")
-        news = ticker.news
-        if not news:
-            return False
-        for article in news[:5]:
-            title = article.get("title", "")
-            if any(kw in title for kw in BAD_NEWS_KEYWORDS):
-                logger.info("悪材料キーワード検出: %s → %s", code, title[:60])
-                return True
-    except Exception as e:
-        logger.debug("news check error code=%s: %s", code, e)
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def should_check_bad_news(item: dict) -> bool:
+    drop_pct = _to_float(item.get("drop_pct"))
+    nikkei_pct = item.get("nikkei_pct")
+    volume_ratio = _to_float(item.get("volume_ratio"))
+    news_text = _collect_local_news_text(item)
+
+    if drop_pct <= -8.0:
+        return True
+    if nikkei_pct is not None and drop_pct <= _to_float(nikkei_pct) - 5.0:
+        return True
+    if drop_pct < 0 and volume_ratio >= 3.0:
+        return True
+    if news_text:
+        return True
     return False
 
 
+def _collect_local_news_text(item: dict) -> str:
+    parts: list[str] = []
+    for key in ("news_title", "news_summary", "headline", "title", "memo", "reason"):
+        val = item.get(key)
+        if val:
+            parts.append(str(val))
+    for key in ("news", "articles", "related_news"):
+        val = item.get(key)
+        if isinstance(val, list):
+            for obj in val[:10]:
+                if isinstance(obj, dict):
+                    parts.append(str(obj.get("title") or ""))
+                    parts.append(str(obj.get("summary") or ""))
+                else:
+                    parts.append(str(obj))
+    return " ".join(p for p in parts if p)
+
+
+def _check_yfinance_news(code: str) -> list[str]:
+    if not code:
+        return []
+    try:
+        import yfinance as yf
+
+        ticker = yf.Ticker(f"{code}.T")
+        news = ticker.news or []
+        titles: list[str] = []
+        for article in news[:5]:
+            title = article.get("title") or article.get("content", {}).get("title") or ""
+            if title:
+                titles.append(str(title))
+        return titles
+    except Exception as e:
+        logger.debug("news check error code=%s: %s", code, e)
+        return []
+
+
+def _match_keywords(text: str, keywords: list[str]) -> list[str]:
+    return [kw for kw in keywords if kw and kw in text]
+
+
+def analyze_bad_news(item: dict) -> dict:
+    """
+    Return detailed bad-news analysis.
+
+    Shape:
+    {
+      has_bad_news, bad_news_score, severity, matched_keywords, reason,
+      energy_naphtha_score
+    }
+    """
+    texts = [_collect_local_news_text(item)]
+    if should_check_bad_news(item):
+        texts.extend(_check_yfinance_news(str(item.get("code") or "")))
+    text = " ".join(t for t in texts if t)
+
+    strong = _match_keywords(text, STRONG_BAD_NEWS_KEYWORDS)
+    medium = _match_keywords(text, MEDIUM_BAD_NEWS_KEYWORDS)
+    weak = _match_keywords(text, WEAK_BAD_NEWS_KEYWORDS)
+    naphtha = _match_keywords(text, NAPHTHA_KEYWORDS)
+
+    if strong:
+        severity = "strong"
+        score = 100.0
+        matched = strong
+    elif medium:
+        severity = "medium"
+        score = min(70.0, 40.0 + 10.0 * (len(medium) - 1))
+        matched = medium
+    elif weak:
+        severity = "weak"
+        score = min(30.0, 10.0 + 5.0 * (len(weak) - 1))
+        matched = weak
+    else:
+        severity = "none"
+        score = 0.0
+        matched = []
+
+    reason = ""
+    if matched:
+        reason = f"{severity}: " + ", ".join(matched[:5])
+
+    return {
+        "has_bad_news": severity in {"medium", "strong"},
+        "bad_news_score": score,
+        "severity": severity,
+        "matched_keywords": matched,
+        "reason": reason,
+        "energy_naphtha_score": float(len(naphtha) * 10),
+        "naphtha_keywords": naphtha,
+    }
+
+
 def has_bad_news(item: dict) -> bool:
-    """
-    悪材料があれば True。True の場合はリバウンド通知をスキップ推奨。
-    個別要因の急落（市場安定 & -15% 以下）のみ API を叩く。
-    """
-    if not _is_individual_issue(item):
-        return False
-    return _check_yfinance_news(item.get("code", ""))
+    """Backward-compatible boolean API."""
+    return bool(analyze_bad_news(item).get("has_bad_news"))

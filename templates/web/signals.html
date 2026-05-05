@@ -3,9 +3,14 @@
 {% block page_label %}シグナル{% endblock %}
 
 {% macro status_badge(s) -%}
-  {%- set m = {'watching':['watching','WATCH'],'rebound_signal':['signal','SIGNAL'],'notified':['notified','NOTIFIED'],'closed':['closed','CLOSED']} -%}
+  {%- set m = {'watching':['watching','WATCH'],'rebound_signal':['signal','SIGNAL'],'notified':['notified','NOTIFIED'],'closed':['closed','CLOSED'],'excluded':['closed','EXCLUDED']} -%}
   {%- set v = m.get(s, ['watching','WATCH']) -%}
   <span class="badge {{ v[0] }}">{{ v[1] }}</span>
+{%- endmacro %}
+
+{% macro stage_badge(s) -%}
+  {%- set m = {'none':'シグナルなし','early':'初動','confirmed':'本命','strong_confirmed':'強本命'} -%}
+  <span class="tag">{{ m.get(s or 'none', 'シグナルなし') }}</span>
 {%- endmacro %}
 
 {% macro delta(v, suffix='%') -%}
@@ -24,7 +29,7 @@
 
 <div class="panel">
   <div class="panel-head">
-    <div class="panel-title">シグナル一覧<span class="tag">SIGNAL STRENGTH</span></div>
+    <div class="panel-title">シグナル一覧<span class="tag">SIGNAL STAGE</span></div>
   </div>
   <div class="table-wrap">
     <table class="tbl">
@@ -32,12 +37,14 @@
         <tr>
           <th>コード</th><th>名称</th><th>急落日</th>
           <th class="right">急落率</th><th class="right">急落時株価</th>
-          <th>セクター</th><th>ステータス</th><th>通知日時</th>
+          <th>セクター</th><th>ステータス</th><th>段階</th>
+          <th class="right">スコア</th><th class="right">条件</th><th class="right">悪材料</th>
+          <th>モード</th><th>通知日時</th>
         </tr>
       </thead>
       <tbody>
         {% for r in rows %}
-        <tr class="{{ 'signal-row' if r.status == 'rebound_signal' else '' }}">
+        <tr class="{{ 'signal-row' if r.status == 'rebound_signal' else '' }}" style="cursor:pointer" data-idx="{{ loop.index0 }}">
           <td class="code">{{ r.code }}</td>
           <td class="name">{{ r.name or "" }}</td>
           <td class="muted num">{{ r.drop_detected_at[:10] if r.drop_detected_at else "" }}</td>
@@ -45,13 +52,28 @@
           <td class="right num">{{ "%.0f"|format(r.price_at_drop) if r.price_at_drop is not none else "" }}</td>
           <td class="muted">{{ r.sector or "" }}</td>
           <td>{{ status_badge(r.status) }}</td>
+          <td>{{ stage_badge(r.signal_stage) }}</td>
+          <td class="right num">{{ "%.0f%%"|format(r.signal_probability * 100) if r.signal_probability is not none else "" }}</td>
+          <td class="right num">{{ delta(r.expected_value) }}</td>
+          <td class="right num">{{ "%.0f"|format(r.signal_score if r.signal_score is not none else r.score) if (r.signal_score is not none or r.score is not none) else "" }}</td>
+          <td class="right num">{{ r.signal_count if r.signal_count is not none else "" }}</td>
+          <td class="right num">{{ "%.0f"|format(r.bad_news_score) if r.bad_news_score is not none else "" }}</td>
+          <td class="muted">{{ r.mode or "normal" }}</td>
           <td class="muted num">{% if r.rebound_notified_at %}{{ r.rebound_notified_at[:16] | replace("T", " ") }}{% else %}—{% endif %}</td>
         </tr>
         {% else %}
-        <tr><td colspan="8" class="center muted" style="padding:28px">データなし</td></tr>
+        <tr><td colspan="13" class="center muted" style="padding:28px">データなし</td></tr>
         {% endfor %}
       </tbody>
     </table>
   </div>
 </div>
+
+<script>
+const ROWS = {{ rows | tojson }};
+document.querySelector('.tbl tbody').addEventListener('click', function(e) {
+  const tr = e.target.closest('tr[data-idx]');
+  if (tr) openDetail(ROWS[parseInt(tr.dataset.idx)]);
+});
+</script>
 {% endblock %}

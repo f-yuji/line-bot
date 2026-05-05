@@ -3,3 +3,7 @@
 __pycache__/
 *.pyc
 *.log
+venv/
+models/*.pkl
+models/*_features.json
+models/*_importance.csv

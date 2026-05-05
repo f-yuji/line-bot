@@ -25,6 +25,9 @@ git commit -m "0504"
 git push
 git pull
 
+
+fly deploy --remote-only
+
 # ===== ブランチ =====
 git checkout dev
 git checkout -b feature-xxx

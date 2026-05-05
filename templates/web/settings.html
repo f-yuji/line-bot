@@ -122,6 +122,33 @@
       </div>
     </div>
 
+    <div class="form-card">
+      <h3>AI Predict</h3>
+      {% for key, label in [
+        ("ai_predict_enabled", "AI predict"),
+        ("ai_notify_enabled", "AI notify"),
+        ("ai_notify_early_enabled", "Early notify")
+      ] %}
+      <div class="form-row" style="grid-template-columns:1fr auto">
+        <label>{{ label }}</label>
+        <input type="checkbox" name="{{ key }}" {% if cfg[key] %}checked{% endif %} style="accent-color:var(--accent);width:16px;height:16px">
+      </div>
+      {% endfor %}
+      {% for key, label in [
+        ("ai_probability_early", "early probability"),
+        ("ai_probability_confirmed", "confirmed probability"),
+        ("ai_probability_strong", "strong probability"),
+        ("ai_expected_value_min", "expected value min")
+      ] %}
+      <div class="form-row">
+        <label>{{ label }}</label>
+        <div class="input-group">
+          <input type="number" step="0.01" name="{{ key }}" value="{{ cfg[key] }}">
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+
   </div>
 
   <div style="display:flex;gap:8px;margin-top:14px">

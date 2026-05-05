@@ -1,100 +1,104 @@
-"""
-TSE プライム銘柄リスト管理。
-J-Quants API で取得して Supabase にキャッシュ。
-取得失敗時は Nikkei225 にフォールバック。
-"""
+"""TSE Prime stock list management with J-Quants first, cache/fallback second."""
+import argparse
 import logging
 import os
 from datetime import datetime, timedelta, timezone
+from typing import Any
 
-import requests as _req
+from dotenv import load_dotenv
+from supabase import create_client
 
+from jquants_client import get_listed_info, normalize_code
+
+load_dotenv()
 logger = logging.getLogger(__name__)
-
-JQUANTS_TOKEN_URL = "https://api.jquants.com/v2/token/auth_refresh"
-JQUANTS_LISTED_URL = "https://api.jquants.com/v2/listed/info"
 CACHE_TTL_DAYS = 7
+
+EXCLUDE_PRODUCT_WORDS = [
+    "ETF", "ETN", "REIT", "リート", "投資法人", "インフラファンド", "外国", "優先",
+    "出資証券", "受益証券",
+]
 
 
 def _opt(name: str) -> str:
     return os.getenv(name, "").strip()
 
 
-def _get_id_token(refresh_token: str) -> str | None:
-    try:
-        r = _req.post(
-            JQUANTS_TOKEN_URL,
-            params={"refreshtoken": refresh_token},
-            timeout=15,
-        )
-        if r.status_code == 200:
-            return r.json().get("idToken")
-        logger.warning("J-Quants id_token取得失敗: status=%s body=%s", r.status_code, r.text[:200])
-    except Exception as e:
-        logger.warning("J-Quants auth error: %s", e)
-    return None
+def _build_supabase():
+    mode = _opt("SUPABASE_MODE") or _opt("ENV")
+    mode_upper = (mode or "").upper()
+    url = (_opt(f"SUPABASE_URL_{mode_upper}") if mode_upper else "") or _opt("SUPABASE_URL")
+    key = (_opt(f"SUPABASE_KEY_{mode_upper}") if mode_upper else "") or _opt("SUPABASE_KEY")
+    if not url or not key:
+        raise KeyError("SUPABASE_URL / SUPABASE_KEY is not set")
+    return create_client(url, key)
 
 
-def _fetch_from_jquants() -> list[dict]:
-    api_key = _opt("JQUANTS_API_KEY") or _opt("JQUANTS_REFRESH_TOKEN")
-    if not api_key:
-        logger.info("JQUANTS_API_KEY 未設定 → フォールバック")
-        return []
-
-    id_token = _get_id_token(api_key)
-    if not id_token:
-        return []
-
-    try:
-        r = _req.get(
-            JQUANTS_LISTED_URL,
-            headers={"Authorization": f"Bearer {id_token}"},
-            timeout=30,
-        )
-        if r.status_code != 200:
-            logger.warning("J-Quants listed/info エラー: status=%s", r.status_code)
-            return []
-
-        stocks = r.json().get("info", [])
-        prime = [
-            {
-                "code": s.get("Code", "")[:4],
-                "name": s.get("CompanyName", ""),
-                "sector": s.get("Sector17CodeName", "") or s.get("Sector33CodeName", ""),
-            }
-            for s in stocks
-            if s.get("MarketCodeName") in ("プライム", "Prime")
-            and len(s.get("Code", "")) >= 4
-        ]
-        logger.info("J-Quants: %d銘柄（TSEプライム）取得", len(prime))
-        return prime
-    except Exception as e:
-        logger.warning("J-Quants listed/info 取得エラー: %s", e)
-        return []
+def _is_prime(row: dict[str, Any]) -> bool:
+    text = " ".join(str(row.get(k) or "") for k in ("MarketCodeName", "MarketName", "MarketSegment", "MktNm", "Mkt"))
+    return "プライム" in text or "Prime" in text
 
 
-def _save_to_supabase(supabase, records: list[dict]) -> None:
+def _is_excluded_product(row: dict[str, Any]) -> bool:
+    text = " ".join(str(row.get(k) or "") for k in (
+        "CompanyName", "IssueName", "CoName", "Sector17CodeName", "Sector33CodeName", "S17Nm", "S33Nm", "MarketCodeName", "MktNm",
+    ))
+    return any(word in text for word in EXCLUDE_PRODUCT_WORDS)
+
+
+def _row_to_stock(row: dict[str, Any]) -> dict | None:
+    if not _is_prime(row) or _is_excluded_product(row):
+        return None
+    code = normalize_code(row.get("Code"))
+    if not code or not code[:4].isdigit() or len(code) != 4:
+        return None
+    return {
+        "code": code,
+        "name": row.get("CompanyName") or row.get("IssueName") or row.get("CoName") or "",
+        "sector": row.get("Sector17CodeName") or row.get("Sector33CodeName") or row.get("S17Nm") or row.get("S33Nm") or "",
+        "sector17": row.get("Sector17CodeName") or row.get("S17Nm") or "",
+        "sector33": row.get("Sector33CodeName") or row.get("S33Nm") or "",
+        "market": "prime",
+    }
+
+
+def fetch_prime_from_jquants(target_date: str | None = None) -> list[dict]:
+    rows = get_listed_info(date=target_date)
+    logger.info("fetched listed/info rows=%d", len(rows))
+    stocks: dict[str, dict] = {}
+    skipped = 0
+    for row in rows:
+        stock = _row_to_stock(row)
+        if not stock:
+            skipped += 1
+            continue
+        if stock["code"] not in stocks:
+            stocks[stock["code"]] = stock
+    result = sorted(stocks.values(), key=lambda r: r["code"])
+    logger.info("prime stocks rows=%d normalized codes=%d skipped etf/reit/etc=%d", len(result), len(result), skipped)
+    return result
+
+
+def _save_to_supabase(supabase, records: list[dict], *, dry_run: bool = False) -> None:
     if not records:
         return
-    try:
-        now = datetime.now(timezone.utc).isoformat()
-        rows = [
-            {"code": r["code"], "name": r["name"], "sector": r.get("sector", ""), "updated_at": now}
-            for r in records
-            if r.get("code")
-        ]
-        # 1000件ずつ upsert
-        for i in range(0, len(rows), 1000):
-            supabase.table("prime_stocks_cache").upsert(rows[i:i + 1000]).execute()
-        logger.info("prime_stocks_cache: %d件保存", len(rows))
-    except Exception as e:
-        logger.warning("prime_stocks_cache保存エラー: %s", e)
+    now = datetime.now(timezone.utc).isoformat()
+    rows = [
+        {"code": r["code"], "name": r["name"], "sector": r.get("sector", ""), "updated_at": now}
+        for r in records
+        if r.get("code")
+    ]
+    if dry_run:
+        logger.info("DRYRUN upsert prime_stocks_cache rows=%d", len(rows))
+        return
+    for i in range(0, len(rows), 1000):
+        supabase.table("prime_stocks_cache").upsert(rows[i:i + 1000], on_conflict="code").execute()
+    logger.info("upsert prime_stocks_cache rows=%d", len(rows))
 
 
 def _load_from_supabase(supabase) -> list[dict] | None:
-    """TTL 内のキャッシュがあれば返す。古い or 空なら None。"""
     try:
-        res = supabase.table("prime_stocks_cache").select("code, name, sector, updated_at").limit(2000).execute()
+        res = supabase.table("prime_stocks_cache").select("code, name, sector, updated_at").limit(3000).execute()
         rows = res.data or []
         if not rows:
             return None
@@ -102,31 +106,50 @@ def _load_from_supabase(supabase) -> list[dict] | None:
         if latest:
             dt = datetime.fromisoformat(str(latest).replace("Z", "+00:00"))
             if datetime.now(timezone.utc) - dt < timedelta(days=CACHE_TTL_DAYS):
-                return [{"code": r["code"], "name": r["name"], "sector": r.get("sector", "")} for r in rows]
+                return [{"code": r["code"], "name": r.get("name", ""), "sector": r.get("sector", "")} for r in rows]
     except Exception as e:
-        logger.warning("prime_stocks_cache読み込みエラー: %s", e)
+        logger.warning("prime_stocks_cache load failed: %s", e)
     return None
 
 
 def get_prime_tickers(supabase=None, *, force_refresh: bool = False) -> list[dict]:
-    """
-    TSEプライム銘柄リストを返す。
-    Returns: [{"code": str, "name": str, "sector": str}]
-    失敗時は Nikkei225 にフォールバック。
-    """
     if supabase and not force_refresh:
         cached = _load_from_supabase(supabase)
         if cached:
-            logger.info("prime_stocks_cache: %d銘柄（キャッシュ使用）", len(cached))
+            logger.info("prime_stocks_cache rows=%d", len(cached))
             return cached
+    try:
+        stocks = fetch_prime_from_jquants()
+        if stocks:
+            if supabase:
+                _save_to_supabase(supabase, stocks)
+            return stocks
+    except Exception as e:
+        logger.warning("J-Quants listed/info failed; fallback used: %s", e)
 
-    stocks = _fetch_from_jquants()
-
-    if stocks:
-        if supabase:
-            _save_to_supabase(supabase, stocks)
-        return stocks
-
-    logger.warning("プライム銘柄取得失敗 → Nikkei225 フォールバック")
+    logger.warning("prime stock fetch failed; Nikkei225 fallback used")
     from nikkei_alert import NIKKEI225
     return [{"code": k, "name": v, "sector": ""} for k, v in NIKKEI225.items()]
+
+
+def _parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser(description="Refresh TSE Prime stock cache")
+    p.add_argument("--refresh-jquants", action="store_true")
+    p.add_argument("--dry-run", action="store_true")
+    p.add_argument("--date")
+    return p.parse_args()
+
+
+def main() -> None:
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+    args = _parse_args()
+    if not args.refresh_jquants:
+        print("usage: python prime_stocks.py --refresh-jquants [--dry-run]")
+        return
+    sb = _build_supabase()
+    stocks = fetch_prime_from_jquants(args.date)
+    _save_to_supabase(sb, stocks, dry_run=args.dry_run)
+
+
+if __name__ == "__main__":
+    main()

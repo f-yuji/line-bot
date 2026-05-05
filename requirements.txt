@@ -9,3 +9,8 @@ stripe
 yfinance
 pandas
 gunicorn
+numpy
+lightgbm
+scikit-learn
+joblib
+jquants-api-client
