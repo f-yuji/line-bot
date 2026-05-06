@@ -6,7 +6,7 @@ on:
     
     - cron: "0 23 * * 0-4"
     - cron: "0 5 * * 1-5"
-    - cron: "40 6 * * 1-5"  # 15:40 JST (scan_prime)
+    # scan_prime is disabled: the AI rebound pipeline supersedes the raw TSE Prime drop ranking.
     - cron: "0 0 * * 1-5"   # 09:00 JST
     - cron: "0 3 * * 1-5"   # 12:00 JST
     - cron: "30 6 * * 1-5"  # 15:30 JST
@@ -45,7 +45,7 @@ jobs:
           LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
 
   scan-prime:
-    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '40 6 * * 1-5'
+    if: false
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

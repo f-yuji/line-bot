@@ -36,6 +36,8 @@ from supabase import create_client
 load_dotenv()
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 JST = timezone(timedelta(hours=9))
 ROOT = Path(__file__).resolve().parents[1]
 MODEL_DIR = ROOT / "models"
@@ -75,16 +77,22 @@ def _build_supabase():
     return create_client(url, key)
 
 
-def _fetch_all(builder, *, page_size: int = 1000) -> list[dict]:
+def _fetch_all(query_factory, *, page_size: int = 1000, label: str = "rows") -> list[dict]:
     rows: list[dict] = []
-    start = 0
+    last_id = 0
     while True:
-        res = builder.range(start, start + page_size - 1).execute()
+        builder = query_factory(last_id)
+        res = builder.limit(page_size).execute()
         data = res.data or []
         rows.extend(data)
         if len(data) < page_size:
             break
-        start += page_size
+        try:
+            last_id = max(int(r.get("id") or last_id) for r in data)
+        except Exception:
+            break
+        if len(rows) % 10000 == 0:
+            logger.info("load %s progress: rows=%d", label, len(rows))
     return rows
 
 
@@ -104,25 +112,40 @@ def _load_training_rows(sb, args: argparse.Namespace) -> "pd.DataFrame":
         + NUMERIC_FEATURES + BOOL_FEATURES + CATEGORICAL_FEATURES
     ))
     label_cols = [
-        "feature_snapshot_id", "trade_date", "code", "label_success", "is_valid_label",
+        "id", "feature_snapshot_id", "trade_date", "code", "label_success", "is_valid_label",
         "max_return_5d_pct", "max_drawdown_5d_pct",
     ]
-    snapshots = _fetch_all(
-        sb.table("stock_feature_snapshots")
-        .select(",".join(snap_cols))
-        .eq("is_drop_candidate", True)
-        .eq("is_tradeable", True)
-        .gte("trade_date", start)
-        .lte("trade_date", end)
-    )
-    labels = _fetch_all(
-        sb.table("stock_rebound_labels")
-        .select(",".join(label_cols))
-        .eq("is_valid_label", True)
-        .not_.is_("label_success", "null")
-        .gte("trade_date", start)
-        .lte("trade_date", end)
-    )
+    def snapshot_query(last_id: int = 0):
+        q = (
+            sb.table("stock_feature_snapshots")
+            .select(",".join(snap_cols))
+            .eq("is_drop_candidate", True)
+            .eq("is_tradeable", True)
+            .gte("trade_date", start)
+            .lte("trade_date", end)
+            .order("id")
+        )
+        if last_id:
+            q = q.gt("id", last_id)
+        return q
+
+    def label_query(last_id: int = 0):
+        q = (
+            sb.table("stock_rebound_labels")
+            .select(",".join(label_cols))
+            .eq("is_valid_label", True)
+            .not_.is_("label_success", "null")
+            .gte("trade_date", start)
+            .lte("trade_date", end)
+            .order("id")
+        )
+        if last_id:
+            q = q.gt("id", last_id)
+        return q
+
+    snapshots = _fetch_all(snapshot_query, label="snapshots")
+    labels = _fetch_all(label_query, label="labels")
+    logger.info("loaded training source rows: snapshots=%d labels=%d", len(snapshots), len(labels))
     if not snapshots or not labels:
         return pd.DataFrame()
     s = pd.DataFrame(snapshots)

@@ -435,25 +435,78 @@ def _message(row: dict, result: dict) -> str:
         "利確 +5%",
         "損切 -4%",
         "期限 5営業日",
-        "",
-        "※投資判断は自分で確認",
     ])
 
 
-def _notify(sb, row: dict, result: dict, cfg: dict) -> None:
+def _notification_allowed(row: dict, result: dict, cfg: dict) -> bool:
     if not cfg.get("ai_notify_enabled", True):
-        logger.info("AI notify disabled")
-        return
+        return False
     stage = result["signal_stage"]
     if stage == "early" and not cfg.get("ai_notify_early_enabled", False):
         logger.info("early notify skipped by settings: %s", row.get("code"))
+        return False
+    return stage in {"confirmed", "strong_confirmed", "early"} and not result.get("is_excluded")
+
+
+def _candidate_summary(row: dict, result: dict) -> str:
+    stage_label = {
+        "early": "初動",
+        "confirmed": "本命",
+        "strong_confirmed": "強本命",
+    }.get(result["signal_stage"], result["signal_stage"])
+    return "\n".join([
+        f"{stage_label} {row.get('code')} {row.get('name') or ''}".strip(),
+        f"AI確率 {result['probability'] * 100:.0f}% / 期待値 {result['expected_value']:+.1f}%",
+        f"急落 {_to_float(row.get('day_change_pct'), 0):+.1f}% / RSI {_to_float(row.get('rsi14'), 0):.0f} / 出来高 {_to_float(row.get('volume_ratio_20d'), 0):.1f}倍",
+        f"悪材料 {_to_float(row.get('bad_news_score'), 0):.0f} / 市場ショック {_to_float(row.get('market_shock_score'), 0):.0f}",
+    ])
+
+
+def _build_batch_messages(items: list[tuple[dict, dict]], target_date: str, mode: str) -> list[str]:
+    if not items:
+        return []
+    strong = sum(1 for _, r in items if r["signal_stage"] == "strong_confirmed")
+    confirmed = sum(1 for _, r in items if r["signal_stage"] == "confirmed")
+    early = sum(1 for _, r in items if r["signal_stage"] == "early")
+    header = "\n".join([
+        "【AIリバ候補】",
+        f"対象日：{target_date}",
+        f"相場モード：{mode}",
+        f"通知候補：{len(items)}件（強本命 {strong} / 本命 {confirmed} / 初動 {early}）",
+        "",
+        "想定：利確 +5% / 損切 -4% / 期限 5営業日",
+        "",
+    ])
+    footer = ""
+    chunks: list[str] = []
+    current = header
+    for row, result in items:
+        block = _candidate_summary(row, result)
+        addition = ("\n---\n" if current != header else "") + block
+        if len(current) + len(addition) + len(footer) > 4300:
+            chunks.append(current)
+            current = header + block
+        else:
+            current += addition
+    chunks.append(current)
+    return chunks
+
+
+def _notify_batch(sb, items: list[tuple[dict, dict]], target_date: str, mode: str) -> None:
+    messages = _build_batch_messages(items, target_date, mode)
+    if not messages:
+        logger.info("LINE batch notify skipped: no candidates")
         return
-    if stage not in {"confirmed", "strong_confirmed", "early"}:
-        return
-    msg = _message(row, result)
     users = _eligible_users(sb)
-    sent = sum(1 for u in users if _push(u["user_id"], msg))
-    logger.info("LINE notify attempted: code=%s users=%d sent=%d", row.get("code"), len(users), sent)
+    sent = 0
+    for user in users:
+        for msg in messages:
+            if _push(user["user_id"], msg):
+                sent += 1
+    logger.info(
+        "LINE batch notify attempted: candidates=%d chunks=%d users=%d sent=%d",
+        len(items), len(messages), len(users), sent,
+    )
 
 
 def run(args: argparse.Namespace) -> None:
@@ -486,6 +539,7 @@ def run(args: argparse.Namespace) -> None:
         probabilities = [_fallback_probability(r) for r in snapshots]
 
     signal_count = 0
+    notify_items: list[tuple[dict, dict]] = []
     for row, prob in zip(snapshots, probabilities):
         ev = _expected_value(prob)
         stage, is_excluded, exclude_reason = _determine_stage(row, prob, ev, mode, cfg)
@@ -509,8 +563,10 @@ def run(args: argparse.Namespace) -> None:
         )
         watch = _persist_watchlist(sb, row, result, dry_run=args.dry_run, force=args.force)
         _create_virtual_trade(sb, row, watch or {}, result, dry_run=args.dry_run)
-        if args.notify and not args.dry_run and stage in {"confirmed", "strong_confirmed", "early"} and not is_excluded:
-            _notify(sb, row, result, cfg)
+        if args.notify and not args.dry_run and _notification_allowed(row, result, cfg):
+            notify_items.append((row, result))
+    if args.notify and not args.dry_run:
+        _notify_batch(sb, notify_items, target_date, mode)
     logger.info("complete: predictions=%d signals=%d dry_run=%s", len(snapshots), signal_count, args.dry_run)
 
 

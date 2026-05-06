@@ -31,6 +31,8 @@ load_dotenv()
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 JST = timezone(timedelta(hours=9))
 DEFAULT_BATCH_SIZE = 200
@@ -102,10 +104,11 @@ def _to_float(value: Any) -> float | None:
         return None
 
 
-def _fetch_all(builder, *, page_size: int = 1000) -> list[dict]:
+def _fetch_all(query_factory, *, page_size: int = 1000) -> list[dict]:
     rows: list[dict] = []
     start = 0
     while True:
+        builder = query_factory()
         res = builder.range(start, start + page_size - 1).execute()
         data = res.data or []
         rows.extend(data)
@@ -115,34 +118,71 @@ def _fetch_all(builder, *, page_size: int = 1000) -> list[dict]:
     return rows
 
 
+def _load_candidate_codes(sb, args: argparse.Namespace) -> list[str]:
+    if args.code:
+        return [str(args.code).replace(".T", "")]
+
+    def query():
+        return sb.table("prime_stocks_cache").select("code").order("code")
+
+    try:
+        rows = _fetch_all(query)
+        codes = sorted({str(r.get("code") or "").replace(".T", "") for r in rows if r.get("code")})
+        codes = [c for c in codes if c and not _is_alpha_code(c)]
+        if codes:
+            logger.info("candidate code list loaded from prime_stocks_cache: %d", len(codes))
+            return codes
+    except Exception as e:
+        logger.warning("prime_stocks_cache code load failed: %s", e)
+
+    logger.warning("candidate code list is empty; use --code for a narrow run or refresh prime_stocks_cache")
+    return []
+
+
 def _load_candidates(sb, args: argparse.Namespace, start: date, end: date) -> list[dict]:
     cols = (
         "id, trade_date, code, name, market, sector, close, is_tradeable, "
         "is_drop_candidate"
     )
-    q = (
-        sb.table("stock_feature_snapshots")
-        .select(cols)
-        .eq("is_drop_candidate", True)
-        .gte("trade_date", start.isoformat())
-        .lte("trade_date", end.isoformat())
-        .order("code")
-        .order("trade_date")
-    )
-    if args.code:
-        q = q.eq("code", str(args.code).replace(".T", ""))
-    if not args.include_untradeable:
-        q = q.eq("is_tradeable", True)
+    codes = _load_candidate_codes(sb, args)
+    if not codes:
+        return []
 
-    rows = _fetch_all(q)
     filtered: list[dict] = []
-    for row in rows:
-        close = _to_float(row.get("close"))
-        if _is_non_japanese(row) or close is None or close <= 0 or not row.get("trade_date") or not row.get("code"):
-            continue
-        filtered.append(row)
-        if args.limit and len(filtered) >= int(args.limit):
+    limit = int(args.limit) if args.limit else None
+    for idx, code in enumerate(codes, start=1):
+        if limit and len(filtered) >= limit:
             break
+
+        def query_for_code(code=code):
+            q = (
+                sb.table("stock_feature_snapshots")
+                .select(cols)
+                .eq("code", code)
+                .eq("is_drop_candidate", True)
+                .gte("trade_date", start.isoformat())
+                .lte("trade_date", end.isoformat())
+                .order("trade_date")
+            )
+            if not args.include_untradeable:
+                q = q.eq("is_tradeable", True)
+            return q
+
+        try:
+            rows = _fetch_all(query_for_code)
+        except Exception as e:
+            logger.warning("candidate load failed code=%s: %s", code, e)
+            continue
+
+        for row in rows:
+            close = _to_float(row.get("close"))
+            if _is_non_japanese(row) or close is None or close <= 0 or not row.get("trade_date") or not row.get("code"):
+                continue
+            filtered.append(row)
+            if limit and len(filtered) >= limit:
+                break
+        if idx % 100 == 0:
+            logger.info("candidate load progress: codes=%d/%d candidates=%d", idx, len(codes), len(filtered))
     return filtered
 
 
@@ -340,6 +380,50 @@ def _summary(rows: list[dict]) -> dict:
     }
 
 
+def _empty_stats() -> dict:
+    return {
+        "total": 0,
+        "success": 0,
+        "fail": 0,
+        "take_profit": 0,
+        "stop_loss": 0,
+        "timeout": 0,
+        "sum_max_return": 0.0,
+        "sum_max_drawdown": 0.0,
+    }
+
+
+def _add_label_stats(stats: dict, row: dict) -> None:
+    stats["total"] += 1
+    if row.get("label_success") is True:
+        stats["success"] += 1
+    else:
+        stats["fail"] += 1
+    if row.get("hit_take_profit"):
+        stats["take_profit"] += 1
+    if row.get("hit_stop_loss"):
+        stats["stop_loss"] += 1
+    if row.get("label_reason") == "failed_timeout":
+        stats["timeout"] += 1
+    stats["sum_max_return"] += float(row.get("max_return_5d_pct") or 0)
+    stats["sum_max_drawdown"] += float(row.get("max_drawdown_5d_pct") or 0)
+
+
+def _summary_from_stats(stats: dict) -> dict:
+    total = int(stats["total"])
+    return {
+        "total": total,
+        "success": int(stats["success"]),
+        "fail": int(stats["fail"]),
+        "success_rate": (float(stats["success"]) / total * 100.0) if total else 0.0,
+        "avg_max_return": (float(stats["sum_max_return"]) / total) if total else 0.0,
+        "avg_max_drawdown": (float(stats["sum_max_drawdown"]) / total) if total else 0.0,
+        "take_profit": int(stats["take_profit"]),
+        "stop_loss": int(stats["stop_loss"]),
+        "timeout": int(stats["timeout"]),
+    }
+
+
 def run(args: argparse.Namespace) -> None:
     if not HAS_DEPS:
         raise RuntimeError("pandas and yfinance are required")
@@ -367,9 +451,13 @@ def run(args: argparse.Namespace) -> None:
             logger.info("skip existing labels: %d", before - len(candidates))
 
     labels: list[dict] = []
+    pending_labels: list[dict] = []
+    stats = _empty_stats()
     skipped = 0
     errors = 0
     by_code: dict[str, int] = {}
+    saved = 0
+    flush_every = max(1, int(args.flush_every or args.batch_size or DEFAULT_BATCH_SIZE))
 
     for c in candidates:
         by_code[str(c["code"])] = by_code.get(str(c["code"]), 0) + 1
@@ -379,17 +467,45 @@ def run(args: argparse.Namespace) -> None:
             if label is None:
                 skipped += 1
                 continue
-            labels.append(label)
-            logger.info(
-                "%slabel: %s %s success=%s reason=%s max_return=%.2f max_dd=%.2f",
-                "DRYRUN " if args.dry_run else "",
-                label["code"],
-                label["trade_date"],
-                label["label_success"],
-                label["label_reason"],
-                float(label["max_return_5d_pct"]),
-                float(label["max_drawdown_5d_pct"]),
-            )
+            _add_label_stats(stats, label)
+            if args.dry_run:
+                labels.append(label)
+            else:
+                pending_labels.append(label)
+            if args.dry_run:
+                logger.info(
+                    "DRYRUN label: %s %s success=%s reason=%s max_return=%.2f max_dd=%.2f",
+                    label["code"],
+                    label["trade_date"],
+                    label["label_success"],
+                    label["label_reason"],
+                    float(label["max_return_5d_pct"]),
+                    float(label["max_drawdown_5d_pct"]),
+                )
+            else:
+                if len(pending_labels) >= flush_every:
+                    saved += _upsert_rows(sb, pending_labels, int(args.batch_size or DEFAULT_BATCH_SIZE))
+                    logger.info(
+                        "flush stock_rebound_labels: saved_total=%d flushed=%d skipped=%d errors=%d last=%s %s",
+                        saved,
+                        len(pending_labels),
+                        skipped,
+                        errors,
+                        label["code"],
+                        label["trade_date"],
+                    )
+                    pending_labels.clear()
+                if args.progress_every and int(stats["total"]) % int(args.progress_every) == 0:
+                    logger.info(
+                        "label progress: labels=%d saved=%d pending=%d skipped=%d errors=%d last=%s %s",
+                        int(stats["total"]),
+                        saved,
+                        len(pending_labels),
+                        skipped,
+                        errors,
+                        label["code"],
+                        label["trade_date"],
+                    )
         except Exception as e:
             errors += 1
             logger.exception("label failed code=%s date=%s: %s", c.get("code"), c.get("trade_date"), e)
@@ -397,14 +513,18 @@ def run(args: argparse.Namespace) -> None:
     for code, count in sorted(by_code.items()):
         logger.info("processed code=%s candidates=%d", code, count)
 
-    saved = 0
     if args.dry_run:
         logger.info("DRYRUN rows=%d; no DB save", len(labels))
-    elif labels:
-        saved = _upsert_rows(sb, labels, int(args.batch_size or DEFAULT_BATCH_SIZE))
+        s = _summary(labels)
+    else:
+        if pending_labels:
+            flushed = _upsert_rows(sb, pending_labels, int(args.batch_size or DEFAULT_BATCH_SIZE))
+            saved += flushed
+            logger.info("flush stock_rebound_labels: saved_total=%d flushed=%d final=True", saved, flushed)
+            pending_labels.clear()
         logger.info("upsert stock_rebound_labels: rows=%d", saved)
+        s = _summary_from_stats(stats)
 
-    s = _summary(labels)
     logger.info(
         "summary: total=%d success=%d fail=%d success_rate=%.1f%% avg_max_return=%.2f "
         "avg_max_drawdown=%.2f take_profit=%d stop_loss=%d timeout=%d skipped=%d errors=%d saved=%d",
@@ -438,6 +558,8 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--stop-loss", type=float, default=-4.0)
     parser.add_argument("--holding-days", type=int, default=5)
     parser.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE)
+    parser.add_argument("--progress-every", type=int, default=500)
+    parser.add_argument("--flush-every", type=int, default=1000)
     return parser.parse_args()
 
 

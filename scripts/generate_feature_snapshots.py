@@ -10,6 +10,7 @@ import logging
 import math
 import os
 import sys
+import time
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
@@ -41,6 +42,13 @@ INTERNAL_LOOKBACK_DAYS = 430
 DEFAULT_BATCH_SIZE = 200
 MIN_TRADE_PRICE = 100.0
 MIN_TURNOVER_VALUE = 100_000_000.0
+
+
+class StopOn429(RuntimeError):
+    def __init__(self, code: str, original: Exception):
+        super().__init__(f"STOP_ON_429 code={code}: {original}")
+        self.code = code
+        self.original = original
 
 
 def _opt(name: str) -> str:
@@ -123,6 +131,16 @@ def _load_codes(sb, args: argparse.Namespace) -> list[dict]:
             continue
         cleaned.append({"code": code, "name": s.get("name", ""), "sector": s.get("sector", "")})
 
+    cleaned = sorted(cleaned, key=lambda x: str(x.get("code", "")))
+    if args.start_after_code:
+        start_after = _normalize_code(args.start_after_code)
+        cleaned = [s for s in cleaned if str(s.get("code", "")) > start_after]
+    if args.code_from:
+        code_from = _normalize_code(args.code_from)
+        cleaned = [s for s in cleaned if str(s.get("code", "")) >= code_from]
+    if args.code_to:
+        code_to = _normalize_code(args.code_to)
+        cleaned = [s for s in cleaned if str(s.get("code", "")) <= code_to]
     if args.limit:
         cleaned = cleaned[: int(args.limit)]
     return cleaned
@@ -207,6 +225,78 @@ def _fetch_price_history(code: str, fetch_start: date, end: date, source: str) -
             logger.warning("J-Quants price fetch failed; yfinance fallback: %s %s", code, e)
     df = _fetch_yfinance_history(f"{code}.T", fetch_start, end)
     return df, "yfinance"
+
+
+def _is_429_error(error: Exception) -> bool:
+    msg = str(error).lower()
+    return "429" in msg or "too many 429" in msg or "too many requests" in msg
+
+
+def _sleep_after_code(args: argparse.Namespace) -> None:
+    seconds = float(getattr(args, "sleep_seconds", 0) or 0)
+    if seconds > 0:
+        time.sleep(seconds)
+
+
+def fetch_prices_with_retry(
+    code: str,
+    fetch_start: date,
+    end: date,
+    args: argparse.Namespace,
+) -> tuple["pd.DataFrame", str, bool]:
+    source = (getattr(args, "source", "auto") or "auto").lower()
+    if source == "yfinance":
+        return _fetch_yfinance_history(f"{code}.T", fetch_start, end), "yfinance", False
+
+    max_retries = max(1, int(getattr(args, "max_retries", 5) or 5))
+    retry_wait = float(getattr(args, "retry_wait_seconds", 60) or 0)
+    cooldown = float(getattr(args, "cooldown_on_429", 300) or 0)
+    had_429 = False
+
+    for attempt in range(1, max_retries + 1):
+        try:
+            df = _fetch_jquants_history(code, fetch_start, end)
+            if not df.empty:
+                return df, "jquants", had_429
+            logger.warning("J-Quants price data empty: %s", code)
+            break
+        except Exception as e:
+            is_429 = _is_429_error(e)
+            if is_429:
+                had_429 = True
+                logger.warning(
+                    "[429] code=%s retry=%d/%d cooldown=%ss",
+                    code,
+                    attempt,
+                    max_retries,
+                    int(cooldown),
+                )
+                if getattr(args, "stop_on_429", False):
+                    raise StopOn429(code, e) from e
+                if attempt < max_retries and cooldown > 0:
+                    time.sleep(cooldown)
+                continue
+
+            logger.warning(
+                "[retry] code=%s retry=%d/%d wait=%ss error=%s",
+                code,
+                attempt,
+                max_retries,
+                int(retry_wait),
+                e,
+            )
+            if attempt < max_retries and retry_wait > 0:
+                time.sleep(retry_wait)
+
+    if source == "auto":
+        logger.warning("J-Quants failed or empty; yfinance fallback: %s", code)
+        return _fetch_yfinance_history(f"{code}.T", fetch_start, end), "yfinance", had_429
+
+    if had_429:
+        logger.warning("[skip] code=%s no price data after 429 retries", code)
+    else:
+        logger.warning("[skip] code=%s no price data after retries", code)
+    return pd.DataFrame(), "jquants", had_429
 
 
 def _pct_change(series: "pd.Series", periods: int = 1) -> "pd.Series":
@@ -573,16 +663,27 @@ def run(args: argparse.Namespace) -> None:
     errors = 0
     drop_candidates_total = 0
     untradeable_total = 0
+    processed_codes = 0
+    skipped_existing_codes = 0
+    skipped_no_price = 0
+    skipped_429 = 0
+    stopped_on_429 = False
+    last_code: str | None = None
+    last_completed_code: str | None = None
 
     for n, stock in enumerate(stocks, start=1):
         code = stock["code"]
-        logger.info("processing %s %s (%d/%d)", code, stock.get("name", ""), n, len(stocks))
+        last_code = code
+        logger.info("[%d/%d] processing code=%s name=%s", n, len(stocks), code, stock.get("name", ""))
         try:
-            df, used_source = _fetch_price_history(code, fetch_start, end, args.source)
+            df, used_source, had_429 = fetch_prices_with_retry(code, fetch_start, end, args)
             if df.empty:
-                logger.warning("no price data: %s", code)
+                if had_429:
+                    skipped_429 += 1
+                else:
+                    skipped_no_price += 1
+                logger.warning("[skip] code=%s no price data source=%s", code, used_source)
                 continue
-            logger.info("price source: code=%s source=%s rows=%d", code, used_source, len(df))
             rows = _build_rows_for_code(
                 stock,
                 df,
@@ -597,15 +698,30 @@ def run(args: argparse.Namespace) -> None:
             if not args.force and not args.dry_run:
                 existing = _existing_dates(sb, code, start, end)
                 if existing:
+                    before_existing_filter = len(rows)
                     rows = [r for r in rows if r["trade_date"] not in existing]
+                    if before_existing_filter > 0 and not rows:
+                        skipped_existing_codes += 1
+                        logger.info("[skip-existing] code=%s existing rows found", code)
 
             drop_count = sum(1 for r in rows if r.get("is_drop_candidate"))
             untradeable_count = sum(1 for r in rows if not r.get("is_tradeable"))
             drop_candidates_total += drop_count
             untradeable_total += untradeable_count
+            processed_codes += 1
 
             if args.dry_run:
                 _log_dryrun_sample(code, rows)
+                logger.info(
+                    "[%d/%d] code=%s name=%s rows=%d saved=0 drop_candidates=%d source=%s dry_run=True",
+                    n,
+                    len(stocks),
+                    code,
+                    stock.get("name", ""),
+                    len(rows),
+                    drop_count,
+                    used_source,
+                )
                 continue
             if not rows:
                 logger.info("upsert stock_feature_snapshots: code=%s rows=0", code)
@@ -614,23 +730,62 @@ def run(args: argparse.Namespace) -> None:
             count = _upsert_rows(sb, rows, batch_size)
             inserted_or_updated += count
             logger.info(
-                "upsert stock_feature_snapshots: code=%s rows=%d drop_candidates=%d untradeable=%d",
+                "[%d/%d] code=%s name=%s rows=%d saved=%d drop_candidates=%d untradeable=%d source=%s",
+                n,
+                len(stocks),
                 code,
+                stock.get("name", ""),
+                len(rows),
                 count,
                 drop_count,
                 untradeable_count,
+                used_source,
             )
+        except StopOn429 as e:
+            stopped_on_429 = True
+            logger.error(
+                "stopped_on_429=True code=%s last_completed_code=%s resume_same=\"--code-from %s\" resume_after_completed=\"--start-after-code %s\" error=%s",
+                e.code,
+                last_completed_code,
+                e.code,
+                last_completed_code or "",
+                e.original,
+            )
+            break
         except Exception as e:
             errors += 1
-            logger.exception("processing failed code=%s: %s", code, e)
+            logger.exception("[error] code=%s message=%s last_code=%s", code, e, last_code)
             continue
+        finally:
+            if not stopped_on_429:
+                last_completed_code = code
+                if args.progress_every and n % int(args.progress_every) == 0:
+                    logger.info(
+                        "progress: %d/%d processed=%d saved=%d skipped_existing=%d skipped_no_price=%d skipped_429=%d errors=%d last_code=%s",
+                        n,
+                        len(stocks),
+                        processed_codes,
+                        inserted_or_updated,
+                        skipped_existing_codes,
+                        skipped_no_price,
+                        skipped_429,
+                        errors,
+                        last_code,
+                    )
+                _sleep_after_code(args)
 
     logger.info(
-        "complete: inserted_or_updated=%d drop_candidates=%d untradeable=%d errors=%d",
+        "complete: processed_codes=%d skipped_existing_codes=%d skipped_no_price=%d skipped_429=%d inserted_or_updated=%d drop_candidates=%d untradeable=%d errors=%d stopped_on_429=%s last_code=%s",
+        processed_codes,
+        skipped_existing_codes,
+        skipped_no_price,
+        skipped_429,
         inserted_or_updated,
         drop_candidates_total,
         untradeable_total,
         errors,
+        stopped_on_429,
+        last_code,
     )
 
 
@@ -649,6 +804,15 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--skip-existing", action="store_true", default=True)
     parser.add_argument("--only-drop-candidates", action="store_true")
     parser.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE)
+    parser.add_argument("--sleep-seconds", type=float, default=2.0)
+    parser.add_argument("--max-retries", type=int, default=5)
+    parser.add_argument("--retry-wait-seconds", type=float, default=60.0)
+    parser.add_argument("--cooldown-on-429", type=float, default=300.0)
+    parser.add_argument("--start-after-code")
+    parser.add_argument("--code-from")
+    parser.add_argument("--code-to")
+    parser.add_argument("--stop-on-429", action="store_true")
+    parser.add_argument("--progress-every", type=int, default=10)
     return parser.parse_args()
 
 
