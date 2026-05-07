@@ -1829,10 +1829,10 @@ def web_dashboard():
 @app.route("/web/actions/refresh", methods=["POST"])
 def web_refresh():
     try:
-        from scripts.monitor_rebound import run_monitor
+        from services.market_regime_updater import update_market_regime_for_latest_trade_date
 
-        run_monitor(force_no_notify=True)
-        flash("更新完了", "success")
+        update_market_regime_for_latest_trade_date(supabase, force=True)
+        flash("市場環境を更新しました", "success")
     except Exception as e:
         logger.exception("manual refresh failed")
         flash(f"更新失敗: {e}", "danger")
