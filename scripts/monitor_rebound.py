@@ -570,6 +570,9 @@ def _create_virtual_trade(
             "market_regime": item.get("market_regime"),
             "market_regime_label": item.get("market_regime_label"),
             "entry_size_multiplier": float(item.get("entry_size_multiplier") or 1.0),
+            "market_nikkei_pct": item.get("market_nikkei_pct"),
+            "market_topix_pct": item.get("market_topix_pct"),
+            "market_nikkei_change_yen": item.get("market_nikkei_change_yen"),
             "status": "open",
             "created_at": now_utc.isoformat(),
             "updated_at": now_utc.isoformat(),
@@ -672,6 +675,9 @@ def run_monitor(*, smoke_relaxed: bool = False, dry_run: bool = False, force_no_
     if not HAS_YFINANCE:
         logger.error("yfinance is not installed")
         return
+
+    from services.market_regime_updater import update_market_regime_for_latest_trade_date
+    update_market_regime_for_latest_trade_date(supabase)
 
     cfg = get_settings(force_reload=True)
     if smoke_relaxed:
@@ -825,6 +831,9 @@ def run_monitor(*, smoke_relaxed: bool = False, dry_run: bool = False, force_no_
             "market_regime_label": market_adjustment["label"],
             "market_threshold_adjust": market_adjustment["ai_threshold_adjust"],
             "market_regime_reason": market_adjustment["reason"],
+            "market_nikkei_pct": market_adjustment.get("nikkei_pct_used"),
+            "market_topix_pct": market_adjustment.get("topix_pct_used"),
+            "market_nikkei_change_yen": market_adjustment.get("nikkei_change_yen_used"),
         }
 
         if not dry_run:
@@ -852,10 +861,12 @@ def run_monitor(*, smoke_relaxed: bool = False, dry_run: bool = False, force_no_
             exclude_reason,
         )
         logger.info(
-            "[market_regime_save] code=%s regime=%s adjust=%s",
+            "[market_regime_save] code=%s regime=%s adjust=%s nikkei=%s topix=%s",
             code,
             market_adjustment.get("regime"),
             market_adjustment.get("ai_threshold_adjust"),
+            market_adjustment.get("nikkei_pct_used"),
+            market_adjustment.get("topix_pct_used"),
         )
 
         notified_stage = item.get("signal_stage")

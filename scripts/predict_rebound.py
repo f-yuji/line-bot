@@ -318,6 +318,9 @@ def _persist_watchlist(sb, row: dict, result: dict, *, dry_run: bool, force: boo
         "market_regime_label": result.get("market_regime_label"),
         "market_threshold_adjust": result.get("market_threshold_adjust", 0),
         "market_regime_reason": result.get("market_regime_reason"),
+        "market_nikkei_pct": result.get("market_nikkei_pct"),
+        "market_topix_pct": result.get("market_topix_pct"),
+        "market_nikkei_change_yen": result.get("market_nikkei_change_yen"),
         "updated_at": now,
     }
     if result["is_excluded"]:
@@ -378,6 +381,9 @@ def _create_virtual_trade(sb, snapshot: dict, watch: dict, result: dict, *, dry_
             "market_regime": result.get("market_regime"),
             "market_regime_label": result.get("market_regime_label"),
             "entry_size_multiplier": result.get("entry_size_multiplier", 1.0),
+            "market_nikkei_pct": result.get("market_nikkei_pct"),
+            "market_topix_pct": result.get("market_topix_pct"),
+            "market_nikkei_change_yen": result.get("market_nikkei_change_yen"),
             "status": "open",
         }
         if dry_run:
@@ -534,6 +540,9 @@ def run(args: argparse.Namespace) -> None:
         logger.info("ai_predict_enabled=False; exit")
         return
 
+    from services.market_regime_updater import update_market_regime_for_latest_trade_date
+    update_market_regime_for_latest_trade_date(sb)
+
     target_date = _target_date(sb, args)
     regime = _current_mode(sb, target_date)
     mode = str(regime.get("mode") or "normal")
@@ -589,6 +598,9 @@ def run(args: argparse.Namespace) -> None:
             "market_threshold_adjust": market_adjustment["ai_threshold_adjust"],
             "market_regime_reason": market_adjustment["reason"],
             "entry_size_multiplier": market_adjustment["entry_size_multiplier"],
+            "market_nikkei_pct": market_adjustment.get("nikkei_pct_used"),
+            "market_topix_pct": market_adjustment.get("topix_pct_used"),
+            "market_nikkei_change_yen": market_adjustment.get("nikkei_change_yen_used"),
         }
         if stage in SIGNAL_STAGES:
             signal_count += 1
@@ -600,10 +612,12 @@ def run(args: argparse.Namespace) -> None:
         )
         watch = _persist_watchlist(sb, row, result, dry_run=args.dry_run, force=args.force)
         logger.info(
-            "[market_regime_save] code=%s regime=%s adjust=%s",
+            "[market_regime_save] code=%s regime=%s adjust=%s nikkei=%s topix=%s",
             row.get("code"),
             result.get("market_regime"),
             result.get("market_threshold_adjust"),
+            result.get("market_nikkei_pct"),
+            result.get("market_topix_pct"),
         )
         _create_virtual_trade(sb, row, watch or {}, result, dry_run=args.dry_run)
         if args.notify and not args.dry_run and _notification_allowed(row, result, cfg):

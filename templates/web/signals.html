@@ -41,14 +41,24 @@
   <h1 class="page-title">リバウンドシグナル<small>SIGNALS ・ {{ rows|length }}件</small></h1>
 </div>
 
-{% if market_adjustment and market_adjustment.regime != "normal" %}
-<div class="panel" style="margin-bottom:12px;border-color:var(--accent-dim)">
+{% set _mc = market_adjustment %}
+<div class="panel" style="margin-bottom:12px;{% if _mc and _mc.regime and _mc.regime != 'normal' %}border-color:var(--accent-dim);{% endif %}">
   <div class="panel-head">
-    <div class="panel-title">市場環境：{{ market_adjustment.label }}<span class="tag">AI閾値 +{{ "%.0f"|format((market_adjustment.ai_threshold_adjust or 0) * 100) }}%</span></div>
+    <div class="panel-title">市場環境：{{ (_mc.label if _mc and _mc.label) or '未取得' }}{% if _mc and _mc.regime and _mc.regime != 'normal' %}<span class="tag">AI閾値 +{{ "%.0f"|format((_mc.ai_threshold_adjust or 0) * 100) }}%</span>{% endif %}</div>
   </div>
-  <div class="muted" style="padding:0 16px 14px">{{ market_adjustment.reason }}</div>
+  {% if _mc %}
+  <div style="padding:0 16px 14px">
+    {% if _mc.trade_date %}<div class="muted" style="font-size:0.82em;margin-bottom:4px">基準日：{{ _mc.trade_date }}{% if _mc.trade_date_stale %} <small style="color:var(--dn)">※古い可能性</small>{% endif %}</div>{% endif %}
+    {% if _mc.nikkei_pct is not none or _mc.topix_pct is not none or _mc.nikkei_change_yen is not none %}
+    <div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:4px">
+      {% if _mc.nikkei_pct is not none %}<span>日経平均 <b style="color:{% if _mc.nikkei_pct > 0 %}var(--up){% else %}var(--dn){% endif %}">{{ "%+.1f"|format(_mc.nikkei_pct) }}%</b>{% if _mc.nikkei_pct|abs >= 10 %} <small class="muted">※要確認</small>{% endif %}</span>{% endif %}
+      {% if _mc.topix_pct is not none %}<span>TOPIX <b style="color:{% if _mc.topix_pct > 0 %}var(--up){% else %}var(--dn){% endif %}">{{ "%+.1f"|format(_mc.topix_pct) }}%</b>{% if _mc.topix_pct|abs >= 10 %} <small class="muted">※要確認</small>{% endif %}</span>{% endif %}
+      {% if _mc.nikkei_change_yen is not none %}<span>日経変動 <b>{{ "%+,.0f"|format(_mc.nikkei_change_yen) }}円</b></span>{% endif %}
+    </div>
+    {% endif %}
+  </div>
+  {% endif %}
 </div>
-{% endif %}
 
 <div class="panel">
   <div class="panel-head">

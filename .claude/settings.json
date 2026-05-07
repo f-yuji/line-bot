@@ -25,7 +25,9 @@
       "Bash(git -C \"c:\\\\Users\\\\f-yuj\\\\dev\\\\line_bot\" status --short)",
       "Bash(Select-String -Path \"c:\\\\Users\\\\f-yuj\\\\dev\\\\line_bot\\\\templates\\\\web\\\\_styles.css\" -Pattern \"form-card|form-row|form-grid\")",
       "Bash(Select-Object -First 5)",
-      "Bash(git -C \"c:\\\\Users\\\\f-yuj\\\\dev\\\\line_bot\" diff --stat HEAD)"
+      "Bash(git -C \"c:\\\\Users\\\\f-yuj\\\\dev\\\\line_bot\" diff --stat HEAD)",
+      "Bash(Get-ChildItem -Recurse -Directory)",
+      "Bash(Select-Object -ExpandProperty FullName)"
     ]
   }
 }

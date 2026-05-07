@@ -12,7 +12,6 @@ from dotenv import load_dotenv
 from flask import Flask, request, abort, render_template, redirect, url_for, session, flash
 from openai import OpenAI
 from supabase import create_client
-from services.market_regime import evaluate_market_regime
 from services.signal_stage import SIGNAL_STAGES, STAGE_RANK, evaluate_signal_stage
 
 from linebot.v3 import WebhookHandler
@@ -162,20 +161,78 @@ def _with_ai_priority_stage(row: dict, fallback_market_adjustment: dict | None =
 
 
 def _current_market_adjustment() -> dict:
+    """DB保存値から market_adjustment を生成する (表示・stage計算共通ソース)."""
+    from datetime import date as _date, timezone as _tz, timedelta as _td
+    _JST = _tz(_td(hours=9))
+    today_jst = datetime.now(_JST).date()
+
+    result: dict = {
+        "regime": "normal",
+        "label": "通常",
+        "ai_threshold_adjust": 0.0,
+        "entry_size_multiplier": 1.0,
+        "reason": "",
+        "nikkei_pct": None,
+        "topix_pct": None,
+        "nikkei_change_yen": None,
+        "updated_at": None,
+        "trade_date": None,
+        "trade_date_stale": False,
+    }
+
+    # nikkei/topix 実使用値は stock_drop_watchlist から
     try:
         rows = (
-            supabase.table("market_regime")
-            .select("trade_date,mode,reason,nikkei_change_pct,topix_change_pct,decliners_ratio")
-            .order("trade_date", desc=True)
+            supabase.table("stock_drop_watchlist")
+            .select(
+                "market_regime,market_regime_label,market_threshold_adjust,"
+                "market_regime_reason,market_nikkei_pct,market_topix_pct,"
+                "market_nikkei_change_yen,updated_at"
+            )
+            .not_.is_("market_regime", "null")
+            .order("updated_at", desc=True)
             .limit(1)
             .execute()
             .data or []
         )
         if rows:
-            return evaluate_market_regime(rows[0])
+            ctx = rows[0]
+            result.update({
+                "regime": ctx.get("market_regime") or "normal",
+                "label": ctx.get("market_regime_label") or "通常",
+                "ai_threshold_adjust": float(ctx.get("market_threshold_adjust") or 0),
+                "reason": ctx.get("market_regime_reason") or "",
+                "nikkei_pct": ctx.get("market_nikkei_pct"),
+                "topix_pct": ctx.get("market_topix_pct"),
+                "nikkei_change_yen": ctx.get("market_nikkei_change_yen"),
+                "updated_at": ctx.get("updated_at"),
+            })
     except Exception as e:
-        logger.warning("market adjustment lookup failed: %s", e)
-    return evaluate_market_regime({})
+        logger.warning("market context from DB failed: %s", e)
+
+    # trade_date は market_regime テーブルから
+    try:
+        mr_rows = (
+            supabase.table("market_regime")
+            .select("trade_date")
+            .order("trade_date", desc=True)
+            .limit(1)
+            .execute()
+            .data or []
+        )
+        if mr_rows:
+            td_str = mr_rows[0].get("trade_date")
+            result["trade_date"] = td_str
+            if td_str:
+                try:
+                    delta = (today_jst - _date.fromisoformat(str(td_str))).days
+                    result["trade_date_stale"] = delta >= 2
+                except Exception:
+                    pass
+    except Exception as e:
+        logger.warning("market_regime trade_date lookup failed: %s", e)
+
+    return result
 
 # ─── ログ ───
 logging.basicConfig(
