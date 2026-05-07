@@ -75,3 +75,31 @@ CREATE INDEX IF NOT EXISTS idx_stock_rebound_labels_valid
     ON stock_rebound_labels (is_valid_label);
 CREATE INDEX IF NOT EXISTS idx_stock_rebound_labels_feature_snapshot_id
     ON stock_rebound_labels (feature_snapshot_id);
+
+-- Phase 3 extension: explicit 5d/10d labels.
+-- Existing compatibility columns remain intact. 5d values are synchronized
+-- into label_success / hit_take_profit / hit_stop_loss / max_return_5d_pct.
+ALTER TABLE stock_rebound_labels
+    ADD COLUMN IF NOT EXISTS label_5d_success boolean,
+    ADD COLUMN IF NOT EXISTS label_5d_tp_hit boolean,
+    ADD COLUMN IF NOT EXISTS label_5d_sl_hit boolean,
+    ADD COLUMN IF NOT EXISTS label_5d_max_return numeric,
+    ADD COLUMN IF NOT EXISTS label_5d_max_drawdown numeric,
+    ADD COLUMN IF NOT EXISTS label_5d_days_to_tp integer,
+    ADD COLUMN IF NOT EXISTS label_5d_days_to_sl integer,
+    ADD COLUMN IF NOT EXISTS label_5d_take_profit_pct numeric DEFAULT 5.0,
+    ADD COLUMN IF NOT EXISTS label_5d_stop_loss_pct numeric DEFAULT -3.0,
+    ADD COLUMN IF NOT EXISTS label_10d_success boolean,
+    ADD COLUMN IF NOT EXISTS label_10d_tp_hit boolean,
+    ADD COLUMN IF NOT EXISTS label_10d_sl_hit boolean,
+    ADD COLUMN IF NOT EXISTS label_10d_max_return numeric,
+    ADD COLUMN IF NOT EXISTS label_10d_max_drawdown numeric,
+    ADD COLUMN IF NOT EXISTS label_10d_days_to_tp integer,
+    ADD COLUMN IF NOT EXISTS label_10d_days_to_sl integer,
+    ADD COLUMN IF NOT EXISTS label_10d_take_profit_pct numeric DEFAULT 7.0,
+    ADD COLUMN IF NOT EXISTS label_10d_stop_loss_pct numeric DEFAULT -4.0;
+
+CREATE INDEX IF NOT EXISTS idx_stock_rebound_labels_5d_success
+    ON stock_rebound_labels (label_5d_success);
+CREATE INDEX IF NOT EXISTS idx_stock_rebound_labels_10d_success
+    ON stock_rebound_labels (label_10d_success);

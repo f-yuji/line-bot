@@ -36,6 +36,8 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 JST = timezone(timedelta(hours=9))
 DEFAULT_BATCH_SIZE = 200
+LABEL_5D = {"holding_days": 5, "take_profit_pct": 5.0, "stop_loss_pct": -3.0}
+LABEL_10D = {"holding_days": 10, "take_profit_pct": 7.0, "stop_loss_pct": -4.0}
 
 
 def _opt(name: str) -> str:
@@ -262,18 +264,24 @@ def _future_rows_for_candidate(sb, candidate: dict, holding_days: int) -> list[d
     return yf_rows[:holding_days]
 
 
-def build_label(candidate: dict, future_rows: list[dict], args: argparse.Namespace) -> dict | None:
-    holding_days = int(args.holding_days)
+def evaluate_rebound(
+    future_rows: list[dict],
+    entry_price: float,
+    holding_days: int,
+    take_profit_pct: float,
+    stop_loss_pct: float,
+) -> dict:
     if len(future_rows) < holding_days:
-        logger.info("skip label: %s %s future data insufficient", candidate.get("code"), candidate.get("trade_date"))
-        return None
-
-    entry_price = _to_float(candidate.get("close"))
-    if entry_price is None or entry_price <= 0:
-        return None
-
-    take_profit_pct = float(args.take_profit)
-    stop_loss_pct = float(args.stop_loss)
+        return {
+            "success": None,
+            "tp_hit": False,
+            "sl_hit": False,
+            "max_return": None,
+            "max_drawdown": None,
+            "days_to_tp": None,
+            "days_to_sl": None,
+            "reason": "invalid_future_data_insufficient",
+        }
     take_profit_price = entry_price * (1 + take_profit_pct / 100.0)
     stop_loss_price = entry_price * (1 + stop_loss_pct / 100.0)
 
@@ -281,8 +289,16 @@ def build_label(candidate: dict, future_rows: list[dict], args: argparse.Namespa
     lows = [_to_float(r.get("low")) for r in future_rows[:holding_days]]
     closes = [_to_float(r.get("close")) for r in future_rows[:holding_days]]
     if any(v is None for v in highs + lows + closes):
-        logger.info("skip label: %s %s future data incomplete", candidate.get("code"), candidate.get("trade_date"))
-        return None
+        return {
+            "success": None,
+            "tp_hit": False,
+            "sl_hit": False,
+            "max_return": None,
+            "max_drawdown": None,
+            "days_to_tp": None,
+            "days_to_sl": None,
+            "reason": "invalid_future_data_incomplete",
+        }
 
     take_profit_day = None
     stop_loss_day = None
@@ -290,7 +306,7 @@ def build_label(candidate: dict, future_rows: list[dict], args: argparse.Namespa
         day = i + 1
         if take_profit_day is None and highs[i] >= take_profit_price:
             take_profit_day = day
-        if stop_loss_day is None and closes[i] <= stop_loss_price:
+        if stop_loss_day is None and lows[i] <= stop_loss_price:
             stop_loss_day = day
 
     hit_tp = take_profit_day is not None
@@ -305,15 +321,52 @@ def build_label(candidate: dict, future_rows: list[dict], args: argparse.Namespa
         if take_profit_day < stop_loss_day:
             success = True
             reason = f"success_take_profit_day_{take_profit_day}"
-        elif take_profit_day == stop_loss_day:
-            success = False
-            reason = "failed_same_day_tp_sl"
         else:
             success = False
-            reason = f"failed_stop_loss_day_{stop_loss_day}"
+            reason = "failed_same_day_tp_sl" if take_profit_day == stop_loss_day else f"failed_stop_loss_day_{stop_loss_day}"
     else:
         success = False
         reason = f"failed_stop_loss_day_{stop_loss_day}" if hit_sl else "failed_timeout"
+
+    return {
+        "success": success,
+        "tp_hit": hit_tp,
+        "sl_hit": hit_sl,
+        "max_return": max_return,
+        "max_drawdown": max_drawdown,
+        "days_to_tp": take_profit_day,
+        "days_to_sl": stop_loss_day,
+        "reason": reason,
+    }
+
+
+def build_label(candidate: dict, future_rows: list[dict], args: argparse.Namespace) -> dict | None:
+    entry_price = _to_float(candidate.get("close"))
+    if entry_price is None or entry_price <= 0:
+        return None
+
+    label_mode = str(args.label_mode or "both")
+    needs_5d = label_mode in {"5d", "both"} or bool(args.force_5d) or bool(args.force)
+    needs_10d = label_mode in {"10d", "both"} or bool(args.force_10d) or bool(args.force)
+
+    eval_5d = evaluate_rebound(future_rows, entry_price, **LABEL_5D) if needs_5d else None
+    eval_10d = evaluate_rebound(future_rows, entry_price, **LABEL_10D) if needs_10d else None
+    if needs_5d and (eval_5d or {}).get("success") is None and not needs_10d:
+        logger.info("skip label: %s %s future data incomplete", candidate.get("code"), candidate.get("trade_date"))
+        return None
+    if needs_10d and (eval_10d or {}).get("success") is None and not needs_5d:
+        logger.info("skip label: %s %s future data incomplete", candidate.get("code"), candidate.get("trade_date"))
+        return None
+    if needs_5d and needs_10d and (eval_5d or {}).get("success") is None and (eval_10d or {}).get("success") is None:
+        logger.info("skip label: %s %s future data insufficient", candidate.get("code"), candidate.get("trade_date"))
+        return None
+
+    compat = eval_5d if eval_5d and eval_5d.get("success") is not None else None
+    highs = [_to_float(r.get("high")) for r in future_rows[:5]]
+    lows = [_to_float(r.get("low")) for r in future_rows[:5]]
+    closes = [_to_float(r.get("close")) for r in future_rows[:5]]
+    take_profit_price = entry_price * 1.05
+    stop_loss_price = entry_price * 0.97
 
     row = {
         "feature_snapshot_id": candidate.get("id"),
@@ -324,24 +377,54 @@ def build_label(candidate: dict, future_rows: list[dict], args: argparse.Namespa
         "sector": candidate.get("sector"),
         "entry_price": entry_price,
         "entry_basis": "close",
-        "max_return_5d_pct": max_return,
-        "max_drawdown_5d_pct": max_drawdown,
-        "take_profit_pct": take_profit_pct,
-        "stop_loss_pct": stop_loss_pct,
-        "holding_days": holding_days,
-        "take_profit_price": take_profit_price,
-        "stop_loss_price": stop_loss_price,
-        "hit_take_profit": hit_tp,
-        "hit_stop_loss": hit_sl,
-        "take_profit_day": take_profit_day,
-        "stop_loss_day": stop_loss_day,
-        "label_success": success,
-        "label_reason": reason,
         "is_valid_label": True,
         "invalid_reason": None,
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
-    for i in range(holding_days):
+
+    if compat is not None:
+        row.update({
+            "max_return_5d_pct": compat.get("max_return"),
+            "max_drawdown_5d_pct": compat.get("max_drawdown"),
+            "take_profit_pct": 5.0,
+            "stop_loss_pct": -3.0,
+            "holding_days": 5,
+            "take_profit_price": take_profit_price,
+            "stop_loss_price": stop_loss_price,
+            "hit_take_profit": compat.get("tp_hit"),
+            "hit_stop_loss": compat.get("sl_hit"),
+            "take_profit_day": compat.get("days_to_tp"),
+            "stop_loss_day": compat.get("days_to_sl"),
+            "label_success": compat.get("success"),
+            "label_reason": compat.get("reason"),
+        })
+
+    if eval_5d is not None:
+        row.update({
+            "label_5d_success": eval_5d.get("success"),
+            "label_5d_tp_hit": eval_5d.get("tp_hit"),
+            "label_5d_sl_hit": eval_5d.get("sl_hit"),
+            "label_5d_max_return": eval_5d.get("max_return"),
+            "label_5d_max_drawdown": eval_5d.get("max_drawdown"),
+            "label_5d_days_to_tp": eval_5d.get("days_to_tp"),
+            "label_5d_days_to_sl": eval_5d.get("days_to_sl"),
+            "label_5d_take_profit_pct": LABEL_5D["take_profit_pct"],
+            "label_5d_stop_loss_pct": LABEL_5D["stop_loss_pct"],
+        })
+    if eval_10d is not None:
+        row.update({
+            "label_10d_success": eval_10d.get("success"),
+            "label_10d_tp_hit": eval_10d.get("tp_hit"),
+            "label_10d_sl_hit": eval_10d.get("sl_hit"),
+            "label_10d_max_return": eval_10d.get("max_return"),
+            "label_10d_max_drawdown": eval_10d.get("max_drawdown"),
+            "label_10d_days_to_tp": eval_10d.get("days_to_tp"),
+            "label_10d_days_to_sl": eval_10d.get("days_to_sl"),
+            "label_10d_take_profit_pct": LABEL_10D["take_profit_pct"],
+            "label_10d_stop_loss_pct": LABEL_10D["stop_loss_pct"],
+        })
+
+    for i in range(min(5, len(highs))):
         day = i + 1
         row[f"future_high_{day}d"] = highs[i]
         row[f"future_low_{day}d"] = lows[i]
@@ -360,13 +443,13 @@ def _upsert_rows(sb, rows: list[dict], batch_size: int) -> int:
 
 def _summary(rows: list[dict]) -> dict:
     total = len(rows)
-    success = sum(1 for r in rows if r.get("label_success") is True)
+    success = sum(1 for r in rows if (r.get("label_success") if r.get("label_success") is not None else r.get("label_10d_success")) is True)
     fail = total - success
-    tp = sum(1 for r in rows if r.get("hit_take_profit"))
-    sl = sum(1 for r in rows if r.get("hit_stop_loss"))
+    tp = sum(1 for r in rows if (r.get("hit_take_profit") if r.get("hit_take_profit") is not None else r.get("label_10d_tp_hit")))
+    sl = sum(1 for r in rows if (r.get("hit_stop_loss") if r.get("hit_stop_loss") is not None else r.get("label_10d_sl_hit")))
     timeout = sum(1 for r in rows if r.get("label_reason") == "failed_timeout")
-    avg_ret = sum(float(r.get("max_return_5d_pct") or 0) for r in rows) / total if total else 0
-    avg_dd = sum(float(r.get("max_drawdown_5d_pct") or 0) for r in rows) / total if total else 0
+    avg_ret = sum(float(r.get("max_return_5d_pct") or r.get("label_10d_max_return") or 0) for r in rows) / total if total else 0
+    avg_dd = sum(float(r.get("max_drawdown_5d_pct") or r.get("label_10d_max_drawdown") or 0) for r in rows) / total if total else 0
     return {
         "total": total,
         "success": success,
@@ -395,18 +478,27 @@ def _empty_stats() -> dict:
 
 def _add_label_stats(stats: dict, row: dict) -> None:
     stats["total"] += 1
-    if row.get("label_success") is True:
+    success_value = row.get("label_success")
+    if success_value is None:
+        success_value = row.get("label_10d_success")
+    if success_value is True:
         stats["success"] += 1
     else:
         stats["fail"] += 1
-    if row.get("hit_take_profit"):
+    tp_value = row.get("hit_take_profit")
+    sl_value = row.get("hit_stop_loss")
+    if tp_value is None:
+        tp_value = row.get("label_10d_tp_hit")
+    if sl_value is None:
+        sl_value = row.get("label_10d_sl_hit")
+    if tp_value:
         stats["take_profit"] += 1
-    if row.get("hit_stop_loss"):
+    if sl_value:
         stats["stop_loss"] += 1
     if row.get("label_reason") == "failed_timeout":
         stats["timeout"] += 1
-    stats["sum_max_return"] += float(row.get("max_return_5d_pct") or 0)
-    stats["sum_max_drawdown"] += float(row.get("max_drawdown_5d_pct") or 0)
+    stats["sum_max_return"] += float(row.get("max_return_5d_pct") or row.get("label_10d_max_return") or 0)
+    stats["sum_max_drawdown"] += float(row.get("max_drawdown_5d_pct") or row.get("label_10d_max_drawdown") or 0)
 
 
 def _summary_from_stats(stats: dict) -> dict:
@@ -443,7 +535,7 @@ def run(args: argparse.Namespace) -> None:
     if not candidates:
         return
 
-    if not args.force and not args.dry_run:
+    if not args.force and not args.force_5d and not args.force_10d and not args.dry_run:
         existing = _existing_label_keys(sb, candidates)
         if existing:
             before = len(candidates)
@@ -458,11 +550,12 @@ def run(args: argparse.Namespace) -> None:
     by_code: dict[str, int] = {}
     saved = 0
     flush_every = max(1, int(args.flush_every or args.batch_size or DEFAULT_BATCH_SIZE))
+    max_holding_days = 10 if str(args.label_mode or "both") in {"10d", "both"} or args.force_10d or args.force else 5
 
     for c in candidates:
         by_code[str(c["code"])] = by_code.get(str(c["code"]), 0) + 1
         try:
-            future = _future_rows_for_candidate(sb, c, int(args.holding_days))
+            future = _future_rows_for_candidate(sb, c, max_holding_days)
             label = build_label(c, future, args)
             if label is None:
                 skipped += 1
@@ -557,6 +650,9 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--take-profit", type=float, default=5.0)
     parser.add_argument("--stop-loss", type=float, default=-4.0)
     parser.add_argument("--holding-days", type=int, default=5)
+    parser.add_argument("--label-mode", choices=["5d", "10d", "both"], default="both")
+    parser.add_argument("--force-5d", action="store_true")
+    parser.add_argument("--force-10d", action="store_true")
     parser.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE)
     parser.add_argument("--progress-every", type=int, default=500)
     parser.add_argument("--flush-every", type=int, default=1000)

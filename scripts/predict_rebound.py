@@ -50,6 +50,14 @@ FALLBACK_FEATURES = [
     "day_change_pct", "drop_from_20d_high_pct", "rsi14", "rsi_min_5d",
     "volume_ratio_20d", "index_gap_pct", "bad_news_score",
 ]
+TARGET_CONFIG = {
+    "5d": {"model_name": "rebound_lgbm_5d", "legacy_model_name": "rebound_lgbm", "take_profit_pct": 5.0, "stop_loss_pct": -3.0, "holding_days": 5},
+    "10d": {"model_name": "rebound_lgbm_10d", "legacy_model_name": None, "take_profit_pct": 7.0, "stop_loss_pct": -4.0, "holding_days": 10},
+}
+
+
+def _target_config(args: argparse.Namespace) -> dict:
+    return TARGET_CONFIG.get(str(getattr(args, "target_label", "5d") or "5d"), TARGET_CONFIG["5d"])
 
 
 def _opt(name: str) -> str:
@@ -129,8 +137,18 @@ def _load_active_model_row(sb, model_name: str = "rebound_lgbm") -> dict | None:
         return None
 
 
-def _load_model_bundle(sb) -> tuple[dict | None, dict | None]:
-    row = _load_active_model_row(sb)
+def _load_model_bundle(sb, args: argparse.Namespace) -> tuple[dict | None, dict | None]:
+    target = _target_config(args)
+    names = [args.model_name] if args.model_name else [target["model_name"]]
+    if target.get("legacy_model_name"):
+        names.append(target["legacy_model_name"])
+    row = None
+    for name in names:
+        if not name:
+            continue
+        row = _load_active_model_row(sb, name)
+        if row:
+            break
     if not row:
         logger.warning("active model not found; fallback rule will be used")
         return None, None
@@ -219,7 +237,7 @@ def _fallback_probability(row: dict) -> float:
     return max(0.01, min(0.89, p))
 
 
-def _expected_value(probability: float, take_profit_pct: float = 5.0, stop_loss_pct: float = -4.0) -> float:
+def _expected_value(probability: float, take_profit_pct: float = 5.0, stop_loss_pct: float = -3.0) -> float:
     return probability * take_profit_pct - (1.0 - probability) * abs(stop_loss_pct)
 
 
@@ -349,7 +367,7 @@ def _create_virtual_trade(sb, snapshot: dict, watch: dict, result: dict, *, dry_
         now = datetime.now(timezone.utc).isoformat()
         reason = (
             f"AI probability={result['probability']:.2f} expected_value={result['expected_value']:.2f} "
-            f"stage={result['signal_stage']} mode={result['mode']}"
+            f"stage={result['signal_stage']} mode={result['mode']} horizon={result.get('prediction_horizon', '5d')}"
         )
         row = {
             "code": snapshot["code"],
@@ -420,6 +438,7 @@ def _message(row: dict, result: dict) -> str:
         f"AI確率：{result['probability'] * 100:.0f}%",
         f"期待値：{result['expected_value']:+.1f}%",
         f"ステージ：{result['signal_stage']}",
+        f"期間：{result.get('prediction_horizon', '5d')}",
         f"相場モード：{result['mode']}",
         f"急落率：{_to_float(row.get('day_change_pct'), 0):+.1f}%",
         f"RSI：{_to_float(row.get('rsi14'), 0):.0f}",
@@ -432,9 +451,9 @@ def _message(row: dict, result: dict) -> str:
         f"金利 {_to_float(row.get('interest_rate_score'), 0):.0f}",
         "",
         "想定：",
-        "利確 +5%",
-        "損切 -4%",
-        "期限 5営業日",
+        f"利確 +{result.get('take_profit_pct', 5.0):.0f}%",
+        f"損切 {result.get('stop_loss_pct', -3.0):.0f}%",
+        f"期限 {result.get('holding_days', 5)}営業日",
     ])
 
 
@@ -471,10 +490,14 @@ def _build_batch_messages(items: list[tuple[dict, dict]], target_date: str, mode
     header = "\n".join([
         "【AIリバ候補】",
         f"対象日：{target_date}",
+        f"期間：{items[0][1].get('prediction_horizon', '5d')}",
         f"相場モード：{mode}",
         f"通知候補：{len(items)}件（強本命 {strong} / 本命 {confirmed} / 初動 {early}）",
         "",
-        "想定：利確 +5% / 損切 -4% / 期限 5営業日",
+        "想定："
+        f"利確 +{items[0][1].get('take_profit_pct', 5.0):.0f}% / "
+        f"損切 {items[0][1].get('stop_loss_pct', -3.0):.0f}% / "
+        f"期限 {items[0][1].get('holding_days', 5)}営業日",
         "",
     ])
     footer = ""
@@ -521,7 +544,8 @@ def run(args: argparse.Namespace) -> None:
     target_date = _target_date(sb, args)
     regime = _current_mode(sb, target_date)
     mode = str(regime.get("mode") or "normal")
-    model_row, bundle = _load_model_bundle(sb)
+    target = _target_config(args)
+    model_row, bundle = _load_model_bundle(sb, args)
     using_model = bundle is not None
     if not using_model:
         logger.warning("using fallback rule probabilities")
@@ -541,7 +565,7 @@ def run(args: argparse.Namespace) -> None:
     signal_count = 0
     notify_items: list[tuple[dict, dict]] = []
     for row, prob in zip(snapshots, probabilities):
-        ev = _expected_value(prob)
+        ev = _expected_value(prob, target["take_profit_pct"], target["stop_loss_pct"])
         stage, is_excluded, exclude_reason = _determine_stage(row, prob, ev, mode, cfg)
         result = {
             "probability": round(prob, 6),
@@ -552,6 +576,10 @@ def run(args: argparse.Namespace) -> None:
             "is_excluded": is_excluded,
             "exclude_reason": exclude_reason,
             "model_version": (model_row or {}).get("model_version") if model_row else "fallback_rule",
+            "prediction_horizon": args.target_label,
+            "take_profit_pct": target["take_profit_pct"],
+            "stop_loss_pct": target["stop_loss_pct"],
+            "holding_days": target["holding_days"],
         }
         if stage in SIGNAL_STAGES:
             signal_count += 1
@@ -576,6 +604,8 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--latest", action="store_true")
     p.add_argument("--code")
     p.add_argument("--notify", action="store_true")
+    p.add_argument("--target-label", choices=["5d", "10d"], default="5d")
+    p.add_argument("--model-name")
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--force", action="store_true")
     p.add_argument("--limit", type=int)

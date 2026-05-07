@@ -60,7 +60,28 @@ BOOL_FEATURES = [
     "earnings_within_5d_flag", "earnings_recent_flag",
 ]
 CATEGORICAL_FEATURES = ["sector", "market"]
-LABEL_EVAL_COLUMNS = ["max_return_5d_pct", "max_drawdown_5d_pct"]
+TARGET_LABELS = {
+    "5d": {
+        "label_col": "label_5d_success",
+        "compat_col": "label_success",
+        "return_col": "label_5d_max_return",
+        "drawdown_col": "label_5d_max_drawdown",
+        "model_name": "rebound_lgbm_5d",
+        "target_name": "label_5d_success",
+    },
+    "10d": {
+        "label_col": "label_10d_success",
+        "compat_col": "label_10d_success",
+        "return_col": "label_10d_max_return",
+        "drawdown_col": "label_10d_max_drawdown",
+        "model_name": "rebound_lgbm_10d",
+        "target_name": "label_10d_success",
+    },
+}
+
+
+def _target_spec(args: argparse.Namespace) -> dict:
+    return TARGET_LABELS.get(str(getattr(args, "target_label", "5d") or "5d"), TARGET_LABELS["5d"])
 
 
 def _opt(name: str) -> str:
@@ -107,12 +128,17 @@ def _date_range(args: argparse.Namespace) -> tuple[str, str]:
 
 def _load_training_rows(sb, args: argparse.Namespace) -> "pd.DataFrame":
     start, end = _date_range(args)
+    target = _target_spec(args)
+    label_col = target["label_col"]
+    fallback_col = target["compat_col"]
     snap_cols = sorted(set(
         ["id", "trade_date", "code", "name", "is_drop_candidate", "is_tradeable"]
         + NUMERIC_FEATURES + BOOL_FEATURES + CATEGORICAL_FEATURES
     ))
     label_cols = [
         "id", "feature_snapshot_id", "trade_date", "code", "label_success", "is_valid_label",
+        "label_5d_success", "label_5d_max_return", "label_5d_max_drawdown",
+        "label_10d_success", "label_10d_max_return", "label_10d_max_drawdown",
         "max_return_5d_pct", "max_drawdown_5d_pct",
     ]
     def snapshot_query(last_id: int = 0):
@@ -134,11 +160,14 @@ def _load_training_rows(sb, args: argparse.Namespace) -> "pd.DataFrame":
             sb.table("stock_rebound_labels")
             .select(",".join(label_cols))
             .eq("is_valid_label", True)
-            .not_.is_("label_success", "null")
             .gte("trade_date", start)
             .lte("trade_date", end)
             .order("id")
         )
+        try:
+            q = q.not_.is_(label_col, "null")
+        except Exception:
+            q = q.not_.is_(fallback_col, "null")
         if last_id:
             q = q.gt("id", last_id)
         return q
@@ -154,7 +183,10 @@ def _load_training_rows(sb, args: argparse.Namespace) -> "pd.DataFrame":
     if merged.empty:
         ldf2 = pd.DataFrame(labels)
         merged = s.merge(ldf2, on=["code", "trade_date"], how="inner")
-    merged = merged[merged["label_success"].notna()].copy()
+    if label_col not in merged.columns or merged[label_col].isna().all():
+        label_col = fallback_col
+    merged = merged[merged[label_col].notna()].copy()
+    merged["target_success"] = merged[label_col].astype(bool)
     merged["trade_date"] = pd.to_datetime(merged["trade_date"])
     merged = merged.sort_values("trade_date")
     return merged
@@ -200,7 +232,7 @@ def _success_rate(mask: "pd.Series", y: "pd.Series") -> float | None:
     return float(y[mask].mean())
 
 
-def _metrics(y_valid: "pd.Series", prob: "np.ndarray", valid_df: "pd.DataFrame") -> dict:
+def _metrics(y_valid: "pd.Series", prob: "np.ndarray", valid_df: "pd.DataFrame", args: argparse.Namespace) -> dict:
     pred = (prob >= 0.5).astype(int)
     out: dict[str, Any] = {
         "valid_samples": int(len(y_valid)),
@@ -226,8 +258,11 @@ def _metrics(y_valid: "pd.Series", prob: "np.ndarray", valid_df: "pd.DataFrame")
     out["prob_65_success_rate"] = _success_rate(p >= 0.65, y_valid)
     out["prob_72_success_rate"] = _success_rate(p >= 0.72, y_valid)
     top20 = p >= p.quantile(0.80)
-    out["avg_max_return_top_20pct"] = float(pd.to_numeric(valid_df.loc[top20, "max_return_5d_pct"], errors="coerce").mean()) if top20.any() else None
-    out["avg_max_drawdown_top_20pct"] = float(pd.to_numeric(valid_df.loc[top20, "max_drawdown_5d_pct"], errors="coerce").mean()) if top20.any() else None
+    target = _target_spec(args)
+    return_col = target["return_col"] if target["return_col"] in valid_df.columns else "max_return_5d_pct"
+    drawdown_col = target["drawdown_col"] if target["drawdown_col"] in valid_df.columns else "max_drawdown_5d_pct"
+    out["avg_max_return_top_20pct"] = float(pd.to_numeric(valid_df.loc[top20, return_col], errors="coerce").mean()) if top20.any() else None
+    out["avg_max_drawdown_top_20pct"] = float(pd.to_numeric(valid_df.loc[top20, drawdown_col], errors="coerce").mean()) if top20.any() else None
     return out
 
 
@@ -289,8 +324,9 @@ def run(args: argparse.Namespace) -> None:
         logger.info("DRYRUN complete: no model training or DB save")
         return
 
-    y_train = train_df["label_success"].astype(bool).astype(int)
-    y_valid = valid_df["label_success"].astype(bool).astype(int)
+    target = _target_spec(args)
+    y_train = train_df["target_success"].astype(bool).astype(int)
+    y_valid = valid_df["target_success"].astype(bool).astype(int)
     x_train = x_all.loc[train_idx, feature_cols]
     x_valid = x_all.loc[valid_idx, feature_cols]
 
@@ -308,7 +344,7 @@ def run(args: argparse.Namespace) -> None:
     model = lgb.LGBMClassifier(**params)
     model.fit(x_train, y_train, eval_set=[(x_valid, y_valid)], eval_metric="binary_logloss")
     prob = model.predict_proba(x_valid)[:, 1]
-    metrics = _metrics(y_valid, prob, valid_df)
+    metrics = _metrics(y_valid, prob, valid_df, args)
     logger.info(
         "metrics: valid_success_rate=%.1f%% top_20pct_success_rate=%s roc_auc=%s",
         (metrics.get("valid_success_rate") or 0) * 100,
@@ -318,7 +354,8 @@ def run(args: argparse.Namespace) -> None:
 
     MODEL_DIR.mkdir(exist_ok=True)
     version = datetime.now(JST).strftime("%Y%m%d_%H%M%S")
-    stem = f"{args.model_name}_{version}"
+    model_name = args.model_name or target["model_name"]
+    stem = f"{model_name}_{version}"
     model_path = MODEL_DIR / f"{stem}.pkl"
     feature_path = MODEL_DIR / f"{stem}_features.json"
     importance_path = MODEL_DIR / f"{stem}_importance.csv"
@@ -344,9 +381,9 @@ def run(args: argparse.Namespace) -> None:
     }).sort_values("importance", ascending=False).to_csv(importance_path, index=False)
 
     row = {
-        "model_name": args.model_name,
+        "model_name": model_name,
         "model_version": version,
-        "target_name": "rebound_5d_5pct",
+        "target_name": target["target_name"],
         "train_start": train_df["trade_date"].min().date().isoformat(),
         "train_end": train_df["trade_date"].max().date().isoformat(),
         "valid_start": valid_df["trade_date"].min().date().isoformat(),
@@ -373,7 +410,8 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--min-samples", type=int, default=200)
     p.add_argument("--activate", action="store_true")
     p.add_argument("--dry-run", action="store_true")
-    p.add_argument("--model-name", default="rebound_lgbm")
+    p.add_argument("--target-label", choices=["5d", "10d"], default="5d")
+    p.add_argument("--model-name")
     p.add_argument("--force", action="store_true")
     return p.parse_args()
 
