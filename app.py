@@ -6,11 +6,14 @@ import re
 import requests
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional
+from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
 from flask import Flask, request, abort, render_template, redirect, url_for, session, flash
 from openai import OpenAI
 from supabase import create_client
+from services.market_regime import evaluate_market_regime
+from services.signal_stage import SIGNAL_STAGES, STAGE_RANK, evaluate_signal_stage
 
 from linebot.v3 import WebhookHandler
 from linebot.v3.exceptions import InvalidSignatureError
@@ -106,6 +109,73 @@ app.secret_key = _get_optional_env("SECRET_KEY") or _get_optional_env("WEB_ADMIN
 WEB_ADMIN_TOKEN = _get_optional_env("WEB_ADMIN_TOKEN")
 configuration = Configuration(access_token=LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
+JST = ZoneInfo("Asia/Tokyo")
+
+
+@app.template_filter("jst")
+def jst_filter(value, fmt="%Y-%m-%d %H:%M"):
+    if not value:
+        return ""
+    try:
+        if isinstance(value, str):
+            dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        else:
+            dt = value
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(JST).strftime(fmt)
+    except Exception:
+        return str(value)
+
+
+def _with_ai_priority_stage(row: dict, fallback_market_adjustment: dict | None = None) -> dict:
+    copied = dict(row)
+    copied["raw_signal_stage"] = row.get("signal_stage")
+    try:
+        bad_score = float(copied.get("bad_news_score") or 0)
+    except Exception:
+        bad_score = 0.0
+    market_adjustment = {
+        "regime": copied.get("market_regime") or (fallback_market_adjustment or {}).get("regime") or "normal",
+        "label": copied.get("market_regime_label") or (fallback_market_adjustment or {}).get("label") or "通常",
+        "ai_threshold_adjust": copied.get("market_threshold_adjust")
+        if copied.get("market_threshold_adjust") is not None
+        else (fallback_market_adjustment or {}).get("ai_threshold_adjust", 0),
+        "entry_size_multiplier": 1.0,
+        "reason": copied.get("market_regime_reason") or (fallback_market_adjustment or {}).get("reason") or "",
+    }
+    if copied.get("is_excluded") or bad_score >= 80:
+        stage_result = evaluate_signal_stage(None, copied.get("signal_score") or copied.get("score"))
+    else:
+        stage_result = evaluate_signal_stage(
+            copied.get("signal_probability"),
+            copied.get("signal_score") if copied.get("signal_score") is not None else copied.get("score"),
+            copied.get("expected_value"),
+            _settings_loader.get_settings(),
+            market_adjustment,
+        )
+    copied["signal_stage"] = stage_result["stage"]
+    copied["stage_label"] = stage_result["stage_label"]
+    copied["stage_rank"] = stage_result["stage_rank"]
+    copied["stage_reason"] = stage_result["reason"]
+    return copied
+
+
+def _current_market_adjustment() -> dict:
+    try:
+        rows = (
+            supabase.table("market_regime")
+            .select("trade_date,mode,reason,nikkei_change_pct,topix_change_pct,decliners_ratio")
+            .order("trade_date", desc=True)
+            .limit(1)
+            .execute()
+            .data or []
+        )
+        if rows:
+            return evaluate_market_regime(rows[0])
+    except Exception as e:
+        logger.warning("market adjustment lookup failed: %s", e)
+    return evaluate_market_regime({})
 
 # ─── ログ ───
 logging.basicConfig(
@@ -1644,6 +1714,17 @@ def handle_postback(event):
 @app.route("/web/")
 @app.route("/web/dashboard")
 def web_dashboard():
+    market_adjustment = _current_market_adjustment()
+    def _num(row: dict, *keys: str) -> float:
+        for key in keys:
+            try:
+                value = row.get(key)
+                if value is not None:
+                    return float(value)
+            except Exception:
+                continue
+        return 0.0
+
     try:
         rows = (
             supabase.table("stock_drop_watchlist")
@@ -1654,15 +1735,29 @@ def web_dashboard():
             .execute()
             .data or []
         )
+        rows = [_with_ai_priority_stage(r, market_adjustment) for r in rows]
     except Exception as e:
         logger.error("dashboard error: %s", e)
         rows = []
-    signal_rows = [r for r in rows if r.get("status") == "rebound_signal"]
+    signal_rows = [
+        r for r in rows
+        if r.get("status") == "rebound_signal"
+        and r.get("signal_stage") in SIGNAL_STAGES
+    ]
+    signal_rows.sort(
+        key=lambda r: (
+            STAGE_RANK.get(r.get("signal_stage"), 0),
+            _num(r, "signal_probability", "ai_probability"),
+            _num(r, "expected_value"),
+            _num(r, "signal_score", "rebound_score", "score"),
+        ),
+        reverse=True,
+    )
     watching_rows = [r for r in rows if r.get("status") == "watching"]
     stats = {
         "watching": len(watching_rows),
         "rebound_signal": len(signal_rows),
-        "notified": len([r for r in rows if r.get("status") == "notified"]),
+        "notified": len([r for r in rows if r.get("rebound_notified_at")]),
         "excluded": len([r for r in rows if r.get("status") == "excluded" or r.get("is_excluded")]),
     }
     return render_template("web/dashboard.html",
@@ -1670,21 +1765,56 @@ def web_dashboard():
         signal_rows=signal_rows,
         watching_rows=watching_rows,
         stats=stats,
+        market_adjustment=market_adjustment,
     )
+
+
+@app.route("/web/actions/refresh", methods=["POST"])
+def web_refresh():
+    try:
+        from scripts.monitor_rebound import run_monitor
+
+        run_monitor(force_no_notify=True)
+        flash("更新完了", "success")
+    except Exception as e:
+        logger.exception("manual refresh failed")
+        flash(f"更新失敗: {e}", "danger")
+    return redirect(request.referrer or url_for("web_dashboard"))
 
 
 @app.route("/web/watchlist")
 def web_watchlist():
     status_filter = request.args.get("status", "all")
+    market_adjustment = _current_market_adjustment()
+    def _num(row: dict, *keys: str) -> float:
+        for key in keys:
+            try:
+                value = row.get(key)
+                if value is not None:
+                    return float(value)
+            except Exception:
+                continue
+        return 0.0
+
     try:
         q = supabase.table("stock_drop_watchlist").select("*").order("drop_pct", desc=False)
         if status_filter != "all":
             q = q.eq("status", status_filter)
         rows = q.limit(200).execute().data or []
+        rows = [_with_ai_priority_stage(r, market_adjustment) for r in rows]
+        rows.sort(
+            key=lambda r: (
+                STAGE_RANK.get(r.get("signal_stage"), 0),
+                _num(r, "signal_probability", "ai_probability"),
+                _num(r, "expected_value"),
+                _num(r, "signal_score", "rebound_score", "score"),
+            ),
+            reverse=True,
+        )
     except Exception as e:
         logger.error("watchlist error: %s", e)
         rows = []
-    return render_template("web/watchlist.html", rows=rows, status_filter=status_filter)
+    return render_template("web/watchlist.html", rows=rows, status_filter=status_filter, market_adjustment=market_adjustment)
 
 
 @app.route("/web/watchlist/<item_id>/close", methods=["POST"])
@@ -1702,20 +1832,48 @@ def web_watchlist_close(item_id):
 
 @app.route("/web/signals")
 def web_signals():
+    market_adjustment = _current_market_adjustment()
+    def _num(row: dict, *keys: str) -> float:
+        for key in keys:
+            try:
+                value = row.get(key)
+                if value is not None:
+                    return float(value)
+            except Exception:
+                continue
+        return 0.0
+
     try:
         rows = (
             supabase.table("stock_drop_watchlist")
             .select("*")
             .eq("status", "rebound_signal")
-            .order("drop_detected_at", desc=True)
-            .limit(100)
+            .order("last_signal_at", desc=True)
+            .limit(300)
             .execute()
             .data or []
         )
+        rows = [_with_ai_priority_stage(r, market_adjustment) for r in rows]
     except Exception as e:
         logger.error("signals error: %s", e)
         rows = []
-    return render_template("web/signals.html", rows=rows)
+
+    rows = [
+        r for r in rows
+        if r.get("status") == "rebound_signal"
+        and r.get("signal_stage") in SIGNAL_STAGES
+    ]
+    rows.sort(
+        key=lambda r: (
+            STAGE_RANK.get(r.get("signal_stage"), 0),
+            _num(r, "signal_probability", "ai_probability"),
+            _num(r, "expected_value"),
+            _num(r, "signal_score", "rebound_score", "score"),
+            r.get("last_signal_at") or "",
+        ),
+        reverse=True,
+    )
+    return render_template("web/signals.html", rows=rows, market_adjustment=market_adjustment)
 
 
 @app.route("/web/settings", methods=["GET", "POST"])
@@ -1728,6 +1886,35 @@ def web_settings():
             "jquants_enabled", "jquants_prefer_source", "jquants_fallback_yfinance",
         }
         int_fields = {"watch_days_limit", "jquants_max_retry"}
+        def _upsert_settings(payload: dict) -> None:
+            remaining = dict(payload)
+            for _ in range(8):
+                try:
+                    user_id = remaining.get("user_id", "global")
+                    update_payload = {k: v for k, v in remaining.items() if k != "user_id"}
+                    updated = (
+                        supabase.table("strategy_settings")
+                        .update(update_payload)
+                        .eq("user_id", user_id)
+                        .execute()
+                        .data or []
+                    )
+                    if updated:
+                        return
+                    supabase.table("strategy_settings").insert(remaining).execute()
+                    return
+                except Exception as e:
+                    msg = str(e)
+                    marker = "Could not find the '"
+                    missing = None
+                    if marker in msg:
+                        missing = msg.split(marker, 1)[1].split("'", 1)[0]
+                    if missing and missing in remaining:
+                        logger.warning("strategy_settings column missing; skip field for this save: %s", missing)
+                        remaining.pop(missing, None)
+                        continue
+                    raise
+
         try:
             data: dict = {"updated_at": datetime.now(timezone.utc).isoformat()}
             for key, default in _settings_loader.DEFAULTS.items():
@@ -1737,7 +1924,7 @@ def web_settings():
                     data[key] = int(request.form.get(key, default))
                 else:
                     data[key] = float(request.form.get(key, default))
-            supabase.table("strategy_settings").upsert({**data, "user_id": "global"}).execute()
+            _upsert_settings({**data, "user_id": "global"})
             _settings_loader._cache = None
             flash("設定を保存した", "success")
         except Exception as e:
@@ -1763,6 +1950,10 @@ def web_virtual_trades():
         logger.error("virtual_trades error: %s", e)
         open_trades, closed_trades = [], []
 
+    open_cost_total = 0.0
+    open_value_total = 0.0
+    open_unrealized_pnl_total = 0.0
+
     # 保有中の現在価格・含み損益を取得
     try:
         import yfinance as yf
@@ -1770,30 +1961,54 @@ def web_virtual_trades():
             code = t.get("code", "")
             market = t.get("market", "")
             ticker = code if market == "dow" else f"{code}.T"
+            buy = float(t.get("buy_price") or 0)
+            qty = int(t.get("quantity") or 100)
+            cost = buy * qty
+            t["cost_amount"] = cost
+            open_cost_total += cost
             try:
                 hist = yf.Ticker(ticker).history(period="2d", auto_adjust=True)
                 if not hist.empty:
                     current = float(hist["Close"].iloc[-1])
-                    buy = float(t.get("buy_price") or 0)
-                    qty = int(t.get("quantity") or 100)
+                    value = current * qty
+                    pnl = value - cost
                     t["current_price"] = current
+                    t["market_value"] = value
                     t["unrealized_pct"] = (current - buy) / buy * 100 if buy > 0 else None
-                    t["unrealized_pnl"] = (current - buy) * qty if buy > 0 else None
+                    t["unrealized_pnl"] = pnl if buy > 0 else None
+                    open_value_total += value
+                    open_unrealized_pnl_total += pnl if buy > 0 else 0
             except Exception:
                 t["current_price"] = None
+                t["market_value"] = None
                 t["unrealized_pct"] = None
                 t["unrealized_pnl"] = None
     except ImportError:
-        pass
+        for t in open_trades:
+            buy = float(t.get("buy_price") or 0)
+            qty = int(t.get("quantity") or 100)
+            cost = buy * qty
+            t["cost_amount"] = cost
+            t["market_value"] = None
+            open_cost_total += cost
 
     total_pnl = sum(t.get("profit_loss") or 0 for t in closed_trades)
     win_count = sum(1 for t in closed_trades if (t.get("profit_loss") or 0) > 0)
+    open_unrealized_pct_total = (
+        open_unrealized_pnl_total / open_cost_total * 100
+        if open_cost_total > 0 else None
+    )
     return render_template(
         "web/virtual_trades.html",
         open_trades=open_trades,
         closed_trades=closed_trades,
         total_pnl=total_pnl,
         win_count=win_count,
+        open_cost_total=open_cost_total,
+        open_value_total=open_value_total,
+        open_unrealized_pnl_total=open_unrealized_pnl_total,
+        open_unrealized_pct_total=open_unrealized_pct_total,
+        market_adjustment=_current_market_adjustment(),
     )
 
 

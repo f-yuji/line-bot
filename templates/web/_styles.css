@@ -702,6 +702,15 @@ td.num { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
 .score-bar.low .fill { background: var(--text-dim); }
 .score-bar .num { color: var(--text); font-weight: 600; min-width: 22px; text-align: right; }
 
+.ai-score {
+  font-family: var(--font-mono);
+  font-weight: 700;
+}
+.ai-score.strong { color: var(--up); }
+.ai-score.mid { color: var(--status-signal); }
+.ai-score.weak { color: #ff9f43; }
+.ai-score.low { color: var(--text-3); }
+
 /* Pct delta inline */
 .delta {
   font-family: var(--font-mono);

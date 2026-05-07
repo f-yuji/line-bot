@@ -32,6 +32,8 @@ except ImportError:
 from supabase import create_client
 
 from settings_loader import get_settings
+from services.market_regime import evaluate_market_regime
+from services.signal_stage import SIGNAL_STAGES, evaluate_signal_stage
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -39,13 +41,6 @@ logger = logging.getLogger(__name__)
 JST = timezone(timedelta(hours=9))
 ROOT = Path(__file__).resolve().parents[1]
 LINE_API_BASE = "https://api.line.me"
-SIGNAL_STAGES = {"early", "confirmed", "strong_confirmed"}
-MODE_THRESHOLDS = {
-    "normal": {"early": 0.55, "confirmed": 0.65, "strong": 0.72},
-    "shock": {"early": 0.57, "confirmed": 0.67, "strong": 0.75},
-    "panic": {"early": 0.60, "confirmed": 0.70, "strong": 0.78},
-    "recovery": {"early": 0.53, "confirmed": 0.63, "strong": 0.70},
-}
 FALLBACK_FEATURES = [
     "day_change_pct", "drop_from_20d_high_pct", "rsi14", "rsi_min_5d",
     "volume_ratio_20d", "index_gap_pct", "bad_news_score",
@@ -245,7 +240,7 @@ def _current_mode(sb, target_date: str) -> dict:
     try:
         rows = (
             sb.table("market_regime")
-            .select("trade_date,mode,shock_score,reason")
+            .select("trade_date,mode,shock_score,reason,nikkei_change_pct,topix_change_pct,decliners_ratio")
             .lte("trade_date", target_date)
             .order("trade_date", desc=True)
             .limit(1)
@@ -259,24 +254,12 @@ def _current_mode(sb, target_date: str) -> dict:
     return {"trade_date": target_date, "mode": "normal", "shock_score": 0, "reason": "fallback normal"}
 
 
-def _determine_stage(row: dict, probability: float, expected_value: float, mode: str, cfg: dict) -> tuple[str, bool, str | None]:
+def _determine_stage(row: dict, probability: float, expected_value: float, cfg: dict, rule_score: float) -> tuple[str, bool, str | None]:
     bad = _to_float(row.get("bad_news_score"), 0) or 0
     if bad >= 80:
         return "none", True, f"AI除外: bad_news_score={bad:.0f}"
-    if expected_value <= float(cfg.get("ai_expected_value_min", 0.0)):
-        return "none", False, None
-    thresholds = MODE_THRESHOLDS.get(mode or "normal", MODE_THRESHOLDS["normal"]).copy()
-    thresholds["early"] = float(cfg.get("ai_probability_early", thresholds["early"]))
-    thresholds["confirmed"] = float(cfg.get("ai_probability_confirmed", thresholds["confirmed"]))
-    thresholds["strong"] = float(cfg.get("ai_probability_strong", thresholds["strong"]))
-    vol = _to_float(row.get("volume_ratio_20d"), 0) or 0
-    if probability >= thresholds["strong"] and bad < 60 and vol >= 1.3:
-        return "strong_confirmed", False, None
-    if probability >= thresholds["confirmed"]:
-        return "confirmed", False, None
-    if probability >= thresholds["early"]:
-        return "early", False, None
-    return "none", False, None
+    result = evaluate_signal_stage(probability, rule_score, expected_value, cfg, row.get("market_regime_adjustment"))
+    return result["stage"], False, None
 
 
 def _score_like(row: dict, probability: float) -> float:
@@ -331,6 +314,10 @@ def _persist_watchlist(sb, row: dict, result: dict, *, dry_run: bool, force: boo
         "signal_count": signal_count,
         "is_excluded": result["is_excluded"],
         "exclude_reason": result["exclude_reason"],
+        "market_regime": result.get("market_regime"),
+        "market_regime_label": result.get("market_regime_label"),
+        "market_threshold_adjust": result.get("market_threshold_adjust", 0),
+        "market_regime_reason": result.get("market_regime_reason"),
         "updated_at": now,
     }
     if result["is_excluded"]:
@@ -351,6 +338,9 @@ def _persist_watchlist(sb, row: dict, result: dict, *, dry_run: bool, force: boo
 
 def _create_virtual_trade(sb, snapshot: dict, watch: dict, result: dict, *, dry_run: bool) -> None:
     if result["signal_stage"] not in SIGNAL_STAGES:
+        return
+    if result.get("market_regime") == "panic_selloff":
+        logger.info("virtual_trade skipped by market regime: code=%s regime=panic_selloff", snapshot.get("code"))
         return
     try:
         existing = (
@@ -385,6 +375,9 @@ def _create_virtual_trade(sb, snapshot: dict, watch: dict, result: dict, *, dry_
             "sector_risk_score": snapshot.get("sector_risk_score") or 0,
             "market_shock_score": snapshot.get("market_shock_score") or 0,
             "feature_snapshot_id": snapshot.get("id"),
+            "market_regime": result.get("market_regime"),
+            "market_regime_label": result.get("market_regime_label"),
+            "entry_size_multiplier": result.get("entry_size_multiplier", 1.0),
             "status": "open",
         }
         if dry_run:
@@ -435,7 +428,7 @@ def _message(row: dict, result: dict) -> str:
         title,
         f"{row.get('code')} {row.get('name') or ''}".strip(),
         "",
-        f"AI確率：{result['probability'] * 100:.0f}%",
+        f"AIスコア：{result['probability'] * 100:.0f}",
         f"期待値：{result['expected_value']:+.1f}%",
         f"ステージ：{result['signal_stage']}",
         f"期間：{result.get('prediction_horizon', '5d')}",
@@ -475,7 +468,7 @@ def _candidate_summary(row: dict, result: dict) -> str:
     }.get(result["signal_stage"], result["signal_stage"])
     return "\n".join([
         f"{stage_label} {row.get('code')} {row.get('name') or ''}".strip(),
-        f"AI確率 {result['probability'] * 100:.0f}% / 期待値 {result['expected_value']:+.1f}%",
+        f"AIスコア {result['probability'] * 100:.0f} / 期待値 {result['expected_value']:+.1f}%",
         f"急落 {_to_float(row.get('day_change_pct'), 0):+.1f}% / RSI {_to_float(row.get('rsi14'), 0):.0f} / 出来高 {_to_float(row.get('volume_ratio_20d'), 0):.1f}倍",
         f"悪材料 {_to_float(row.get('bad_news_score'), 0):.0f} / 市場ショック {_to_float(row.get('market_shock_score'), 0):.0f}",
     ])
@@ -544,6 +537,15 @@ def run(args: argparse.Namespace) -> None:
     target_date = _target_date(sb, args)
     regime = _current_mode(sb, target_date)
     mode = str(regime.get("mode") or "normal")
+    logger.info("[market_data_for_regime] %s", regime)
+    market_adjustment = evaluate_market_regime(regime)
+    logger.info(
+        "[market_regime] %s: AI threshold +%.2f, entry size %.1f reason=%s",
+        market_adjustment["regime"],
+        market_adjustment["ai_threshold_adjust"],
+        market_adjustment["entry_size_multiplier"],
+        market_adjustment["reason"],
+    )
     target = _target_config(args)
     model_row, bundle = _load_model_bundle(sb, args)
     using_model = bundle is not None
@@ -565,13 +567,15 @@ def run(args: argparse.Namespace) -> None:
     signal_count = 0
     notify_items: list[tuple[dict, dict]] = []
     for row, prob in zip(snapshots, probabilities):
+        row["market_regime_adjustment"] = market_adjustment
         ev = _expected_value(prob, target["take_profit_pct"], target["stop_loss_pct"])
-        stage, is_excluded, exclude_reason = _determine_stage(row, prob, ev, mode, cfg)
+        signal_score = round(_score_like(row, prob), 2)
+        stage, is_excluded, exclude_reason = _determine_stage(row, prob, ev, cfg, signal_score)
         result = {
             "probability": round(prob, 6),
             "expected_value": round(ev, 4),
             "signal_stage": stage,
-            "signal_score": round(_score_like(row, prob), 2),
+            "signal_score": signal_score,
             "mode": mode,
             "is_excluded": is_excluded,
             "exclude_reason": exclude_reason,
@@ -580,6 +584,11 @@ def run(args: argparse.Namespace) -> None:
             "take_profit_pct": target["take_profit_pct"],
             "stop_loss_pct": target["stop_loss_pct"],
             "holding_days": target["holding_days"],
+            "market_regime": market_adjustment["regime"],
+            "market_regime_label": market_adjustment["label"],
+            "market_threshold_adjust": market_adjustment["ai_threshold_adjust"],
+            "market_regime_reason": market_adjustment["reason"],
+            "entry_size_multiplier": market_adjustment["entry_size_multiplier"],
         }
         if stage in SIGNAL_STAGES:
             signal_count += 1
@@ -590,6 +599,12 @@ def run(args: argparse.Namespace) -> None:
             _to_float(row.get("bad_news_score"), 0) or 0, mode,
         )
         watch = _persist_watchlist(sb, row, result, dry_run=args.dry_run, force=args.force)
+        logger.info(
+            "[market_regime_save] code=%s regime=%s adjust=%s",
+            row.get("code"),
+            result.get("market_regime"),
+            result.get("market_threshold_adjust"),
+        )
         _create_virtual_trade(sb, row, watch or {}, result, dry_run=args.dry_run)
         if args.notify and not args.dry_run and _notification_allowed(row, result, cfg):
             notify_items.append((row, result))

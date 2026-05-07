@@ -69,12 +69,6 @@
       <span>仮想売買</span>
       {% if counts and counts.trades is defined %}<span class="count">{{ counts.trades }}</span>{% endif %}
     </a>
-    <a class="side-link {% if request.path == '/web/portfolio' %}active{% endif %}" href="/web/portfolio">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/></svg>
-      <span>ポートフォリオ</span>
-      {% if counts and counts.portfolio is defined %}<span class="count">{{ counts.portfolio }}</span>{% endif %}
-    </a>
-
     <div class="side-section">System</div>
     <a class="side-link {% if request.path in ['/web/models', '/admin/models'] %}active{% endif %}" href="/web/models">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v20"/><path d="M2 12h20"/><circle cx="12" cy="12" r="4"/></svg>
@@ -131,9 +125,16 @@
         ⚠ 悪材料が検出されています。通知はスキップされています。
       </div>
 
+      <div class="kv-grid" id="m-ai-block" style="border-top:none;margin-bottom:10px">
+        <div class="kv"><span class="k">AIスコア</span><span class="v" id="m-ai-score"></span></div>
+        <div class="kv"><span class="k">期待値</span><span class="v" id="m-expected-value"></span></div>
+        <div class="kv"><span class="k">ルールスコア</span><span class="v" id="m-rule-score"></span></div>
+        <div class="kv"><span class="k">判定</span><span class="v" id="m-ai-rule-gap"></span></div>
+      </div>
+
       <div class="score-block" id="m-score-block">
         <div class="h">
-          <span class="t">スコア</span>
+          <span class="t">ルールスコア</span>
           <span class="n" id="m-score-total"></span>
         </div>
         <div id="m-score-label" style="font-size:10px;color:var(--text-3);margin-bottom:6px"></div>
@@ -194,6 +195,16 @@ function _fmtAbs(v, digits, suffix) {
 function _colorCls(v) {
   return v == null ? '' : (v > 0 ? 'up-text' : (v < 0 ? 'down-text' : 'muted'));
 }
+function _aiScoreCls(score) {
+  return score == null ? 'low' : (score >= 70 ? 'strong' : (score >= 55 ? 'mid' : (score >= 40 ? 'weak' : 'low')));
+}
+function _ruleGapLabel(ruleScore, aiScore) {
+  if (ruleScore == null || aiScore == null) return '—';
+  const gap = ruleScore - aiScore;
+  if (gap >= 20) return `ルール先行（+${Math.round(gap)}）`;
+  if (gap <= -20) return `AI先行（${Math.round(gap)}）`;
+  return `整合（${gap > 0 ? '+' : ''}${Math.round(gap)}）`;
+}
 
 function _renderSpark(prices, isUp) {
   if (!prices || prices.length < 2) return '<span class="muted" style="font-size:11px">データなし</span>';
@@ -207,6 +218,16 @@ function _renderSpark(prices, isUp) {
   return `<svg class="spark-cell ${isUp?'up':'down'}" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" style="width:100%;height:${H}px;display:block"><polyline class="pl" points="${pts}" fill="none"/></svg>`;
 }
 
+function _formatJst(value, dateOnly = false) {
+  if (!value) return '—';
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return String(value).slice(0, dateOnly ? 10 : 16).replace('T', ' ');
+  const opts = dateOnly
+    ? { timeZone: 'Asia/Tokyo', year: 'numeric', month: '2-digit', day: '2-digit' }
+    : { timeZone: 'Asia/Tokyo', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false };
+  return new Intl.DateTimeFormat('ja-JP', opts).format(d).replace(/\//g, '-');
+}
+
 function openDetail(r) {
   if (!r) return;
   document.getElementById('m-code').textContent = r.code || '';
@@ -216,10 +237,21 @@ function openDetail(r) {
 
   document.getElementById('m-bad-news').style.display = (r.has_bad_news || r.is_excluded) ? '' : 'none';
 
-  const hasScore = r.score != null;
+  const aiScore = r.signal_probability != null ? r.signal_probability * 100 : null;
+  const ruleScore = r.signal_score != null ? r.signal_score : (r.score != null ? r.score : null);
+  const aiEl = document.getElementById('m-ai-score');
+  aiEl.textContent = aiScore != null ? Math.round(aiScore) : '—';
+  aiEl.className = 'v ai-score ' + _aiScoreCls(aiScore);
+  const evEl = document.getElementById('m-expected-value');
+  evEl.textContent = r.expected_value != null ? _fmt(r.expected_value) : '—';
+  evEl.className = 'v ' + _colorCls(r.expected_value);
+  document.getElementById('m-rule-score').textContent = ruleScore != null ? Math.round(ruleScore) : '—';
+  document.getElementById('m-ai-rule-gap').textContent = _ruleGapLabel(ruleScore, aiScore);
+
+  const hasScore = ruleScore != null;
   document.getElementById('m-score-block').style.display = hasScore ? '' : 'none';
   if (hasScore) {
-    document.getElementById('m-score-total').textContent = Math.round(r.score) + '点';
+    document.getElementById('m-score-total').textContent = Math.round(ruleScore) + '点';
     document.getElementById('m-score-label').textContent = r.score_label || '';
     document.getElementById('m-score-tech').textContent = r.score_technical != null ? Math.round(r.score_technical) : '—';
     document.getElementById('m-score-fund').textContent = r.score_fundamental != null ? Math.round(r.score_fundamental) : '—';
@@ -227,7 +259,7 @@ function openDetail(r) {
   }
 
   document.getElementById('m-sector').textContent = r.sector || '—';
-  document.getElementById('m-drop-date').textContent = r.drop_detected_at ? r.drop_detected_at.slice(0,10) : '—';
+  document.getElementById('m-drop-date').textContent = _formatJst(r.drop_detected_at, true);
 
   const dpEl = document.getElementById('m-drop-pct');
   dpEl.textContent = _fmt(r.drop_pct); dpEl.className = 'v ' + _colorCls(r.drop_pct);
@@ -238,14 +270,19 @@ function openDetail(r) {
   const gEl = document.getElementById('m-nikkei-gap');
   gEl.textContent = _fmt(gap); gEl.className = 'v ' + _colorCls(gap);
 
-  document.getElementById('m-last-checked').textContent = r.last_checked_at ? r.last_checked_at.slice(0,10) : '—';
+  document.getElementById('m-last-checked').textContent = _formatJst(r.last_checked_at, true);
   document.getElementById('m-per').textContent = r.per != null ? r.per.toFixed(1) + '倍' : '—';
   document.getElementById('m-pbr').textContent = r.pbr != null ? r.pbr.toFixed(2) + '倍' : '—';
   document.getElementById('m-div').textContent = r.div_yield_pct != null ? r.div_yield_pct.toFixed(2) + '%' : '—';
 
   const extra = [
     ['段階', _STAGE_MAP[r.signal_stage || 'none'] || 'シグナルなし'],
-    ['シグナルスコア', r.signal_score != null ? Math.round(r.signal_score) : '—'],
+    ['AIスコア', aiScore != null ? Math.round(aiScore) : '—'],
+    ['期待値', r.expected_value != null ? _fmt(r.expected_value) : '—'],
+    ['ルールスコア', ruleScore != null ? Math.round(ruleScore) : '—'],
+    ['市場環境', r.market_regime_label || '—'],
+    ['地合い補正', r.market_threshold_adjust != null ? '+' + Math.round(r.market_threshold_adjust * 100) + '%' : '—'],
+    ['地合い理由', r.market_regime_reason || '—'],
     ['条件数', r.signal_count != null ? r.signal_count : '—'],
     ['悪材料スコア', r.bad_news_score != null ? Math.round(r.bad_news_score) : '—'],
     ['モード', r.mode || 'normal'],

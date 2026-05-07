@@ -29,6 +29,8 @@ from supabase import create_client
 
 from bad_news_filter import analyze_bad_news
 from scoring import calculate_score
+from services.market_regime import evaluate_market_regime
+from services.signal_stage import SIGNAL_STAGES, evaluate_signal_stage
 from settings_loader import get_settings
 
 load_dotenv()
@@ -38,7 +40,6 @@ logger = logging.getLogger(__name__)
 
 JST = timezone(timedelta(hours=9))
 LINE_API_BASE = "https://api.line.me"
-SIGNAL_STAGES = {"early", "confirmed", "strong_confirmed"}
 JAPAN_MARKETS = {"nikkei225", "nikkei", "prime", "tse_prime", "japan"}
 NON_JAPAN_MARKETS = {"dow", "dow30", "us", "usa", "nyse", "nasdaq", "djia"}
 SMOKE_RELAXED_OVERRIDES = {
@@ -145,7 +146,7 @@ def get_current_market_regime(target_date: datetime | None = None) -> dict:
     try:
         rows = (
             supabase.table("market_regime")
-            .select("trade_date,mode,shock_score,reason")
+            .select("trade_date,mode,shock_score,reason,nikkei_change_pct,topix_change_pct,decliners_ratio")
             .lte("trade_date", d)
             .order("trade_date", desc=True)
             .limit(1)
@@ -158,6 +159,9 @@ def get_current_market_regime(target_date: datetime | None = None) -> dict:
                 "shock_score": float(rows[0].get("shock_score") or 0),
                 "reason": rows[0].get("reason") or "",
                 "trade_date": rows[0].get("trade_date"),
+                "nikkei_change_pct": rows[0].get("nikkei_change_pct"),
+                "topix_change_pct": rows[0].get("topix_change_pct"),
+                "decliners_ratio": rows[0].get("decliners_ratio"),
             }
     except Exception as e:
         logger.warning("market_regime lookup failed; normal mode used: %s", e)
@@ -292,16 +296,12 @@ def determine_signal_stage(
     has_bad_news: bool,
     is_excluded: bool,
     cfg: dict,
+    ai_probability: float | None = None,
+    market_regime: dict | None = None,
 ) -> str:
     if is_excluded or has_bad_news:
         return "none"
-    if score >= float(cfg.get("strong_watch_score", 85.0)) and signal_count >= 2:
-        return "strong_confirmed"
-    if score >= float(cfg.get("watch_score", 75.0)) and signal_count >= 2:
-        return "confirmed"
-    if score >= float(cfg.get("ignore_score", 65.0)) and signal_count >= 1:
-        return "early"
-    return "none"
+    return evaluate_signal_stage(ai_probability, score, None, cfg, market_regime)["stage"]
 
 
 def _stage_label(stage: str) -> str:
@@ -441,7 +441,7 @@ def _build_signal_msg(item: dict, rebound: dict, current: float, score_data: dic
         title,
         f"{item.get('code', '')} {item.get('name', '')}".strip(),
         "",
-        f"スコア：{score:.0f}",
+        f"ルールスコア：{score:.0f}",
         f"段階：{_stage_label(stage)}",
         f"急落：{drop_pct:+.1f}%",
     ]
@@ -471,6 +471,56 @@ def _build_signal_msg(item: dict, rebound: dict, current: float, score_data: dic
     return "\n".join(lines)
 
 
+def _signal_digest_block(item: dict, rebound: dict, current: float, score_data: dict) -> str:
+    stage = item.get("signal_stage", "none")
+    stage_label = {
+        "early": "初動",
+        "confirmed": "本命",
+        "strong_confirmed": "強本命",
+    }.get(stage, stage)
+    lines = [
+        f"{stage_label} {item.get('code', '')} {item.get('name', '')}".strip(),
+        f"ルールスコア {float(score_data.get('total') or 0):.0f} / 急落 {(_to_float(item.get('drop_pct'), 0) or 0):+.1f}%",
+    ]
+    if rebound.get("from_drop_pct") is not None:
+        lines[-1] += f" / 急落時から {rebound.get('from_drop_pct'):+.1f}%"
+    if rebound.get("rsi") is not None or rebound.get("volume_ratio") is not None:
+        lines.append(
+            " / ".join([
+                f"RSI {rebound.get('rsi'):.0f}" if rebound.get("rsi") is not None else "",
+                f"出来高 {rebound.get('volume_ratio'):.1f}倍" if rebound.get("volume_ratio") is not None else "",
+            ]).strip(" /")
+        )
+    return "\n".join([line for line in lines if line])
+
+
+def _build_signal_digest(to_notify: list[tuple[dict, dict, float, dict, dict]], cfg: dict) -> list[str]:
+    if not to_notify:
+        return []
+    strong = sum(1 for item, *_ in to_notify if item.get("signal_stage") == "strong_confirmed")
+    confirmed = sum(1 for item, *_ in to_notify if item.get("signal_stage") == "confirmed")
+    early = sum(1 for item, *_ in to_notify if item.get("signal_stage") == "early")
+    header = "\n".join([
+        "【リバウンド候補まとめ】",
+        f"通知候補：{len(to_notify)}件",
+        f"強本命 {strong} / 本命 {confirmed} / 初動 {early}",
+        "",
+    ])
+    footer = f"\n\n詳細：\n{_WEB_URL}"
+    chunks: list[str] = []
+    current_msg = header
+    for idx, (item, rebound, current, score_data, _bad) in enumerate(to_notify, start=1):
+        block = f"{idx}. " + _signal_digest_block(item, rebound, current, score_data)
+        addition = ("\n\n" if current_msg != header else "") + block
+        if len(current_msg) + len(addition) + len(footer) > 4300:
+            chunks.append(current_msg + footer)
+            current_msg = header + block
+        else:
+            current_msg += addition
+    chunks.append(current_msg + footer)
+    return chunks
+
+
 def _create_virtual_trade(
     item: dict,
     price: float,
@@ -482,6 +532,9 @@ def _create_virtual_trade(
     code = item.get("code", "")
     stage = item.get("signal_stage")
     if stage not in SIGNAL_STAGES:
+        return
+    if item.get("market_regime") == "panic_selloff":
+        logger.info("virtual buy skipped by market regime: %s panic_selloff", code)
         return
     rebound = rebound or {}
     bad_analysis = bad_analysis or {}
@@ -509,11 +562,14 @@ def _create_virtual_trade(
             "entry_score": round(score, 1),
             "entry_probability": None,
             "expected_value": None,
-            "mode": regime.get("mode") or item.get("mode") or "normal",
+            "mode": item.get("mode") or "normal",
             "bad_news_score": float(bad_analysis.get("bad_news_score") or 0),
             "sector_risk_score": float(item.get("sector_risk_score") or 0),
             "market_shock_score": float(item.get("market_shock_score") or 0),
             "feature_snapshot_id": item.get("feature_snapshot_id"),
+            "market_regime": item.get("market_regime"),
+            "market_regime_label": item.get("market_regime_label"),
+            "entry_size_multiplier": float(item.get("entry_size_multiplier") or 1.0),
             "status": "open",
             "created_at": now_utc.isoformat(),
             "updated_at": now_utc.isoformat(),
@@ -605,7 +661,7 @@ def _manage_virtual_trades(cfg: dict, now_utc: datetime, *, dry_run: bool = Fals
             logger.error("virtual_trade update error: %s %s", code, e)
 
 
-def run_monitor(*, smoke_relaxed: bool = False, dry_run: bool = False) -> None:
+def run_monitor(*, smoke_relaxed: bool = False, dry_run: bool = False, force_no_notify: bool = False) -> None:
     logger.info("=== rebound monitor start ===")
     now_jst = datetime.now(JST)
     now_utc = datetime.now(timezone.utc)
@@ -622,6 +678,8 @@ def run_monitor(*, smoke_relaxed: bool = False, dry_run: bool = False) -> None:
         cfg = _apply_smoke_relaxed(cfg)
         logger.info("smoke relaxed thresholds enabled for this run only")
     regime = get_current_market_regime(now_jst)
+    logger.info("[market_data_for_regime] %s", regime)
+    market_adjustment = evaluate_market_regime(regime)
     if not smoke_relaxed:
         cfg = get_settings_for_mode(cfg, regime.get("mode", "normal"))
     logger.info(
@@ -630,6 +688,13 @@ def run_monitor(*, smoke_relaxed: bool = False, dry_run: bool = False) -> None:
         float(regime.get("shock_score") or 0),
         regime.get("trade_date"),
         regime.get("reason"),
+    )
+    logger.info(
+        "[market_regime] %s: AI threshold +%.2f, entry size %.1f reason=%s",
+        market_adjustment["regime"],
+        market_adjustment["ai_threshold_adjust"],
+        market_adjustment["entry_size_multiplier"],
+        market_adjustment["reason"],
     )
     if dry_run:
         logger.info("DRYRUN enabled: DB updates, LINE pushes, and virtual trades are skipped")
@@ -714,6 +779,8 @@ def run_monitor(*, smoke_relaxed: bool = False, dry_run: bool = False) -> None:
             bad_analysis.get("severity") == "strong",
             bool(is_excluded),
             cfg,
+            _to_float(item.get("signal_probability"), None),
+            market_adjustment,
         )
 
         if is_excluded:
@@ -723,7 +790,7 @@ def run_monitor(*, smoke_relaxed: bool = False, dry_run: bool = False) -> None:
             new_status = "rebound_signal"
             exclude_reason = None
         elif prev_status == "rebound_signal":
-            new_status = "watching"
+            new_status = "rebound_signal"
             exclude_reason = None
         else:
             new_status = "watching"
@@ -754,6 +821,10 @@ def run_monitor(*, smoke_relaxed: bool = False, dry_run: bool = False) -> None:
             "last_signal_at": now_utc.isoformat() if stage in SIGNAL_STAGES else item.get("last_signal_at"),
             "signal_count": int(rebound["signal_count"]),
             "mode": item.get("mode") or "normal",
+            "market_regime": market_adjustment["regime"],
+            "market_regime_label": market_adjustment["label"],
+            "market_threshold_adjust": market_adjustment["ai_threshold_adjust"],
+            "market_regime_reason": market_adjustment["reason"],
         }
 
         if not dry_run:
@@ -780,6 +851,12 @@ def run_monitor(*, smoke_relaxed: bool = False, dry_run: bool = False) -> None:
             rebound.get("signal_reasons") or [],
             exclude_reason,
         )
+        logger.info(
+            "[market_regime_save] code=%s regime=%s adjust=%s",
+            code,
+            market_adjustment.get("regime"),
+            market_adjustment.get("ai_threshold_adjust"),
+        )
 
         notified_stage = item.get("signal_stage")
         should_notify = (
@@ -803,6 +880,7 @@ def run_monitor(*, smoke_relaxed: bool = False, dry_run: bool = False) -> None:
 
         if stage in SIGNAL_STAGES and not is_excluded and not dry_run:
             trade_item = {**item, **update_data}
+            trade_item["entry_size_multiplier"] = market_adjustment["entry_size_multiplier"]
             _create_virtual_trade(trade_item, current, score, now_utc, rebound, bad_analysis)
 
     _manage_virtual_trades(cfg, now_utc, dry_run=dry_run)
@@ -814,30 +892,36 @@ def run_monitor(*, smoke_relaxed: bool = False, dry_run: bool = False) -> None:
     if dry_run:
         logger.info("DRYRUN complete: %d signal candidates, no notifications sent", len(to_notify))
         return
-    if not cfg.get("rebound_notify_enabled", True):
+    if force_no_notify:
+        logger.info("force_no_notify=True; LINE skipped")
+        logger.info("=== rebound monitor complete ===")
+        return
+    if not cfg.get("rebound_notify_enabled", False):
         logger.info("rebound_notify_enabled=False; LINE skipped")
+        logger.info("=== rebound monitor complete ===")
         return
 
     users = _eligible_users()
     logger.info("notify users: %d", len(users))
     sent_any = False
-    for item, rebound, current, score_data, _bad_analysis in to_notify:
-        msg = _build_signal_msg(item, rebound, current, score_data, cfg)
+    messages = _build_signal_digest(to_notify, cfg)
+    for msg in messages:
         sent = sum(1 for u in users if _push(u["user_id"], msg))
         sent_any = sent_any or sent > 0
-        logger.info("signal sent: %s users=%d", item.get("code"), sent)
+        logger.info("signal digest sent users=%d", sent)
 
-        if sent > 0 or not users:
+    if sent_any or not users:
+        for item, rebound, _current, _score_data, _bad_analysis in to_notify:
             try:
                 supabase.table("stock_drop_watchlist").update({
-                    "status": "notified",
+                    "status": "rebound_signal",
                     "rebound_notified_at": now_utc.isoformat(),
                     "last_signal_at": now_utc.isoformat(),
                     "signal_count": int(rebound.get("signal_count") or 0),
                     "updated_at": now_utc.isoformat(),
                 }).eq("id", item.get("id")).execute()
             except Exception as e:
-                logger.error("notified update error: %s %s", item.get("code"), e)
+                logger.error("notified mark update error: %s %s", item.get("code"), e)
 
     logger.info("=== rebound monitor complete sent=%s ===", sent_any)
 
@@ -854,9 +938,14 @@ def _parse_args() -> argparse.Namespace:
         action="store_true",
         help="Do not update DB, send LINE messages, or create virtual trades.",
     )
+    parser.add_argument(
+        "--no-notify",
+        action="store_true",
+        help="Run monitor updates but skip LINE notifications.",
+    )
     return parser.parse_args()
 
 
 if __name__ == "__main__":
     args = _parse_args()
-    run_monitor(smoke_relaxed=args.smoke_relaxed, dry_run=args.dry_run)
+    run_monitor(smoke_relaxed=args.smoke_relaxed, dry_run=args.dry_run, force_no_notify=args.no_notify)

@@ -2,15 +2,20 @@
 {% block title %}シグナル{% endblock %}
 {% block page_label %}シグナル{% endblock %}
 
-{% macro status_badge(s) -%}
-  {%- set m = {'watching':['watching','WATCH'],'rebound_signal':['signal','SIGNAL'],'notified':['notified','NOTIFIED'],'closed':['closed','CLOSED'],'excluded':['closed','EXCLUDED']} -%}
-  {%- set v = m.get(s, ['watching','WATCH']) -%}
+{% macro signal_status(s) -%}
+  {%- set m = {
+    'early': ['signal', '初動シグナル'],
+    'confirmed': ['notified', '本命シグナル'],
+    'strong_confirmed': ['notified', '強本命シグナル'],
+    'none': ['watching', '維持中']
+  } -%}
+  {%- set v = m.get(s or 'none', ['watching', '維持中']) -%}
   <span class="badge {{ v[0] }}">{{ v[1] }}</span>
 {%- endmacro %}
 
 {% macro stage_badge(s) -%}
-  {%- set m = {'none':'シグナルなし','early':'初動','confirmed':'本命','strong_confirmed':'強本命'} -%}
-  <span class="tag">{{ m.get(s or 'none', 'シグナルなし') }}</span>
+  {%- set m = {'early':'初動','confirmed':'本命','strong_confirmed':'強本命','none':'維持中'} -%}
+  <span class="tag">{{ m.get(s or 'none', '維持中') }}</span>
 {%- endmacro %}
 
 {% macro delta(v, suffix='%') -%}
@@ -22,14 +27,32 @@
   {%- endif -%}
 {%- endmacro %}
 
+{% macro ai_score(v) -%}
+  {%- if v is none -%}<span class="muted">—</span>
+  {%- else -%}
+    {%- set pct = v * 100 -%}
+    {%- set cls = 'strong' if pct >= 70 else ('mid' if pct >= 55 else ('weak' if pct >= 40 else 'low')) -%}
+    <span class="ai-score {{ cls }}">{{ "%.0f"|format(pct) }}</span>
+  {%- endif -%}
+{%- endmacro %}
+
 {% block content %}
 <div class="page-head">
-  <h1 class="page-title">リバウンドシグナル<small>SIGNALS · {{ rows|length }}件</small></h1>
+  <h1 class="page-title">リバウンドシグナル<small>SIGNALS ・ {{ rows|length }}件</small></h1>
 </div>
+
+{% if market_adjustment and market_adjustment.regime != "normal" %}
+<div class="panel" style="margin-bottom:12px;border-color:var(--accent-dim)">
+  <div class="panel-head">
+    <div class="panel-title">市場環境：{{ market_adjustment.label }}<span class="tag">AI閾値 +{{ "%.0f"|format((market_adjustment.ai_threshold_adjust or 0) * 100) }}%</span></div>
+  </div>
+  <div class="muted" style="padding:0 16px 14px">{{ market_adjustment.reason }}</div>
+</div>
+{% endif %}
 
 <div class="panel">
   <div class="panel-head">
-    <div class="panel-title">シグナル一覧<span class="tag">SIGNAL STAGE</span></div>
+    <div class="panel-title">現在シグナル<span class="tag">ACTIVE SIGNALS</span></div>
   </div>
   <div class="table-wrap">
     <table class="tbl">
@@ -38,32 +61,33 @@
           <th>コード</th><th>名称</th><th>急落日</th>
           <th class="right">急落率</th><th class="right">急落時株価</th>
           <th>セクター</th><th>ステータス</th><th>段階</th>
-          <th class="right">AI確率</th><th class="right">期待値</th>
-          <th class="right">スコア</th><th class="right">条件数</th><th class="right">悪材料</th>
-          <th>モード</th><th>通知日時</th>
+          <th class="right">AIスコア</th><th class="right">期待値</th>
+          <th class="right">ルールスコア</th><th class="right">条件数</th><th class="right">悪材料</th>
+          <th>モード</th><th>最終シグナル</th><th>通知日時</th>
         </tr>
       </thead>
       <tbody>
         {% for r in rows %}
-        <tr class="{{ 'signal-row' if r.status == 'rebound_signal' else '' }}" style="cursor:pointer" data-idx="{{ loop.index0 }}">
+        <tr class="signal-row" style="cursor:pointer" data-idx="{{ loop.index0 }}">
           <td class="code">{{ r.code }}</td>
           <td class="name">{{ r.name or "" }}</td>
-          <td class="muted num">{{ r.drop_detected_at[:10] if r.drop_detected_at else "" }}</td>
+          <td class="muted num">{{ r.drop_detected_at | jst("%Y-%m-%d") }}</td>
           <td class="right num">{{ delta(r.drop_pct) }}</td>
           <td class="right num">{{ "%.0f"|format(r.price_at_drop) if r.price_at_drop is not none else "" }}</td>
           <td class="muted">{{ r.sector or "" }}</td>
-          <td>{{ status_badge(r.status) }}</td>
+          <td>{{ signal_status(r.signal_stage) }}</td>
           <td>{{ stage_badge(r.signal_stage) }}</td>
-          <td class="right num">{{ "%.0f%%"|format(r.signal_probability * 100) if r.signal_probability is not none else "" }}</td>
+          <td class="right num">{{ ai_score(r.signal_probability) }}</td>
           <td class="right num">{{ delta(r.expected_value) }}</td>
           <td class="right num">{{ "%.0f"|format(r.signal_score if r.signal_score is not none else r.score) if (r.signal_score is not none or r.score is not none) else "" }}</td>
           <td class="right num">{{ r.signal_count if r.signal_count is not none else "" }}</td>
           <td class="right num">{{ "%.0f"|format(r.bad_news_score) if r.bad_news_score is not none else "" }}</td>
           <td class="muted">{{ r.mode or "normal" }}</td>
-          <td class="muted num">{% if r.rebound_notified_at %}{{ r.rebound_notified_at[:16] | replace("T", " ") }}{% else %}—{% endif %}</td>
+          <td class="muted num">{{ r.last_signal_at | jst }}</td>
+          <td class="muted num">{{ r.rebound_notified_at | jst if r.rebound_notified_at else "—" }}</td>
         </tr>
         {% else %}
-        <tr><td colspan="13" class="center muted" style="padding:28px">データなし</td></tr>
+        <tr><td colspan="16" class="center muted" style="padding:28px">現在有効なシグナルはありません</td></tr>
         {% endfor %}
       </tbody>
     </table>

@@ -53,14 +53,14 @@
     </div>
 
     <div class="form-card">
-      <h3>スコアリング配点</h3>
+      <h3>ルールスコア配点</h3>
       {% for key, label in [
         ("technical_score_weight", "テクニカル"),
         ("fundamental_score_weight", "ファンダメンタル"),
         ("market_score_weight", "地合い"),
-        ("strong_watch_score", "強監視スコア閾値"),
-        ("watch_score", "監視スコア閾値"),
-        ("ignore_score", "スルースコア閾値"),
+        ("strong_watch_score", "強監視ルールスコア閾値"),
+        ("watch_score", "監視ルールスコア閾値"),
+        ("ignore_score", "スルールールスコア閾値"),
       ] %}
       <div class="form-row">
         <label>{{ label }}</label>
@@ -105,8 +105,6 @@
       {% for key, label in [
         ("drop_notify_enabled", "急落通知"),
         ("rebound_notify_enabled", "リバウンド通知"),
-        ("morning_summary_enabled", "朝サマリー通知"),
-        ("portfolio_notify_enabled", "ポートフォリオ通知"),
       ] %}
       <div class="form-row" style="grid-template-columns:1fr auto">
         <label>{{ label }}</label>

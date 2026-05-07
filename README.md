@@ -449,3 +449,9 @@ fly deploy --remote-only
 - `--dry-run` ではDB保存しない。
 - Supabaseの既存データは削除しない。
 - J-Quants失敗時は可能な範囲でyfinance fallbackする。
+
+## 旧機能メモ
+
+- 「朝サマリー通知」と「ポートフォリオ通知」は、現在の急落リバウンドAI運用では使わないためWeb UIでは非表示にしています。
+- 互換性のため、既存の設定カラムや `/web/portfolio` ルート自体は残しています。
+- LINE pushは原則停止し、確認はWeb UI中心です。cronのリバウンド監視も `--no-notify` で実行します。

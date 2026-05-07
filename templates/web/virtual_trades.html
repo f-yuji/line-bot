@@ -14,7 +14,21 @@
 {% block content %}
 <div class="page-head">
   <h1 class="page-title">仮想売買<small>VIRTUAL TRADING</small></h1>
+  <div class="page-actions">
+    <form method="post" action="/web/actions/refresh" class="js-disable-on-submit" style="display:inline">
+      <button class="btn primary sm" type="submit">現在値更新</button>
+    </form>
+  </div>
 </div>
+
+{% if market_adjustment and market_adjustment.regime != "normal" %}
+<div class="panel" style="margin-bottom:12px;border-color:var(--accent-dim)">
+  <div class="panel-head">
+    <div class="panel-title">市場環境：{{ market_adjustment.label }}<span class="tag">AI閾値 +{{ "%.0f"|format((market_adjustment.ai_threshold_adjust or 0) * 100) }}%</span></div>
+  </div>
+  <div class="muted" style="padding:0 16px 14px">{{ market_adjustment.reason }}</div>
+</div>
+{% endif %}
 
 {# ── サマリー ── #}
 {% set win_rate = (win_count / closed_trades|length * 100) if closed_trades|length > 0 else none %}
@@ -43,6 +57,31 @@
   </div>
 </div>
 
+<div class="stat-grid" style="margin-top:10px">
+  <div class="stat-tile">
+    <div class="label">保有取得費</div>
+    <div class="value" style="font-size:18px">{{ "{:,.0f}".format(open_cost_total or 0) }}円</div>
+    <div class="sub muted">OPEN COST</div>
+  </div>
+  <div class="stat-tile">
+    <div class="label">現在評価額</div>
+    <div class="value" style="font-size:18px">{{ "{:,.0f}".format(open_value_total or 0) }}円</div>
+    <div class="sub muted">MARKET VALUE</div>
+  </div>
+  <div class="stat-tile {% if (open_unrealized_pnl_total or 0) >= 0 %}up{% else %}down{% endif %}">
+    <div class="label">含み損益</div>
+    <div class="value" style="font-size:18px">{{ "{:+,.0f}".format(open_unrealized_pnl_total or 0) }}円</div>
+    <div class="sub muted">UNREALIZED PnL</div>
+  </div>
+  <div class="stat-tile {% if (open_unrealized_pnl_total or 0) >= 0 %}up{% else %}down{% endif %}">
+    <div class="label">含み率</div>
+    <div class="value">
+      {% if open_unrealized_pct_total is not none %}{{ "{:+.1f}".format(open_unrealized_pct_total) }}%{% else %}—{% endif %}
+    </div>
+    <div class="sub muted">UNREALIZED %</div>
+  </div>
+</div>
+
 {# ── 保有中ポジション ── #}
 <div class="section-h" style="margin-top:20px">
   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:12px;height:12px"><polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/></svg>
@@ -54,9 +93,9 @@
       <thead>
         <tr>
           <th>コード</th><th>名称</th><th>買い日</th>
-          <th class="right">買い値</th><th class="right">現在値</th>
+          <th class="right">買い値</th><th class="right">取得額</th><th class="right">現在値</th><th class="right">評価額</th>
           <th class="right">含み損益</th><th class="right">含み率</th>
-          <th class="right">数量</th><th class="center">買いスコア</th>
+          <th class="right">数量</th><th class="center">買いルールスコア</th>
         </tr>
       </thead>
       <tbody>
@@ -64,10 +103,15 @@
         <tr>
           <td class="code">{{ t.code }}</td>
           <td class="name">{{ t.name or "" }}</td>
-          <td class="muted num">{{ t.buy_date[:10] if t.buy_date else "" }}</td>
+          <td class="muted num">{{ t.buy_date | jst("%Y-%m-%d") }}</td>
           <td class="right num">{{ "{:,.0f}".format(t.buy_price) }}円</td>
+          <td class="right num">{{ "{:,.0f}".format(t.cost_amount or 0) }}円</td>
           <td class="right num">
             {% if t.current_price is not none %}{{ "{:,.0f}".format(t.current_price) }}円
+            {% else %}<span class="muted">—</span>{% endif %}
+          </td>
+          <td class="right num">
+            {% if t.market_value is not none %}{{ "{:,.0f}".format(t.market_value) }}円
             {% else %}<span class="muted">—</span>{% endif %}
           </td>
           <td class="right num {% if (t.unrealized_pnl or 0) >= 0 %}up-text{% else %}down-text{% endif %}">
@@ -87,7 +131,7 @@
           </td>
         </tr>
         {% else %}
-        <tr><td colspan="9" class="center muted" style="padding:28px">保有なし</td></tr>
+        <tr><td colspan="11" class="center muted" style="padding:28px">保有なし</td></tr>
         {% endfor %}
       </tbody>
     </table>
@@ -117,8 +161,8 @@
         <tr>
           <td class="code">{{ t.code }}</td>
           <td class="name">{{ t.name or "" }}</td>
-          <td class="muted num">{{ t.buy_date[:10] if t.buy_date else "" }}</td>
-          <td class="muted num">{{ t.sell_date[:10] if t.sell_date else "" }}</td>
+          <td class="muted num">{{ t.buy_date | jst("%Y-%m-%d") }}</td>
+          <td class="muted num">{{ t.sell_date | jst("%Y-%m-%d") }}</td>
           <td class="right num">{{ "{:,.0f}".format(t.buy_price) }}円</td>
           <td class="right num">{{ "{:,.0f}".format(t.sell_price) if t.sell_price is not none else "—" }}円</td>
           <td class="right num {% if (pnl or 0) >= 0 %}up-text{% else %}down-text{% endif %}">
@@ -144,4 +188,15 @@
     </table>
   </div>
 </div>
+<script>
+document.querySelectorAll('.js-disable-on-submit').forEach(function(form) {
+  form.addEventListener('submit', function() {
+    var btn = form.querySelector('button[type="submit"]');
+    if (btn) {
+      btn.disabled = true;
+      btn.textContent = '更新中...';
+    }
+  });
+});
+</script>
 {% endblock %}

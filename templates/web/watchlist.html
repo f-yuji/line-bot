@@ -22,10 +22,33 @@
   {%- endif -%}
 {%- endmacro %}
 
+{% macro ai_score(v) -%}
+  {%- if v is none -%}<span class="muted">—</span>
+  {%- else -%}
+    {%- set pct = v * 100 -%}
+    {%- set cls = 'strong' if pct >= 70 else ('mid' if pct >= 55 else ('weak' if pct >= 40 else 'low')) -%}
+    <span class="ai-score {{ cls }}">{{ "%.0f"|format(pct) }}</span>
+  {%- endif -%}
+{%- endmacro %}
+
 {% block content %}
 <div class="page-head">
   <h1 class="page-title">ウォッチリスト<small>WATCHLIST · {{ rows|length }}件</small></h1>
+  <div class="page-actions">
+    <form method="post" action="/web/actions/refresh" class="js-disable-on-submit" style="display:inline">
+      <button class="btn primary sm" type="submit">ウォッチリスト更新</button>
+    </form>
+  </div>
 </div>
+
+{% if market_adjustment and market_adjustment.regime != "normal" %}
+<div class="panel" style="margin-bottom:12px;border-color:var(--accent-dim)">
+  <div class="panel-head">
+    <div class="panel-title">市場環境：{{ market_adjustment.label }}<span class="tag">AI閾値 +{{ "%.0f"|format((market_adjustment.ai_threshold_adjust or 0) * 100) }}%</span></div>
+  </div>
+  <div class="muted" style="padding:0 16px 14px">{{ market_adjustment.reason }}</div>
+</div>
+{% endif %}
 
 <div class="filter-bar">
   <div class="segmented">
@@ -43,8 +66,8 @@
           <th>コード</th><th>名称</th><th>急落日</th>
           <th class="right">急落率</th><th class="right">急落時株価</th>
           <th class="right">日経乖離</th><th>セクター</th>
-          <th>ステータス</th><th>段階</th><th class="right">AI確率</th>
-          <th class="right">期待値</th><th class="right">スコア</th>
+          <th>ステータス</th><th>段階</th><th class="right">AIスコア</th>
+          <th class="right">期待値</th><th class="right">ルールスコア</th>
           <th class="right">条件数</th><th class="right">悪材料</th><th>除外理由</th>
           <th>モード</th><th>最終確認</th><th></th>
         </tr>
@@ -55,21 +78,21 @@
             style="cursor:pointer" data-idx="{{ loop.index0 }}">
           <td class="code">{{ r.code }}</td>
           <td class="name">{{ r.name or "" }}</td>
-          <td class="muted num">{{ r.drop_detected_at[:10] if r.drop_detected_at else "" }}</td>
+          <td class="muted num">{{ r.drop_detected_at | jst("%Y-%m-%d") }}</td>
           <td class="right num">{{ delta(r.drop_pct) }}</td>
           <td class="right num">{{ "%.0f"|format(r.price_at_drop) if r.price_at_drop is not none else "" }}</td>
           <td class="right num">{{ delta((r.drop_pct - r.nikkei_pct) if r.drop_pct is not none and r.nikkei_pct is not none else none) }}</td>
           <td class="muted">{{ r.sector or "" }}</td>
           <td>{{ status_badge(r.status) }}</td>
           <td>{{ stage_badge(r.signal_stage) }}</td>
-          <td class="right num">{{ "%.0f%%"|format(r.signal_probability * 100) if r.signal_probability is not none else "" }}</td>
+          <td class="right num">{{ ai_score(r.signal_probability) }}</td>
           <td class="right num">{{ delta(r.expected_value) }}</td>
           <td class="right num">{{ "%.0f"|format(r.signal_score if r.signal_score is not none else r.score) if (r.signal_score is not none or r.score is not none) else "" }}</td>
           <td class="right num">{{ r.signal_count if r.signal_count is not none else "" }}</td>
           <td class="right num">{{ "%.0f"|format(r.bad_news_score) if r.bad_news_score is not none else "" }}</td>
           <td class="muted">{{ r.exclude_reason or "" }}</td>
           <td class="muted">{{ r.mode or "normal" }}</td>
-          <td class="muted num">{{ r.last_checked_at[:10] if r.last_checked_at else "" }}</td>
+          <td class="muted num">{{ r.last_checked_at | jst("%Y-%m-%d") }}</td>
           <td>
             {% if r.status != "closed" %}
             <form method="post" action="/web/watchlist/{{ r.id }}/close?status={{ status_filter }}" style="display:inline">
@@ -79,7 +102,7 @@
           </td>
         </tr>
         {% else %}
-        <tr><td colspan="16" class="center muted" style="padding:28px">データなし</td></tr>
+        <tr><td colspan="18" class="center muted" style="padding:28px">データなし</td></tr>
         {% endfor %}
       </tbody>
     </table>
@@ -92,6 +115,15 @@ document.querySelector('.tbl tbody').addEventListener('click', function(e) {
   if (e.target.closest('button, form')) return;
   const tr = e.target.closest('tr[data-idx]');
   if (tr) openDetail(ROWS[parseInt(tr.dataset.idx)]);
+});
+document.querySelectorAll('.js-disable-on-submit').forEach(function(form) {
+  form.addEventListener('submit', function() {
+    var btn = form.querySelector('button[type="submit"]');
+    if (btn) {
+      btn.disabled = true;
+      btn.textContent = '更新中...';
+    }
+  });
 });
 </script>
 {% endblock %}
