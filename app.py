@@ -1768,6 +1768,53 @@ def handle_postback(event):
 # ─── Web UI ───────────────────────────────────────────────────────────────
 
 
+def get_signal_badge_label(row: dict) -> str:
+    status = row.get("status") or ""
+    stage = row.get("signal_stage") or "none"
+    if status == "excluded":
+        return "除外"
+    if stage == "strong_confirmed":
+        return "本命シグナル"
+    if stage == "confirmed":
+        return "通常シグナル"
+    if stage == "early":
+        return "初動シグナル"
+    if status == "notified" or row.get("rebound_notified_at"):
+        return "通知済み"
+    if status == "watching":
+        return "監視中"
+    return "シグナルなし"
+
+
+def get_watchlist_counts(rows: list[dict]) -> dict:
+    """ダッシュボード集計。各一覧ページの表示条件と一致させる。"""
+    valid_stages = SIGNAL_STAGES  # {"early", "confirmed", "strong_confirmed"}
+
+    watching = [r for r in rows if r.get("status") == "watching"]
+
+    active_signal = [
+        r for r in rows
+        if r.get("status") == "rebound_signal"
+        and r.get("signal_stage") in valid_stages
+    ]
+
+    notified = [
+        r for r in rows
+        if r.get("rebound_notified_at") or r.get("status") == "notified"
+    ]
+
+    unique_ids = {
+        r.get("id") for r in watching + active_signal + notified if r.get("id")
+    }
+
+    return {
+        "watching": len(watching),
+        "active_signal": len(active_signal),
+        "notified": len(notified),
+        "total": len(unique_ids),
+    }
+
+
 @app.route("/web/")
 @app.route("/web/dashboard")
 def web_dashboard():
@@ -1788,7 +1835,7 @@ def web_dashboard():
             .select("*")
             .neq("status", "closed")
             .order("drop_pct", desc=False)
-            .limit(100)
+            .limit(500)
             .execute()
             .data or []
         )
@@ -1811,12 +1858,7 @@ def web_dashboard():
         reverse=True,
     )
     watching_rows = [r for r in rows if r.get("status") == "watching"]
-    stats = {
-        "watching": len(watching_rows),
-        "rebound_signal": len(signal_rows),
-        "notified": len([r for r in rows if r.get("rebound_notified_at")]),
-        "excluded": len([r for r in rows if r.get("status") == "excluded" or r.get("is_excluded")]),
-    }
+    stats = get_watchlist_counts(rows)
     return render_template("web/dashboard.html",
         rows=rows,
         signal_rows=signal_rows,

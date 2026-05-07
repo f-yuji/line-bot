@@ -22,10 +22,17 @@
   {%- endif -%}
 {%- endmacro %}
 
-{% macro status_badge(s) -%}
-  {%- set m = {'watching':['watching','WATCH'],'rebound_signal':['signal','SIGNAL'],'notified':['notified','NOTIFIED'],'closed':['closed','CLOSED']} -%}
-  {%- set v = m.get(s, ['watching','WATCH']) -%}
-  <span class="badge {{ v[0] }}">{{ v[1] }}</span>
+{% macro signal_badge(r) -%}
+  {%- set stage = r.signal_stage or "none" -%}
+  {%- set status = r.status or "" -%}
+  {%- if status == "excluded" -%}<span class="badge closed">除外</span>
+  {%- elif stage == "strong_confirmed" -%}<span class="badge notified">本命シグナル</span>
+  {%- elif stage == "confirmed" -%}<span class="badge signal">通常シグナル</span>
+  {%- elif stage == "early" -%}<span class="badge signal-early">初動シグナル</span>
+  {%- elif status == "notified" or r.rebound_notified_at -%}<span class="badge notified">通知済み</span>
+  {%- elif status == "watching" -%}<span class="badge watching">監視中</span>
+  {%- else -%}<span class="badge watching">シグナルなし</span>
+  {%- endif -%}
 {%- endmacro %}
 
 {% macro delta(v, suffix='%') -%}
@@ -46,59 +53,17 @@
   {%- endif -%}
 {%- endmacro %}
 
-{# ── テーブル行マクロ ── #}
-{% macro signal_table(rows, index_label) %}
+{# ── テーブルマクロ（signal / watching 統合） ── #}
+{% macro row_table(rows, is_signal=false) %}
 <div class="table-wrap">
   <table class="tbl">
     <thead>
       <tr>
-        <th>コード</th><th>名称</th><th>急落日</th>
+        <th>コード</th><th>名称</th><th>ステータス</th>
+        <th class="right">AIスコア</th><th class="right">期待値</th>
         <th class="right">急落率</th><th class="right">急落時株価</th>
-        <th class="right">{{ index_label }}乖離</th><th>セクター</th>
-        <th class="right">AIスコア</th><th class="right">期待値</th><th class="center">ルールスコア</th>
-        <th class="center">推移</th><th>ステータス</th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for r in rows %}
-      <tr class="signal-row clickable-row" style="cursor:pointer" data-id="{{ r.id }}">
-        <td class="code">{{ r.code }}</td>
-        <td class="name">{{ r.name or "" }}</td>
-        <td class="muted num">{{ r.drop_detected_at | jst("%Y-%m-%d") }}</td>
-        <td class="right num">{{ delta(r.drop_pct) }}</td>
-        <td class="right num">{{ "%.0f"|format(r.price_at_drop) if r.price_at_drop is not none else "" }}</td>
-        <td class="right num">{{ delta((r.drop_pct - r.nikkei_pct) if r.drop_pct is not none and r.nikkei_pct is not none else none) }}</td>
-        <td class="muted">{{ r.sector or "" }}</td>
-        <td class="right num">{{ ai_score(r.signal_probability) }}</td>
-        <td class="right num">{{ delta(r.expected_value) }}</td>
-        <td class="center">
-          {% if r.score is not none %}
-            {%- set cls = 'high' if r.score >= 80 else ('mid' if r.score >= 65 else 'low') -%}
-            <div class="score-bar {{ cls }}">
-              <div class="track"><div class="fill" style="width:{{ r.score }}%"></div></div>
-              <span class="num">{{ "%.0f"|format(r.score) }}</span>
-            </div>
-          {% else %}<span class="muted">—</span>{% endif %}
-        </td>
-        <td class="center">{{ spark(r.price_history, 'up') }}</td>
-        <td>{{ status_badge(r.status) }}</td>
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
-</div>
-{% endmacro %}
-
-{% macro watching_table(rows, index_label) %}
-<div class="table-wrap">
-  <table class="tbl">
-    <thead>
-      <tr>
-        <th>コード</th><th>名称</th><th>急落日</th>
-        <th class="right">急落率</th><th class="right">急落時株価</th>
-        <th class="right">{{ index_label }}乖離</th><th>セクター</th>
-        <th class="right">AIスコア</th><th class="right">期待値</th><th class="center">ルールスコア</th>
-        <th class="center">推移</th>
+        <th class="center">ルールスコア</th><th class="center">推移</th>
+        <th>セクター</th><th>急落日</th>
       </tr>
     </thead>
     <tbody>
@@ -106,13 +71,11 @@
       <tr class="clickable-row" style="cursor:pointer" data-id="{{ r.id }}">
         <td class="code">{{ r.code }}</td>
         <td class="name">{{ r.name or "" }}</td>
-        <td class="muted num">{{ r.drop_detected_at | jst("%Y-%m-%d") }}</td>
-        <td class="right num">{{ delta(r.drop_pct) }}</td>
-        <td class="right num">{{ "%.0f"|format(r.price_at_drop) if r.price_at_drop is not none else "" }}</td>
-        <td class="right num">{{ delta((r.drop_pct - r.nikkei_pct) if r.drop_pct is not none and r.nikkei_pct is not none else none) }}</td>
-        <td class="muted">{{ r.sector or "" }}</td>
+        <td>{{ signal_badge(r) }}</td>
         <td class="right num">{{ ai_score(r.signal_probability) }}</td>
         <td class="right num">{{ delta(r.expected_value) }}</td>
+        <td class="right num">{{ delta(r.drop_pct) }}</td>
+        <td class="right num">{{ "%.0f"|format(r.price_at_drop) if r.price_at_drop is not none else "" }}</td>
         <td class="center">
           {% if r.score is not none %}
             {%- set cls = 'high' if r.score >= 80 else ('mid' if r.score >= 65 else 'low') -%}
@@ -122,7 +85,9 @@
             </div>
           {% else %}<span class="muted">—</span>{% endif %}
         </td>
-        <td class="center">{{ spark(r.price_history, 'down') }}</td>
+        <td class="center">{{ spark(r.price_history, 'up' if is_signal else 'down') }}</td>
+        <td class="muted">{{ r.sector or "" }}</td>
+        <td class="muted num">{{ r.drop_detected_at | jst("%Y-%m-%d") }}</td>
       </tr>
       {% else %}
       <tr><td colspan="11" class="center muted" style="padding:28px">データなし</td></tr>
@@ -132,13 +97,13 @@
 </div>
 {% endmacro %}
 
-{% block content %}
-
 {# ── 行の市場分類 ── #}
 {% set jp_signal   = signal_rows   | selectattr("market", "ne", "dow") | list %}
 {% set dow_signal  = signal_rows   | selectattr("market", "equalto", "dow") | list %}
 {% set jp_watching = watching_rows | selectattr("market", "ne", "dow") | list %}
 {% set dow_watching= watching_rows | selectattr("market", "equalto", "dow") | list %}
+
+{% block content %}
 
 <div class="page-head">
   <h1 class="page-title">ダッシュボード<small>OVERVIEW · {{ now.strftime("%Y-%m-%d") if now else "" }}</small></h1>
@@ -176,7 +141,7 @@
   </div>
   <div class="stat-tile accent">
     <div class="label">シグナル発生中</div>
-    <div class="value">{{ stats.rebound_signal if stats else 0 }}</div>
+    <div class="value">{{ stats.active_signal if stats else 0 }}</div>
     <div class="sub muted">SIGNAL ACTIVE</div>
   </div>
   <div class="stat-tile up">
@@ -186,7 +151,7 @@
   </div>
   <div class="stat-tile">
     <div class="label">合計</div>
-    <div class="value">{{ (stats.watching + stats.rebound_signal) if stats else 0 }}</div>
+    <div class="value">{{ stats.total if stats else 0 }}</div>
     <div class="sub muted">TOTAL</div>
   </div>
 </div>
@@ -198,7 +163,7 @@
   リバウンドシグナル — 国内
 </div>
 <div class="panel" style="border-color:var(--accent-dim)">
-  {{ signal_table(jp_signal, "日経") }}
+  {{ row_table(jp_signal, is_signal=true) }}
 </div>
 {% endif %}
 
@@ -209,7 +174,7 @@
   リバウンドシグナル — ダウ
 </div>
 <div class="panel" style="border-color:var(--accent-dim)">
-  {{ signal_table(dow_signal, "DJI") }}
+  {{ row_table(dow_signal, is_signal=true) }}
 </div>
 {% endif %}
 
@@ -219,7 +184,7 @@
   監視中 — 国内
 </div>
 <div class="panel">
-  {{ watching_table(jp_watching, "日経") }}
+  {{ row_table(jp_watching) }}
 </div>
 
 {# ── 監視中：ダウ ── #}
@@ -229,7 +194,7 @@
   監視中 — ダウ
 </div>
 <div class="panel">
-  {{ watching_table(dow_watching, "DJI") }}
+  {{ row_table(dow_watching) }}
 </div>
 {% endif %}
 

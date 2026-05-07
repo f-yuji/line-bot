@@ -660,6 +660,7 @@ td.num { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
 }
 .badge.watching { color: var(--status-watching); border-color: rgba(91,158,255,.35); background: rgba(91,158,255,.08); }
 .badge.signal { color: var(--status-signal); border-color: rgba(212,164,74,.35); background: rgba(212,164,74,.08); }
+.badge.signal-early { color: #4ab8c0; border-color: rgba(74,184,192,.35); background: rgba(74,184,192,.08); }
 .badge.notified { color: var(--status-notified); border-color: rgba(45,212,114,.35); background: rgba(45,212,114,.08); }
 .badge.closed { color: var(--status-closed); border-color: rgba(108,110,120,.35); background: rgba(108,110,120,.08); }
 

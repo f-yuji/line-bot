@@ -168,19 +168,31 @@
 
 <script>
 const _BADGE_MAP = {
-  watching: ['watching','WATCH'],
-  rebound_signal: ['signal','SIGNAL'],
-  notified: ['notified','NOTIFIED'],
+  watching: ['watching','監視中'],
+  rebound_signal: ['signal','シグナル'],
+  notified: ['notified','通知済み'],
   closed: ['closed','CLOSED'],
-  excluded: ['closed','EXCLUDED']
+  excluded: ['closed','除外']
 };
 
 const _STAGE_MAP = {
   none: 'シグナルなし',
-  early: '初動',
-  confirmed: '本命',
-  strong_confirmed: '強本命'
+  early: '初動シグナル',
+  confirmed: '通常シグナル',
+  strong_confirmed: '本命シグナル'
 };
+
+function _getSignalBadge(r) {
+  const stage = r.signal_stage || 'none';
+  const status = r.status || '';
+  if (status === 'excluded') return ['closed', '除外'];
+  if (stage === 'strong_confirmed') return ['notified', '本命シグナル'];
+  if (stage === 'confirmed') return ['signal', '通常シグナル'];
+  if (stage === 'early') return ['signal-early', '初動シグナル'];
+  if (status === 'notified' || r.rebound_notified_at) return ['notified', '通知済み'];
+  if (status === 'watching') return ['watching', '監視中'];
+  return ['watching', 'シグナルなし'];
+}
 
 function _fmt(v, digits, suffix) {
   if (v == null) return '—';
@@ -232,7 +244,7 @@ function openDetail(r) {
   if (!r) return;
   document.getElementById('m-code').textContent = r.code || '';
   document.getElementById('m-name').textContent = r.name || '';
-  const bm = _BADGE_MAP[r.status] || ['watching','WATCH'];
+  const bm = _getSignalBadge(r);
   document.getElementById('m-status-badge').innerHTML = `<span class="badge ${bm[0]}">${bm[1]}</span>`;
 
   document.getElementById('m-bad-news').style.display = (r.has_bad_news || r.is_excluded) ? '' : 'none';
