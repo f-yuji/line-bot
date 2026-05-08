@@ -147,6 +147,23 @@
       {% endfor %}
     </div>
 
+    <div class="form-card">
+      <h3>エントリー選抜</h3>
+      {% for key, label in [
+        ("max_open_positions", "最大保有数"),
+        ("max_daily_entries", "1日最大エントリー"),
+        ("entry_rank_limit", "エントリー上位数"),
+        ("max_sector_positions", "同セクター最大保有数")
+      ] %}
+      <div class="form-row">
+        <label>{{ label }}</label>
+        <div class="input-group">
+          <input type="number" step="1" min="0" name="{{ key }}" value="{{ cfg[key] }}">
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+
   </div>
 
   <div style="display:flex;gap:8px;margin-top:14px">

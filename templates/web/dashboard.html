@@ -109,7 +109,10 @@
   <h1 class="page-title">ダッシュボード<small>OVERVIEW · {{ now.strftime("%Y-%m-%d") if now else "" }}</small></h1>
   <div class="page-actions">
     <form method="post" action="/web/actions/refresh" class="js-disable-on-submit" style="display:inline">
-      <button class="btn primary sm" type="submit">株価・シグナル更新</button>
+      <button class="btn primary sm" type="submit">市場環境更新</button>
+    </form>
+    <form method="post" action="/web/actions/refresh-prices" class="js-disable-on-submit" style="display:inline">
+      <button class="btn sm" type="submit">株価更新</button>
     </form>
   </div>
 </div>

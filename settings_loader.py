@@ -45,6 +45,10 @@ DEFAULTS: dict = {
     "jquants_fallback_yfinance": True,
     "jquants_sleep_sec":        0.2,
     "jquants_max_retry":        2,
+    "max_open_positions":       20,
+    "max_daily_entries":        5,
+    "entry_rank_limit":         10,
+    "max_sector_positions":     2,
 }
 
 _cache: dict | None = None

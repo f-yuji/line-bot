@@ -21,7 +21,7 @@ python send_news.py --dry-run
 # ===== Git 基本 =====
 git status
 git add .
-git commit -m "0505"
+git commit -m "050６"
 git push
 git pull
 

@@ -49,6 +49,7 @@ TARGET_CONFIG = {
     "5d": {"model_name": "rebound_lgbm_5d", "legacy_model_name": "rebound_lgbm", "take_profit_pct": 5.0, "stop_loss_pct": -3.0, "holding_days": 5},
     "10d": {"model_name": "rebound_lgbm_10d", "legacy_model_name": None, "take_profit_pct": 7.0, "stop_loss_pct": -4.0, "holding_days": 10},
 }
+VIRTUAL_REENTRY_COOLDOWN_DAYS = 10
 
 
 def _target_config(args: argparse.Namespace) -> dict:
@@ -236,6 +237,82 @@ def _expected_value(probability: float, take_profit_pct: float = 5.0, stop_loss_
     return probability * take_profit_pct - (1.0 - probability) * abs(stop_loss_pct)
 
 
+def _days_since(value: str | None) -> int | None:
+    if not value:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        return (datetime.now(timezone.utc).date() - dt.date()).days
+    except Exception:
+        return None
+
+
+def _recent_closed_trade(sb, code: str, cooldown_days: int = VIRTUAL_REENTRY_COOLDOWN_DAYS) -> dict | None:
+    try:
+        rows = (
+            sb.table("virtual_trades")
+            .select("id,code,status,sell_date,sell_reason,exit_reason,exit_checked_at,updated_at")
+            .eq("code", code)
+            .eq("status", "closed")
+            .order("updated_at", desc=True)
+            .limit(5)
+            .execute()
+            .data or []
+        )
+    except Exception as e:
+        logger.warning("recent closed trade lookup failed code=%s: %s", code, e)
+        return None
+    for row in rows:
+        days = _days_since(row.get("sell_date") or row.get("exit_checked_at") or row.get("updated_at"))
+        if days is not None and days <= cooldown_days:
+            row["days_since_exit"] = days
+            return row
+    return None
+
+
+def _same_signal_trade_exists(sb, snapshot: dict, watch: dict) -> bool:
+    watchlist_id = watch.get("id") or snapshot.get("watchlist_id")
+    feature_snapshot_id = snapshot.get("id") or snapshot.get("feature_snapshot_id")
+    try:
+        if watchlist_id:
+            rows = (
+                sb.table("virtual_trades")
+                .select("id,status")
+                .eq("watchlist_id", watchlist_id)
+                .limit(1)
+                .execute()
+                .data or []
+            )
+            if rows:
+                logger.info(
+                    "virtual_trade skipped by same watchlist signal: code=%s watchlist_id=%s status=%s",
+                    snapshot.get("code"),
+                    watchlist_id,
+                    rows[0].get("status"),
+                )
+                return True
+        if feature_snapshot_id:
+            rows = (
+                sb.table("virtual_trades")
+                .select("id,status")
+                .eq("feature_snapshot_id", feature_snapshot_id)
+                .limit(1)
+                .execute()
+                .data or []
+            )
+            if rows:
+                logger.info(
+                    "virtual_trade skipped by same feature snapshot: code=%s feature_snapshot_id=%s status=%s",
+                    snapshot.get("code"),
+                    feature_snapshot_id,
+                    rows[0].get("status"),
+                )
+                return True
+    except Exception as e:
+        logger.warning("same signal trade lookup failed code=%s: %s", snapshot.get("code"), e)
+    return False
+
+
 def _current_mode(sb, target_date: str) -> dict:
     try:
         rows = (
@@ -339,12 +416,48 @@ def _persist_watchlist(sb, row: dict, result: dict, *, dry_run: bool, force: boo
     return inserted[0] if inserted else update
 
 
-def _create_virtual_trade(sb, snapshot: dict, watch: dict, result: dict, *, dry_run: bool) -> None:
+def _int_setting(cfg: dict, key: str, default: int) -> int:
+    try:
+        return max(0, int(cfg.get(key, default)))
+    except Exception:
+        return default
+
+
+def _entry_limit_state(sb) -> tuple[int, int, dict[str, int]]:
+    open_count = 0
+    today_entries = 0
+    sector_counts: dict[str, int] = {}
+    try:
+        rows = sb.table("virtual_trades").select("id,sector,status").eq("status", "open").execute().data or []
+        open_count = len(rows)
+        for row in rows:
+            sector = str(row.get("sector") or "unknown")
+            sector_counts[sector] = sector_counts.get(sector, 0) + 1
+    except Exception as e:
+        logger.warning("entry limit lookup failed: %s", e)
+    try:
+        start = datetime.now(JST).replace(hour=0, minute=0, second=0, microsecond=0)
+        end = start + timedelta(days=1)
+        rows = (
+            sb.table("virtual_trades")
+            .select("id")
+            .gte("created_at", start.astimezone(timezone.utc).isoformat())
+            .lt("created_at", end.astimezone(timezone.utc).isoformat())
+            .execute()
+            .data or []
+        )
+        today_entries = len(rows)
+    except Exception as e:
+        logger.warning("daily entry lookup failed: %s", e)
+    return open_count, today_entries, sector_counts
+
+
+def _create_virtual_trade(sb, snapshot: dict, watch: dict, result: dict, *, dry_run: bool) -> bool:
     if result["signal_stage"] not in SIGNAL_STAGES:
-        return
+        return False
     if result.get("market_regime") == "panic_selloff":
         logger.info("virtual_trade skipped by market regime: code=%s regime=panic_selloff", snapshot.get("code"))
-        return
+        return False
     try:
         existing = (
             sb.table("virtual_trades")
@@ -356,15 +469,28 @@ def _create_virtual_trade(sb, snapshot: dict, watch: dict, result: dict, *, dry_
             .data or []
         )
         if existing:
-            return
+            return False
+        if _same_signal_trade_exists(sb, snapshot, watch):
+            return False
+        recent = _recent_closed_trade(sb, str(snapshot["code"]))
+        if recent:
+            logger.info(
+                "virtual_trade skipped by reentry cooldown: code=%s reason=%s days=%s",
+                snapshot.get("code"),
+                recent.get("exit_reason") or recent.get("sell_reason"),
+                recent.get("days_since_exit"),
+            )
+            return False
         now = datetime.now(timezone.utc).isoformat()
         reason = (
             f"AI probability={result['probability']:.2f} expected_value={result['expected_value']:.2f} "
             f"stage={result['signal_stage']} mode={result['mode']} horizon={result.get('prediction_horizon', '5d')}"
         )
         row = {
+            "watchlist_id": watch.get("id"),
             "code": snapshot["code"],
             "name": snapshot.get("name"),
+            "sector": snapshot.get("sector"),
             "buy_price": snapshot.get("close"),
             "buy_date": f"{snapshot.get('trade_date')}T00:00:00+09:00",
             "buy_score": result["signal_score"],
@@ -388,10 +514,51 @@ def _create_virtual_trade(sb, snapshot: dict, watch: dict, result: dict, *, dry_
         }
         if dry_run:
             logger.info("DRYRUN virtual_trade insert: %s", row)
-            return
+            return True
         sb.table("virtual_trades").insert(row).execute()
+        return True
     except Exception as e:
         logger.error("virtual_trade create failed code=%s: %s", snapshot.get("code"), e)
+        return False
+
+
+def _entry_rank_value(candidate: tuple[dict, dict, dict]) -> tuple[float, float]:
+    _row, _watch, result = candidate
+    return float(result.get("expected_value") or -999.0), float(result.get("probability") or 0.0)
+
+
+def _create_ranked_virtual_trades(sb, candidates: list[tuple[dict, dict, dict]], cfg: dict, market_adjustment: dict, *, dry_run: bool) -> None:
+    if not candidates:
+        return
+    max_open = _int_setting(cfg, "max_open_positions", 20)
+    max_daily = _int_setting(cfg, "max_daily_entries", 5)
+    max_sector = _int_setting(cfg, "max_sector_positions", 2)
+    rank_limit = _int_setting(cfg, "entry_rank_limit", 10)
+    if market_adjustment.get("regime") == "panic_rebound" and rank_limit > 0:
+        original = rank_limit
+        rank_limit = max(1, rank_limit // 2)
+        logger.info("[market_regime_limit] regime=panic_rebound entry_rank_limit=%d original=%d", rank_limit, original)
+    ranked = sorted(candidates, key=_entry_rank_value, reverse=True)
+    if rank_limit > 0:
+        ranked = ranked[:rank_limit]
+    open_count, today_entries, sector_counts = _entry_limit_state(sb)
+    for row, watch, result in ranked:
+        code = row.get("code")
+        sector = str(row.get("sector") or "unknown")
+        if max_open and open_count >= max_open:
+            logger.info("[position_limit] skip code=%s open_positions=%d limit=%d", code, open_count, max_open)
+            continue
+        if max_daily and today_entries >= max_daily:
+            logger.info("[daily_entry_limit] skip code=%s today_entries=%d limit=%d", code, today_entries, max_daily)
+            continue
+        current_sector = sector_counts.get(sector, 0)
+        if max_sector and current_sector >= max_sector:
+            logger.info("[sector_limit] skip code=%s sector=%s current=%d limit=%d", code, sector, current_sector, max_sector)
+            continue
+        if _create_virtual_trade(sb, row, watch, result, dry_run=dry_run):
+            open_count += 1
+            today_entries += 1
+            sector_counts[sector] = current_sector + 1
 
 
 def _eligible_users(sb) -> list[dict]:
@@ -575,6 +742,7 @@ def run(args: argparse.Namespace) -> None:
 
     signal_count = 0
     notify_items: list[tuple[dict, dict]] = []
+    entry_candidates: list[tuple[dict, dict, dict]] = []
     for row, prob in zip(snapshots, probabilities):
         row["market_regime_adjustment"] = market_adjustment
         ev = _expected_value(prob, target["take_profit_pct"], target["stop_loss_pct"])
@@ -619,9 +787,11 @@ def run(args: argparse.Namespace) -> None:
             result.get("market_nikkei_pct"),
             result.get("market_topix_pct"),
         )
-        _create_virtual_trade(sb, row, watch or {}, result, dry_run=args.dry_run)
+        if result["signal_stage"] in SIGNAL_STAGES:
+            entry_candidates.append((row, watch or {}, result))
         if args.notify and not args.dry_run and _notification_allowed(row, result, cfg):
             notify_items.append((row, result))
+    _create_ranked_virtual_trades(sb, entry_candidates, cfg, market_adjustment, dry_run=args.dry_run)
     if args.notify and not args.dry_run:
         _notify_batch(sb, notify_items, target_date, mode)
     logger.info("complete: predictions=%d signals=%d dry_run=%s", len(snapshots), signal_count, args.dry_run)

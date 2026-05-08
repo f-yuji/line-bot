@@ -42,6 +42,7 @@ JST = timezone(timedelta(hours=9))
 LINE_API_BASE = "https://api.line.me"
 JAPAN_MARKETS = {"nikkei225", "nikkei", "prime", "tse_prime", "japan"}
 NON_JAPAN_MARKETS = {"dow", "dow30", "us", "usa", "nyse", "nasdaq", "djia"}
+VIRTUAL_REENTRY_COOLDOWN_DAYS = 10
 SMOKE_RELAXED_OVERRIDES = {
     "daily_rebound_threshold": 2.0,
     "drop_rebound_threshold": 3.0,
@@ -201,6 +202,82 @@ def _biz_days(from_dt: datetime, to_dt: datetime) -> int:
         if cur.weekday() < 5:
             days += 1
     return days
+
+
+def _days_since(value: str | None, now_utc: datetime) -> int | None:
+    if not value:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        return (now_utc.date() - dt.date()).days
+    except Exception:
+        return None
+
+
+def _recent_closed_trade(code: str, now_utc: datetime, cooldown_days: int = VIRTUAL_REENTRY_COOLDOWN_DAYS) -> dict | None:
+    try:
+        rows = (
+            supabase.table("virtual_trades")
+            .select("id,code,status,sell_date,sell_reason,exit_reason,exit_checked_at,updated_at")
+            .eq("code", code)
+            .eq("status", "closed")
+            .order("updated_at", desc=True)
+            .limit(5)
+            .execute()
+            .data or []
+        )
+    except Exception as e:
+        logger.warning("recent closed trade lookup failed code=%s: %s", code, e)
+        return None
+    for row in rows:
+        days = _days_since(row.get("sell_date") or row.get("exit_checked_at") or row.get("updated_at"), now_utc)
+        if days is not None and days <= cooldown_days:
+            row["days_since_exit"] = days
+            return row
+    return None
+
+
+def _same_signal_trade_exists(item: dict) -> bool:
+    watchlist_id = item.get("id") or item.get("watchlist_id")
+    feature_snapshot_id = item.get("feature_snapshot_id")
+    try:
+        if watchlist_id:
+            rows = (
+                supabase.table("virtual_trades")
+                .select("id,status")
+                .eq("watchlist_id", watchlist_id)
+                .limit(1)
+                .execute()
+                .data or []
+            )
+            if rows:
+                logger.info(
+                    "virtual buy skipped by same watchlist signal: %s watchlist_id=%s status=%s",
+                    item.get("code", ""),
+                    watchlist_id,
+                    rows[0].get("status"),
+                )
+                return True
+        if feature_snapshot_id:
+            rows = (
+                supabase.table("virtual_trades")
+                .select("id,status")
+                .eq("feature_snapshot_id", feature_snapshot_id)
+                .limit(1)
+                .execute()
+                .data or []
+            )
+            if rows:
+                logger.info(
+                    "virtual buy skipped by same feature snapshot: %s feature_snapshot_id=%s status=%s",
+                    item.get("code", ""),
+                    feature_snapshot_id,
+                    rows[0].get("status"),
+                )
+                return True
+    except Exception as e:
+        logger.warning("same signal trade lookup failed code=%s: %s", item.get("code", ""), e)
+    return False
 
 
 def _fetch_history(code: str, market: str = "") -> "tuple[pd.Series, pd.Series] | None":
@@ -528,14 +605,14 @@ def _create_virtual_trade(
     now_utc: datetime,
     rebound: dict | None = None,
     bad_analysis: dict | None = None,
-) -> None:
+) -> bool:
     code = item.get("code", "")
     stage = item.get("signal_stage")
     if stage not in SIGNAL_STAGES:
-        return
+        return False
     if item.get("market_regime") == "panic_selloff":
         logger.info("virtual buy skipped by market regime: %s panic_selloff", code)
-        return
+        return False
     rebound = rebound or {}
     bad_analysis = bad_analysis or {}
     try:
@@ -547,12 +624,24 @@ def _create_virtual_trade(
             .execute()
         )
         if existing.data:
-            return
+            return False
+        if _same_signal_trade_exists(item):
+            return False
+        recent = _recent_closed_trade(code, now_utc)
+        if recent:
+            logger.info(
+                "virtual buy skipped by reentry cooldown: %s reason=%s days=%s",
+                code,
+                recent.get("exit_reason") or recent.get("sell_reason"),
+                recent.get("days_since_exit"),
+            )
+            return False
         supabase.table("virtual_trades").insert({
             "watchlist_id": item.get("id"),
             "code": code,
             "name": item.get("name", ""),
             "market": item.get("market", ""),
+            "sector": item.get("sector"),
             "buy_price": price,
             "buy_date": now_utc.isoformat(),
             "quantity": 100,
@@ -578,8 +667,109 @@ def _create_virtual_trade(
             "updated_at": now_utc.isoformat(),
         }).execute()
         logger.info("virtual buy: %s price=%.0f score=%.1f stage=%s", code, price, score, stage)
+        return True
     except Exception as e:
         logger.error("virtual_trade create error: %s %s", code, e)
+        return False
+
+
+def _int_setting(cfg: dict, key: str, default: int) -> int:
+    try:
+        return max(0, int(cfg.get(key, default)))
+    except Exception:
+        return default
+
+
+def _today_bounds(now_utc: datetime) -> tuple[str, str]:
+    start = now_utc.astimezone(JST).replace(hour=0, minute=0, second=0, microsecond=0)
+    end = start + timedelta(days=1)
+    return start.astimezone(timezone.utc).isoformat(), end.astimezone(timezone.utc).isoformat()
+
+
+def _entry_limit_state(now_utc: datetime) -> tuple[int, int, dict[str, int]]:
+    open_count = 0
+    today_entries = 0
+    sector_counts: dict[str, int] = {}
+    try:
+        rows = supabase.table("virtual_trades").select("id,sector,status").eq("status", "open").execute().data or []
+        open_count = len(rows)
+        for row in rows:
+            sector = str(row.get("sector") or "unknown")
+            sector_counts[sector] = sector_counts.get(sector, 0) + 1
+    except Exception as e:
+        logger.warning("entry limit open position lookup failed: %s", e)
+    try:
+        start, end = _today_bounds(now_utc)
+        rows = (
+            supabase.table("virtual_trades")
+            .select("id")
+            .gte("created_at", start)
+            .lt("created_at", end)
+            .execute()
+            .data or []
+        )
+        today_entries = len(rows)
+    except Exception as e:
+        logger.warning("entry limit daily count lookup failed: %s", e)
+    return open_count, today_entries, sector_counts
+
+
+def _entry_rank_value(candidate: dict) -> tuple[float, float]:
+    item = candidate["item"]
+    ev = _to_float(item.get("expected_value"), -999.0)
+    prob = _to_float(item.get("signal_probability"), 0.0)
+    return float(ev if ev is not None else -999.0), float(prob if prob is not None else 0.0)
+
+
+def _create_ranked_virtual_trades(
+    candidates: list[dict],
+    cfg: dict,
+    now_utc: datetime,
+    market_adjustment: dict,
+) -> None:
+    if not candidates:
+        return
+
+    max_open = _int_setting(cfg, "max_open_positions", 20)
+    max_daily = _int_setting(cfg, "max_daily_entries", 5)
+    rank_limit = _int_setting(cfg, "entry_rank_limit", 10)
+    max_sector = _int_setting(cfg, "max_sector_positions", 2)
+    if market_adjustment.get("regime") == "panic_rebound" and rank_limit > 0:
+        original = rank_limit
+        rank_limit = max(1, rank_limit // 2)
+        logger.info("[market_regime_limit] regime=panic_rebound entry_rank_limit=%d original=%d", rank_limit, original)
+
+    ranked = sorted(candidates, key=_entry_rank_value, reverse=True)
+    if rank_limit > 0:
+        ranked = ranked[:rank_limit]
+
+    open_count, today_entries, sector_counts = _entry_limit_state(now_utc)
+    for candidate in ranked:
+        item = candidate["item"]
+        code = item.get("code", "")
+        sector = str(item.get("sector") or "unknown")
+        if max_open and open_count >= max_open:
+            logger.info("[position_limit] skip code=%s open_positions=%d limit=%d", code, open_count, max_open)
+            continue
+        if max_daily and today_entries >= max_daily:
+            logger.info("[daily_entry_limit] skip code=%s today_entries=%d limit=%d", code, today_entries, max_daily)
+            continue
+        current_sector = sector_counts.get(sector, 0)
+        if max_sector and current_sector >= max_sector:
+            logger.info("[sector_limit] skip code=%s sector=%s current=%d limit=%d", code, sector, current_sector, max_sector)
+            continue
+        created = _create_virtual_trade(
+            item,
+            candidate["current"],
+            candidate["score"],
+            now_utc,
+            candidate.get("rebound"),
+            candidate.get("bad_analysis"),
+        )
+        if created:
+            open_count += 1
+            today_entries += 1
+            sector_counts[sector] = current_sector + 1
 
 
 def _manage_virtual_trades(cfg: dict, now_utc: datetime, *, dry_run: bool = False) -> None:
@@ -720,6 +910,7 @@ def run_monitor(*, smoke_relaxed: bool = False, dry_run: bool = False, force_no_
 
     logger.info("watchlist targets: %d", len(watchlist))
     to_notify: list[tuple[dict, dict, float, dict, dict]] = []
+    entry_candidates: list[dict] = []
 
     for item in watchlist:
         code = item.get("code", "")
@@ -892,8 +1083,15 @@ def run_monitor(*, smoke_relaxed: bool = False, dry_run: bool = False, force_no_
         if stage in SIGNAL_STAGES and not is_excluded and not dry_run:
             trade_item = {**item, **update_data}
             trade_item["entry_size_multiplier"] = market_adjustment["entry_size_multiplier"]
-            _create_virtual_trade(trade_item, current, score, now_utc, rebound, bad_analysis)
+            entry_candidates.append({
+                "item": trade_item,
+                "current": current,
+                "score": score,
+                "rebound": rebound,
+                "bad_analysis": bad_analysis,
+            })
 
+    _create_ranked_virtual_trades(entry_candidates, cfg, now_utc, market_adjustment)
     _manage_virtual_trades(cfg, now_utc, dry_run=dry_run)
 
     logger.info("new signals: %d", len(to_notify))

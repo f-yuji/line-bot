@@ -11,6 +11,7 @@ on:
     - cron: "0 3 * * 1-5"   # 12:00 JST
     - cron: "30 6 * * 1-5"  # 15:30 JST
     - cron: "0 9 * * 1-5"   # 18:00 JST
+    - cron: "0 12 * * 6"    # 21:00 JST Sat (weekly model training)
     - cron: "30 21 * * 1-5" # 06:30 JST 翌日 (scan_dow: NY引け後)
 
 jobs:
@@ -96,3 +97,35 @@ jobs:
           LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
           ENV: prod
           SUPABASE_MODE: prod
+
+  train-rebound-models:
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '0 12 * * 6'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -r requirements.txt
+      - name: Train 5d rebound model
+        run: python scripts/train_rebound_model.py --years 3 --target-label 5d --min-samples 5000
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          ENV: prod
+          SUPABASE_MODE: prod
+      - name: Train 10d rebound model
+        run: python scripts/train_rebound_model.py --years 3 --target-label 10d --min-samples 5000
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          ENV: prod
+          SUPABASE_MODE: prod
+      - name: Upload trained model artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: rebound-models-${{ github.run_id }}
+          path: |
+            models/*.pkl
+            models/*_features.json
+            models/*_importance.csv

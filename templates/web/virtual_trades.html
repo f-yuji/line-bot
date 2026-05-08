@@ -15,7 +15,7 @@
 <div class="page-head">
   <h1 class="page-title">仮想売買<small>VIRTUAL TRADING</small></h1>
   <div class="page-actions">
-    <form method="post" action="/web/actions/refresh" class="js-disable-on-submit" style="display:inline">
+    <form method="post" action="/web/actions/refresh-prices" class="js-disable-on-submit" style="display:inline">
       <button class="btn primary sm" type="submit">現在値更新</button>
     </form>
   </div>
@@ -40,8 +40,7 @@
   {% endif %}
 </div>
 
-{# ── サマリー ── #}
-{% set win_rate = (win_count / closed_trades|length * 100) if closed_trades|length > 0 else none %}
+{% set win_rate = (win_count / performance_closed_count * 100) if performance_closed_count > 0 else none %}
 <div class="stat-grid">
   <div class="stat-tile info">
     <div class="label">保有中</div>
@@ -58,12 +57,12 @@
     <div class="value">
       {%- if win_rate is not none -%}{{ "%.0f"|format(win_rate) }}%{%- else -%}—{%- endif -%}
     </div>
-    <div class="sub muted">{{ win_count }}勝 {{ (closed_trades|length - win_count) }}敗</div>
+    <div class="sub muted">{{ win_count }}勝 {{ (performance_closed_count - win_count) }}敗</div>
   </div>
   <div class="stat-tile">
     <div class="label">決済済み</div>
-    <div class="value">{{ closed_trades|length }}</div>
-    <div class="sub muted">CLOSED</div>
+    <div class="value">{{ performance_closed_count }}</div>
+    <div class="sub muted">CLOSED{% if cleanup_closed_count %} / 整理 {{ cleanup_closed_count }}{% endif %}</div>
   </div>
 </div>
 
@@ -92,7 +91,6 @@
   </div>
 </div>
 
-{# ── 保有中ポジション ── #}
 <div class="section-h" style="margin-top:20px">
   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:12px;height:12px"><polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/></svg>
   保有中ポジション
@@ -148,11 +146,10 @@
   </div>
 </div>
 
-{# ── 決済済みトレード ── #}
 <div class="section-h" style="margin-top:16px">
   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:12px;height:12px"><rect x="3" y="3" width="18" height="18" rx="2"/><polyline points="9 9 15 15"/><polyline points="15 9 9 15"/></svg>
   決済済みトレード
-  <span class="muted" style="font-size:11px;margin-left:4px">最新100件</span>
+  <span class="muted" style="font-size:11px;margin-left:4px">整理分は非表示</span>
 </div>
 <div class="panel">
   <div class="table-wrap">
@@ -186,6 +183,8 @@
               <span class="badge" style="color:#ff3b3b;border-color:rgba(255,59,59,.35);background:rgba(255,59,59,.08)">損切</span>
             {%- elif t.sell_reason == 'expired' -%}
               <span class="badge closed">期限</span>
+            {%- elif t.exit_reason in ['cleanup_position_limit', 'cleanup_duplicate_open'] -%}
+              <span class="badge closed">整理</span>
             {%- else -%}
               <span class="badge closed">{{ t.sell_reason or "—" }}</span>
             {%- endif -%}

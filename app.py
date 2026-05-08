@@ -1815,6 +1815,58 @@ def get_watchlist_counts(rows: list[dict]) -> dict:
     }
 
 
+def _hide_settled_signal_rows(rows: list[dict]) -> list[dict]:
+    watchlist_ids = [r.get("id") for r in rows if r.get("id")]
+    feature_ids = [r.get("feature_snapshot_id") for r in rows if r.get("feature_snapshot_id")]
+    closed_watchlist_ids: set[str] = set()
+    closed_feature_ids: set[str] = set()
+    try:
+        if watchlist_ids:
+            vt_rows = (
+                supabase.table("virtual_trades")
+                .select("watchlist_id,feature_snapshot_id,status")
+                .eq("status", "closed")
+                .in_("watchlist_id", watchlist_ids[:500])
+                .limit(1000)
+                .execute()
+                .data or []
+            )
+            closed_watchlist_ids.update(str(r.get("watchlist_id")) for r in vt_rows if r.get("watchlist_id"))
+            closed_feature_ids.update(str(r.get("feature_snapshot_id")) for r in vt_rows if r.get("feature_snapshot_id"))
+        if feature_ids:
+            vt_rows = (
+                supabase.table("virtual_trades")
+                .select("watchlist_id,feature_snapshot_id,status")
+                .eq("status", "closed")
+                .in_("feature_snapshot_id", feature_ids[:500])
+                .limit(1000)
+                .execute()
+                .data or []
+            )
+            closed_watchlist_ids.update(str(r.get("watchlist_id")) for r in vt_rows if r.get("watchlist_id"))
+            closed_feature_ids.update(str(r.get("feature_snapshot_id")) for r in vt_rows if r.get("feature_snapshot_id"))
+    except Exception as e:
+        logger.warning("settled signal lookup failed: %s", e)
+        return rows
+
+    filtered = []
+    hidden = 0
+    for row in rows:
+        if (
+            row.get("status") == "rebound_signal"
+            and (
+                str(row.get("id")) in closed_watchlist_ids
+                or str(row.get("feature_snapshot_id")) in closed_feature_ids
+            )
+        ):
+            hidden += 1
+            continue
+        filtered.append(row)
+    if hidden:
+        logger.info("hide settled signal rows: %d", hidden)
+    return filtered
+
+
 @app.route("/web/")
 @app.route("/web/dashboard")
 def web_dashboard():
@@ -1840,6 +1892,7 @@ def web_dashboard():
             .data or []
         )
         rows = [_with_ai_priority_stage(r, market_adjustment) for r in rows]
+        rows = _hide_settled_signal_rows(rows)
     except Exception as e:
         logger.error("dashboard error: %s", e)
         rows = []
@@ -1881,6 +1934,114 @@ def web_refresh():
     return redirect(request.referrer or url_for("web_dashboard"))
 
 
+def _price_refresh_ticker(code: str, market: str | None = None) -> str:
+    code = str(code or "").strip()
+    market = str(market or "").strip().lower()
+    return code if market == "dow" or code.endswith(".T") else f"{code}.T"
+
+
+def _fetch_latest_price(code: str, market: str | None = None) -> float | None:
+    try:
+        import yfinance as yf
+
+        hist = yf.Ticker(_price_refresh_ticker(code, market)).history(period="2d", auto_adjust=True)
+        if hist is None or hist.empty:
+            return None
+        return float(hist["Close"].iloc[-1])
+    except Exception as e:
+        logger.warning("[refresh_prices] price fetch failed code=%s error=%s", code, e)
+        return None
+
+
+@app.route("/web/actions/refresh-prices", methods=["POST"])
+def web_refresh_prices():
+    now_utc = datetime.now(timezone.utc).isoformat()
+    try:
+        open_trades = (
+            supabase.table("virtual_trades")
+            .select("id,code,market,buy_price,quantity,status")
+            .eq("status", "open")
+            .limit(200)
+            .execute()
+            .data or []
+        )
+    except Exception as e:
+        logger.exception("[refresh_prices] open trade fetch failed")
+        flash(f"株価更新失敗: {e}", "danger")
+        return redirect(request.referrer or url_for("web_dashboard"))
+
+    try:
+        active_watch = (
+            supabase.table("stock_drop_watchlist")
+            .select("id,code,market,status,signal_stage")
+            .eq("status", "rebound_signal")
+            .in_("signal_stage", list(SIGNAL_STAGES))
+            .limit(200)
+            .execute()
+            .data or []
+        )
+    except Exception as e:
+        logger.warning("[refresh_prices] watchlist fetch failed: %s", e)
+        active_watch = []
+
+    targets: dict[str, dict] = {}
+    for row in open_trades + active_watch:
+        code = str(row.get("code") or "").strip()
+        if not code or code in targets:
+            continue
+        targets[code] = {"code": code, "market": row.get("market")}
+        if len(targets) >= 50:
+            break
+
+    updated_trades = 0
+    updated_watch = 0
+    errors = 0
+    for code, meta in targets.items():
+        current = _fetch_latest_price(code, meta.get("market"))
+        if current is None:
+            errors += 1
+            continue
+
+        try:
+            watch_rows = [r for r in active_watch if str(r.get("code")) == code]
+            if watch_rows:
+                supabase.table("stock_drop_watchlist").update({
+                    "current_price": current,
+                    "updated_at": now_utc,
+                }).eq("code", code).eq("status", "rebound_signal").in_("signal_stage", list(SIGNAL_STAGES)).execute()
+                updated_watch += len(watch_rows)
+        except Exception as e:
+            errors += 1
+            logger.warning("[refresh_prices] watchlist update failed code=%s error=%s", code, e)
+
+        for trade in [t for t in open_trades if str(t.get("code")) == code]:
+            try:
+                buy = float(trade.get("buy_price") or 0)
+                qty = int(trade.get("quantity") or 100)
+                pnl = (current - buy) * qty if buy > 0 else None
+                pnl_pct = (current - buy) / buy * 100 if buy > 0 else None
+                supabase.table("virtual_trades").update({
+                    "current_price": current,
+                    "unrealized_pnl": round(pnl, 0) if pnl is not None else None,
+                    "unrealized_pnl_pct": round(pnl_pct, 2) if pnl_pct is not None else None,
+                    "updated_at": now_utc,
+                }).eq("id", trade["id"]).execute()
+                updated_trades += 1
+            except Exception as e:
+                errors += 1
+                logger.warning("[refresh_prices] trade update failed code=%s error=%s", code, e)
+
+    logger.info(
+        "[refresh_prices] target_codes=%d updated_watchlist=%d updated_trades=%d errors=%d",
+        len(targets), updated_watch, updated_trades, errors,
+    )
+    if errors:
+        flash(f"株価更新: {updated_trades}保有 / {updated_watch}監視を更新（一部失敗 {errors}）", "warning")
+    else:
+        flash(f"株価更新: {updated_trades}保有 / {updated_watch}監視を更新", "success")
+    return redirect(request.referrer or url_for("web_dashboard"))
+
+
 @app.route("/web/watchlist")
 def web_watchlist():
     status_filter = request.args.get("status", "all")
@@ -1901,6 +2062,7 @@ def web_watchlist():
             q = q.eq("status", status_filter)
         rows = q.limit(200).execute().data or []
         rows = [_with_ai_priority_stage(r, market_adjustment) for r in rows]
+        rows = _hide_settled_signal_rows(rows)
         rows.sort(
             key=lambda r: (
                 STAGE_RANK.get(r.get("signal_stage"), 0),
@@ -1953,6 +2115,7 @@ def web_signals():
             .data or []
         )
         rows = [_with_ai_priority_stage(r, market_adjustment) for r in rows]
+        rows = _hide_settled_signal_rows(rows)
     except Exception as e:
         logger.error("signals error: %s", e)
         rows = []
@@ -1984,7 +2147,11 @@ def web_settings():
             "ai_predict_enabled", "ai_notify_enabled", "ai_notify_early_enabled",
             "jquants_enabled", "jquants_prefer_source", "jquants_fallback_yfinance",
         }
-        int_fields = {"watch_days_limit", "jquants_max_retry"}
+        int_fields = {
+            "watch_days_limit", "jquants_max_retry",
+            "max_open_positions", "max_daily_entries",
+            "entry_rank_limit", "max_sector_positions",
+        }
         def _upsert_settings(payload: dict) -> None:
             remaining = dict(payload)
             for _ in range(8):
@@ -2053,46 +2220,43 @@ def web_virtual_trades():
     open_value_total = 0.0
     open_unrealized_pnl_total = 0.0
 
-    # 保有中の現在価格・含み損益を取得
-    try:
-        import yfinance as yf
-        for t in open_trades:
-            code = t.get("code", "")
-            market = t.get("market", "")
-            ticker = code if market == "dow" else f"{code}.T"
-            buy = float(t.get("buy_price") or 0)
-            qty = int(t.get("quantity") or 100)
-            cost = buy * qty
-            t["cost_amount"] = cost
-            open_cost_total += cost
-            try:
-                hist = yf.Ticker(ticker).history(period="2d", auto_adjust=True)
-                if not hist.empty:
-                    current = float(hist["Close"].iloc[-1])
-                    value = current * qty
-                    pnl = value - cost
-                    t["current_price"] = current
-                    t["market_value"] = value
-                    t["unrealized_pct"] = (current - buy) / buy * 100 if buy > 0 else None
-                    t["unrealized_pnl"] = pnl if buy > 0 else None
-                    open_value_total += value
-                    open_unrealized_pnl_total += pnl if buy > 0 else 0
-            except Exception:
-                t["current_price"] = None
-                t["market_value"] = None
-                t["unrealized_pct"] = None
-                t["unrealized_pnl"] = None
-    except ImportError:
-        for t in open_trades:
-            buy = float(t.get("buy_price") or 0)
-            qty = int(t.get("quantity") or 100)
-            cost = buy * qty
-            t["cost_amount"] = cost
-            t["market_value"] = None
-            open_cost_total += cost
+    for t in open_trades:
+        buy = float(t.get("buy_price") or 0)
+        qty = int(t.get("quantity") or 100)
+        cost = buy * qty
+        current = t.get("current_price")
+        t["cost_amount"] = cost
+        open_cost_total += cost
+        if current is None:
+            t["market_value"] = cost
+            t["unrealized_pct"] = t.get("unrealized_pnl_pct")
+            t["unrealized_pnl"] = t.get("unrealized_pnl")
+            open_value_total += cost
+            continue
+        try:
+            current_f = float(current)
+            value = current_f * qty
+            pnl = value - cost
+            t["market_value"] = value
+            t["unrealized_pct"] = (current_f - buy) / buy * 100 if buy > 0 else None
+            t["unrealized_pnl"] = pnl if buy > 0 else None
+            open_value_total += value
+            open_unrealized_pnl_total += pnl if buy > 0 else 0
+        except Exception:
+            t["current_price"] = None
+            t["market_value"] = cost
+            t["unrealized_pct"] = None
+            t["unrealized_pnl"] = None
+            open_value_total += cost
 
-    total_pnl = sum(t.get("profit_loss") or 0 for t in closed_trades)
-    win_count = sum(1 for t in closed_trades if (t.get("profit_loss") or 0) > 0)
+    cleanup_reasons = {"cleanup_position_limit", "cleanup_duplicate_open"}
+    performance_closed_trades = [
+        t for t in closed_trades
+        if (t.get("exit_reason") or "") not in cleanup_reasons
+    ]
+    cleanup_closed_count = len(closed_trades) - len(performance_closed_trades)
+    total_pnl = sum(t.get("profit_loss") or 0 for t in performance_closed_trades)
+    win_count = sum(1 for t in performance_closed_trades if (t.get("profit_loss") or 0) > 0)
     open_unrealized_pct_total = (
         open_unrealized_pnl_total / open_cost_total * 100
         if open_cost_total > 0 else None
@@ -2100,7 +2264,10 @@ def web_virtual_trades():
     return render_template(
         "web/virtual_trades.html",
         open_trades=open_trades,
-        closed_trades=closed_trades,
+        closed_trades=performance_closed_trades,
+        total_closed_count=len(closed_trades),
+        performance_closed_count=len(performance_closed_trades),
+        cleanup_closed_count=cleanup_closed_count,
         total_pnl=total_pnl,
         win_count=win_count,
         open_cost_total=open_cost_total,
