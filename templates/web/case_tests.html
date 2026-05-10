@@ -1,6 +1,6 @@
 {% extends "web/base.html" %}
-{% block title %}Case Tests{% endblock %}
-{% block page_label %}Case Tests{% endblock %}
+{% block title %}比較テスト{% endblock %}
+{% block page_label %}比較テスト{% endblock %}
 
 {% macro pct(v) -%}
   {%- if v is none -%}<span class="muted">-</span>
@@ -16,34 +16,34 @@
   {%- else -%}
     {%- set fv = v|float -%}
     {%- set cls = 'up-text' if fv > 0 else ('down-text' if fv < 0 else 'muted') -%}
-    <span class="{{ cls }} num">{{ "{:+,.0f}".format(fv) }} yen</span>
+    <span class="{{ cls }} num">{{ "{:+,.0f}".format(fv) }}円</span>
   {%- endif -%}
 {%- endmacro %}
 
 {% block content %}
 <div class="page-head">
-  <h1 class="page-title">Case Tests<small>CASE TESTS</small></h1>
+  <h1 class="page-title">比較テスト<small>CASE TESTS</small></h1>
 </div>
 
 <div class="panel" style="margin-bottom:14px">
   <div class="panel-head">
-    <div class="panel-title">Run New Test</div>
+    <div class="panel-title">比較テストを実行</div>
   </div>
   <form method="post" action="/web/case-tests/run" class="js-disable-on-submit" style="padding:0 16px 16px;display:flex;gap:10px;flex-wrap:wrap;align-items:end">
     <label style="display:grid;gap:5px">
-      <span class="muted" style="font-size:11px">Start</span>
+      <span class="muted" style="font-size:11px">開始日</span>
       <input class="input" type="date" name="period_start" value="{{ default_start }}" required>
     </label>
     <label style="display:grid;gap:5px">
-      <span class="muted" style="font-size:11px">End</span>
+      <span class="muted" style="font-size:11px">終了日</span>
       <input class="input" type="date" name="period_end" value="{{ default_end }}" required>
     </label>
-    <button class="btn primary sm" type="submit">Run Case Test</button>
-    <span class="muted" style="font-size:11px">Max 90 days. This does not modify virtual_trades.</span>
+    <button class="btn primary sm" type="submit">実行</button>
+    <span class="muted" style="font-size:11px">最大90日。本番の仮想売買は変更しません。</span>
   </form>
 </div>
 
-<div class="section-h">Runs</div>
+<div class="section-h">テスト履歴</div>
 <div class="panel" style="margin-bottom:14px">
   <div style="padding:10px 16px;display:flex;gap:8px;flex-wrap:wrap">
     {% for run in runs %}
@@ -52,32 +52,38 @@
         <span class="muted">{{ run.status }}</span>
       </a>
     {% else %}
-      <span class="muted">No runs yet.</span>
+      <span class="muted">まだテスト履歴がありません。</span>
     {% endfor %}
   </div>
 </div>
 
 <div class="section-h">
-  Case Results
-  {% if selected_run %}<span class="muted" style="font-size:11px;margin-left:6px">{{ selected_run.started_at | jst }}</span>{% endif %}
+  比較結果
+  {% if selected_run %}
+    <span class="muted" style="font-size:11px;margin-left:6px">{{ selected_run.started_at | jst }}</span>
+    <span class="muted" style="font-size:11px;margin-left:6px">利回り順</span>
+  {% endif %}
 </div>
 <div class="panel">
   <div class="table-wrap">
     <table class="tbl">
       <thead>
         <tr>
-          <th>Case</th>
-          <th class="right">Entries</th>
-          <th class="right">Win</th>
+          <th>ケース</th>
+          <th>出口</th>
+          <th class="right">件数</th>
+          <th class="right">勝率</th>
           <th class="right">EV</th>
-          <th class="right">Return</th>
-          <th class="right">Total Yen</th>
+          <th class="right">利回り</th>
+          <th class="right">損益</th>
           <th class="right">Max DD</th>
-          <th class="right">Avg Hold</th>
-          <th class="right">Max Open</th>
+          <th class="right">平均ピーク</th>
+          <th class="right">平均DD</th>
+          <th class="right">平均保有</th>
+          <th class="right">最大保有</th>
           <th class="right">TP</th>
           <th class="right">SL</th>
-          <th class="right">Open</th>
+          <th class="right">未決済</th>
           <th></th>
         </tr>
       </thead>
@@ -86,24 +92,27 @@
         {% set case = row.case or {} %}
         <tr>
           <td>
-            <div class="name">{{ case.case_name or row.case_id }}</div>
+            <div class="name">{{ case.display_name or case.case_name or row.case_id }}</div>
             <div class="muted" style="font-size:11px">{{ case.case_key or "" }}</div>
           </td>
+          <td><span class="pill">{{ row.exit_label or row.exit_type or "固定TP/SL" }}</span></td>
           <td class="right num">{{ row.entry_count or 0 }}</td>
           <td class="right num">{% if row.win_rate is not none %}{{ "%.1f"|format(row.win_rate|float) }}%{% else %}<span class="muted">-</span>{% endif %}</td>
           <td class="right">{{ pct(row.expected_value_pct) }}</td>
           <td class="right">{{ pct(row.total_profit_pct) }}</td>
           <td class="right">{{ yen(row.total_profit_yen) }}</td>
           <td class="right">{{ pct(row.max_drawdown_pct) }}</td>
-          <td class="right num">{% if row.avg_holding_days is not none %}{{ "%.1f"|format(row.avg_holding_days|float) }}d{% else %}<span class="muted">-</span>{% endif %}</td>
+          <td class="right">{{ pct(row.avg_peak_profit_pct) }}</td>
+          <td class="right">{{ pct(row.avg_trade_drawdown_pct) }}</td>
+          <td class="right num">{% if row.avg_holding_days is not none %}{{ "%.1f"|format(row.avg_holding_days|float) }}日{% else %}<span class="muted">-</span>{% endif %}</td>
           <td class="right num">{{ row.max_open_positions or 0 }}</td>
           <td class="right num">{{ row.tp_count or 0 }}</td>
           <td class="right num">{{ row.sl_count or 0 }}</td>
           <td class="right num">{{ row.open_count or 0 }}</td>
-          <td class="right"><a class="btn ghost sm" href="/web/case-tests/{{ row.run_id }}/{{ row.case_id }}">Detail</a></td>
+          <td class="right"><a class="btn ghost sm" href="/web/case-tests/{{ row.run_id }}/{{ row.case_id }}">詳細</a></td>
         </tr>
         {% else %}
-        <tr><td colspan="13" class="center muted" style="padding:28px">No case results.</td></tr>
+        <tr><td colspan="16" class="center muted" style="padding:28px">比較結果がありません。</td></tr>
         {% endfor %}
       </tbody>
     </table>
@@ -116,7 +125,7 @@ document.querySelectorAll('.js-disable-on-submit').forEach(function(form) {
     var btn = form.querySelector('button[type="submit"]');
     if (btn) {
       btn.disabled = true;
-      btn.textContent = 'Running...';
+      btn.textContent = '実行中...';
     }
   });
 });

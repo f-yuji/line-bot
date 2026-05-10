@@ -314,16 +314,286 @@ def _adjusted_rules(base_rules: dict, sample_row: dict | None = None) -> dict:
     return rules
 
 
-def _exit_for_candidate(row: dict, rules: dict) -> dict:
+def _price_path(row: dict, rules: dict) -> tuple[float | None, date | None, list[dict]]:
     entry = _to_float(row.get("entry_price"), None) or _to_float(row.get("close"), None)
     if not entry or entry <= 0:
-        return {"status": "open", "exit_reason": "invalid_entry"}
+        return None, None, []
     max_days = min(5, max(1, _to_int(rules.get("max_holding_days"), 5)))
+    entry_date = _to_date(row.get("trade_date"))
+    days: list[dict] = []
+    prev_close = entry
+    for day in range(1, max_days + 1):
+        high = _to_float(row.get(f"future_high_{day}d"), None)
+        low = _to_float(row.get(f"future_low_{day}d"), None)
+        close = _to_float(row.get(f"future_close_{day}d"), None)
+        if high is None and close is not None:
+            high = close
+        if low is None and close is not None:
+            low = close
+        if close is None:
+            close = prev_close
+        days.append({
+            "day": day,
+            "date": entry_date + timedelta(days=day),
+            "high": high,
+            "low": low,
+            "close": close,
+            "prev_close": prev_close,
+        })
+        prev_close = close
+    return entry, entry_date, days
+
+
+def _peak_drawdown(entry: float, days: list[dict]) -> tuple[float | None, float | None]:
+    peak = None
+    trough = None
+    for d in days:
+        high = _to_float(d.get("high"), None)
+        low = _to_float(d.get("low"), None)
+        if high is not None:
+            val = (high - entry) / entry * 100
+            peak = val if peak is None else max(peak, val)
+        if low is not None:
+            val = (low - entry) / entry * 100
+            trough = val if trough is None else min(trough, val)
+    return (
+        round(peak, 3) if peak is not None else None,
+        round(trough, 3) if trough is not None else None,
+    )
+
+
+def _close_trade(
+    entry: float,
+    exit_date: date,
+    exit_price: float,
+    reason: str,
+    holding_days: int,
+    *,
+    days: list[dict],
+    exit_signal_value: float | None = None,
+    exit_indicator: str | None = None,
+    trailing_triggered: bool = False,
+) -> dict:
+    profit_pct = (exit_price - entry) / entry * 100
+    peak, dd = _peak_drawdown(entry, days[:holding_days])
+    return {
+        "status": "closed",
+        "exit_reason": reason,
+        "exit_date": exit_date.isoformat(),
+        "exit_price": round(exit_price, 4),
+        "profit_pct": round(profit_pct, 3),
+        "profit_yen": round((exit_price - entry) * 100, 0),
+        "holding_days": holding_days,
+        "peak_profit_pct": peak,
+        "max_drawdown_pct": dd,
+        "trailing_triggered": trailing_triggered,
+        "exit_signal_value": round(exit_signal_value, 4) if exit_signal_value is not None else None,
+        "exit_indicator": exit_indicator,
+    }
+
+
+def _timeout_or_open(entry: float, days: list[dict], max_days: int) -> dict:
+    if not days:
+        return {
+            "status": "open",
+            "exit_reason": "open",
+            "holding_days": None,
+            "peak_profit_pct": None,
+            "max_drawdown_pct": None,
+            "trailing_triggered": False,
+        }
+    last = days[min(max_days, len(days)) - 1]
+    return _close_trade(
+        entry,
+        last["date"],
+        _to_float(last.get("close"), entry) or entry,
+        "timeout",
+        int(last["day"]),
+        days=days,
+        exit_indicator="max_holding_days",
+    )
+
+
+def simulate_fixed_tp_sl(row: dict, rules: dict) -> dict:
+    entry, _entry_date, days = _price_path(row, rules)
+    if not entry:
+        return {"status": "open", "exit_reason": "invalid_entry"}
     tp_pct = float(rules.get("tp_pct", 0.06))
     sl_pct = float(rules.get("sl_pct", -0.04))
     tp_price = entry * (1 + tp_pct)
     sl_price = entry * (1 + sl_pct)
-    entry_date = _to_date(row.get("trade_date"))
+    for d in days:
+        high = _to_float(d.get("high"), None)
+        low = _to_float(d.get("low"), None)
+        if high is None or low is None:
+            continue
+        if low <= sl_price:
+            return _close_trade(entry, d["date"], sl_price, "sl", d["day"], days=days, exit_signal_value=sl_pct * 100, exit_indicator="fixed_sl")
+        if high >= tp_price:
+            return _close_trade(entry, d["date"], tp_price, "tp", d["day"], days=days, exit_signal_value=tp_pct * 100, exit_indicator="fixed_tp")
+    return _timeout_or_open(entry, days, _to_int(rules.get("max_holding_days"), 5))
+
+
+def simulate_trailing_stop(row: dict, rules: dict) -> dict:
+    entry, _entry_date, days = _price_path(row, rules)
+    if not entry:
+        return {"status": "open", "exit_reason": "invalid_entry"}
+    initial_sl = entry * (1 + float(rules.get("initial_sl_pct", rules.get("sl_pct", -0.04))))
+    trailing_drop = abs(float(rules.get("trailing_drop_pct", -0.03)))
+    peak_price = entry
+    for d in days:
+        high = _to_float(d.get("high"), None)
+        low = _to_float(d.get("low"), None)
+        if high is not None:
+            peak_price = max(peak_price, high)
+        if low is not None and low <= initial_sl:
+            return _close_trade(entry, d["date"], initial_sl, "sl", d["day"], days=days, exit_signal_value=(initial_sl - entry) / entry * 100, exit_indicator="initial_sl")
+        stop_price = peak_price * (1 - trailing_drop)
+        if peak_price > entry and low is not None and low <= stop_price:
+            return _close_trade(entry, d["date"], stop_price, "trailing_stop", d["day"], days=days, exit_signal_value=(stop_price - entry) / entry * 100, exit_indicator="trailing_stop", trailing_triggered=True)
+    return _timeout_or_open(entry, days, _to_int(rules.get("max_holding_days"), 5))
+
+
+def simulate_pullback_exit(row: dict, rules: dict) -> dict:
+    entry, _entry_date, days = _price_path(row, rules)
+    if not entry:
+        return {"status": "open", "exit_reason": "invalid_entry"}
+    initial_sl = entry * (1 + float(rules.get("initial_sl_pct", rules.get("sl_pct", -0.04))))
+    pullback = float(rules.get("pullback_day_pct", -0.02))
+    for d in days:
+        low = _to_float(d.get("low"), None)
+        close = _to_float(d.get("close"), None)
+        prev = _to_float(d.get("prev_close"), entry) or entry
+        if low is not None and low <= initial_sl:
+            return _close_trade(entry, d["date"], initial_sl, "sl", d["day"], days=days, exit_signal_value=(initial_sl - entry) / entry * 100, exit_indicator="initial_sl")
+        day_return = (close - prev) / prev if close is not None and prev else 0
+        if close is not None and close > entry and day_return <= pullback:
+            return _close_trade(entry, d["date"], close, "pullback_exit", d["day"], days=days, exit_signal_value=day_return * 100, exit_indicator="daily_pullback")
+    return _timeout_or_open(entry, days, _to_int(rules.get("max_holding_days"), 5))
+
+
+def simulate_ma_break_exit(row: dict, rules: dict) -> dict:
+    entry, _entry_date, days = _price_path(row, rules)
+    if not entry:
+        return {"status": "open", "exit_reason": "invalid_entry"}
+    initial_sl = entry * (1 + float(rules.get("initial_sl_pct", rules.get("sl_pct", -0.04))))
+    period = max(2, _to_int(rules.get("ma_period"), 5))
+    closes = [entry]
+    for d in days:
+        low = _to_float(d.get("low"), None)
+        close = _to_float(d.get("close"), None)
+        if low is not None and low <= initial_sl:
+            return _close_trade(entry, d["date"], initial_sl, "sl", d["day"], days=days, exit_signal_value=(initial_sl - entry) / entry * 100, exit_indicator="initial_sl")
+        if close is not None:
+            closes.append(close)
+            ma = sum(closes[-period:]) / min(period, len(closes))
+            if len(closes) >= period and close < ma and close > entry:
+                return _close_trade(entry, d["date"], close, "ma_break_exit", d["day"], days=days, exit_signal_value=(close - ma) / ma * 100, exit_indicator=f"ma{period}_break")
+    return _timeout_or_open(entry, days, _to_int(rules.get("max_holding_days"), 5))
+
+
+def _rsi_from_closes(closes: list[float], period: int = 5) -> float | None:
+    if len(closes) < 3:
+        return None
+    deltas = [closes[i] - closes[i - 1] for i in range(1, len(closes))]
+    use = deltas[-period:]
+    gains = [d for d in use if d > 0]
+    losses = [-d for d in use if d < 0]
+    avg_gain = sum(gains) / len(use) if use else 0
+    avg_loss = sum(losses) / len(use) if use else 0
+    if avg_loss == 0:
+        return 100.0 if avg_gain > 0 else 50.0
+    rs = avg_gain / avg_loss
+    return 100 - (100 / (1 + rs))
+
+
+def simulate_rsi_exit(row: dict, rules: dict) -> dict:
+    entry, _entry_date, days = _price_path(row, rules)
+    if not entry:
+        return {"status": "open", "exit_reason": "invalid_entry"}
+    initial_sl = entry * (1 + float(rules.get("initial_sl_pct", rules.get("sl_pct", -0.04))))
+    threshold = float(rules.get("overbought_rsi", 70))
+    closes = [entry]
+    was_overbought = False
+    prev_rsi = None
+    for d in days:
+        low = _to_float(d.get("low"), None)
+        close = _to_float(d.get("close"), None)
+        if low is not None and low <= initial_sl:
+            return _close_trade(entry, d["date"], initial_sl, "sl", d["day"], days=days, exit_signal_value=(initial_sl - entry) / entry * 100, exit_indicator="initial_sl")
+        if close is None:
+            continue
+        closes.append(close)
+        rsi = _rsi_from_closes(closes)
+        if rsi is not None and rsi >= threshold:
+            was_overbought = True
+        if was_overbought and rsi is not None and prev_rsi is not None and rsi < prev_rsi and close > entry:
+            return _close_trade(entry, d["date"], close, "rsi_reversal_exit", d["day"], days=days, exit_signal_value=rsi, exit_indicator="rsi_reversal")
+        prev_rsi = rsi
+    return _timeout_or_open(entry, days, _to_int(rules.get("max_holding_days"), 5))
+
+
+def simulate_volume_fade_exit(row: dict, rules: dict) -> dict:
+    entry, _entry_date, days = _price_path(row, rules)
+    if not entry:
+        return {"status": "open", "exit_reason": "invalid_entry"}
+    initial_sl = entry * (1 + float(rules.get("initial_sl_pct", rules.get("sl_pct", -0.04))))
+    volume_ratio = _to_float(row.get("volume_ratio_20d"), None)
+    fade_ratio = float(rules.get("volume_drop_ratio", 0.5))
+    for d in days:
+        low = _to_float(d.get("low"), None)
+        close = _to_float(d.get("close"), None)
+        if low is not None and low <= initial_sl:
+            return _close_trade(entry, d["date"], initial_sl, "sl", d["day"], days=days, exit_signal_value=(initial_sl - entry) / entry * 100, exit_indicator="initial_sl")
+        # Future volume is not in stock_rebound_labels, so this is a conservative
+        # proxy using the entry-day volume ratio only.
+        if close is not None and close > entry and volume_ratio is not None and volume_ratio <= fade_ratio:
+            return _close_trade(entry, d["date"], close, "volume_fade_exit", d["day"], days=days, exit_signal_value=volume_ratio, exit_indicator="entry_volume_fade_proxy")
+    out = _timeout_or_open(entry, days, _to_int(rules.get("max_holding_days"), 5))
+    out["exit_indicator"] = out.get("exit_indicator") or "future_volume_unavailable"
+    return out
+
+
+def simulate_atr_trailing(row: dict, rules: dict) -> dict:
+    entry, _entry_date, days = _price_path(row, rules)
+    if not entry:
+        return {"status": "open", "exit_reason": "invalid_entry"}
+    initial_sl = entry * (1 + float(rules.get("initial_sl_pct", rules.get("sl_pct", -0.04))))
+    multiplier = float(rules.get("atr_multiplier", 1.5))
+    peak_price = entry
+    true_ranges: list[float] = []
+    for d in days:
+        high = _to_float(d.get("high"), None)
+        low = _to_float(d.get("low"), None)
+        prev = _to_float(d.get("prev_close"), entry) or entry
+        if high is not None:
+            peak_price = max(peak_price, high)
+        if high is not None and low is not None:
+            true_ranges.append(max(high - low, abs(high - prev), abs(low - prev)))
+        atr = (sum(true_ranges[-5:]) / min(5, len(true_ranges))) if true_ranges else 0
+        if low is not None and low <= initial_sl:
+            return _close_trade(entry, d["date"], initial_sl, "sl", d["day"], days=days, exit_signal_value=(initial_sl - entry) / entry * 100, exit_indicator="initial_sl")
+        stop_price = peak_price - (atr * multiplier)
+        if atr > 0 and peak_price > entry and low is not None and low <= stop_price:
+            return _close_trade(entry, d["date"], stop_price, "atr_trailing", d["day"], days=days, exit_signal_value=atr, exit_indicator="atr_trailing", trailing_triggered=True)
+    return _timeout_or_open(entry, days, _to_int(rules.get("max_holding_days"), 5))
+
+
+def _exit_for_candidate(row: dict, rules: dict) -> dict:
+    exit_type = str(rules.get("exit_type") or "fixed_tp_sl")
+    if exit_type == "trailing_stop":
+        return simulate_trailing_stop(row, rules)
+    if exit_type == "pullback_exit":
+        return simulate_pullback_exit(row, rules)
+    if exit_type == "ma_break_exit":
+        return simulate_ma_break_exit(row, rules)
+    if exit_type == "rsi_reversal_exit":
+        return simulate_rsi_exit(row, rules)
+    if exit_type == "volume_fade_exit":
+        return simulate_volume_fade_exit(row, rules)
+    if exit_type == "atr_trailing":
+        return simulate_atr_trailing(row, rules)
+    return simulate_fixed_tp_sl(row, rules)
 
     last_close = None
     for day in range(1, max_days + 1):
@@ -430,6 +700,7 @@ def _simulate_case(run_id: str, case: dict, candidates: list[dict]) -> tuple[lis
             sim = {
                 "run_id": run_id,
                 "case_id": case["id"],
+                "exit_type": str(sample_rules.get("exit_type") or "fixed_tp_sl"),
                 "code": str(row.get("code")),
                 "name": row.get("name"),
                 "sector": sector,
@@ -466,6 +737,8 @@ def _empty_result(run_id: str, case_id: str) -> dict:
         "tp_count": 0,
         "sl_count": 0,
         "timeout_count": 0,
+        "avg_peak_profit_pct": None,
+        "avg_trade_drawdown_pct": None,
     }
 
 
@@ -489,6 +762,16 @@ def _build_result(run_id: str, case_id: str, simulations: list[dict], max_concur
         peak_yen = max(peak_yen, equity_yen)
         max_dd_yen = min(max_dd_yen, equity_yen - peak_yen)
     closed_count = len(closed)
+    peak_values = [
+        _to_float(s.get("peak_profit_pct"), None)
+        for s in closed
+        if _to_float(s.get("peak_profit_pct"), None) is not None
+    ]
+    trade_dd_values = [
+        _to_float(s.get("max_drawdown_pct"), None)
+        for s in closed
+        if _to_float(s.get("max_drawdown_pct"), None) is not None
+    ]
     total_profit_pct = (total_profit_yen / capital_base * 100) if capital_base > 0 else None
     max_dd_pct = (max_dd_yen / capital_base * 100) if capital_base > 0 else None
     return {
@@ -510,6 +793,8 @@ def _build_result(run_id: str, case_id: str, simulations: list[dict], max_concur
         "tp_count": len([s for s in closed if s.get("exit_reason") == "tp"]),
         "sl_count": len([s for s in closed if s.get("exit_reason") == "sl"]),
         "timeout_count": len([s for s in closed if s.get("exit_reason") == "timeout"]),
+        "avg_peak_profit_pct": round(sum(peak_values) / len(peak_values), 3) if peak_values else None,
+        "avg_trade_drawdown_pct": round(sum(trade_dd_values) / len(trade_dd_values), 3) if trade_dd_values else None,
     }
 
 

@@ -1,4 +1,4 @@
-import functools
+﻿import functools
 import json
 import logging
 import os
@@ -2278,6 +2278,85 @@ def web_virtual_trades():
     )
 
 
+CASE_TEST_LABELS = {
+    "current_rule": "現行ルール",
+    "ai_top10": "AI上位10件",
+    "ev_top10": "期待値上位10件",
+    "position_limited": "最大保有20・1日5件",
+    "sector_limited": "セクター最大2件",
+    "regime_strict": "地合い厳格化",
+    "model_agreement": "5日/10日一致のみ",
+    "fixed_tp_7": "固定利確7%",
+    "fixed_tp_10": "固定利確10%",
+    "trailing_3": "トレーリング3%",
+    "trailing_5": "トレーリング5%",
+    "pullback_2": "前日比-2%利確",
+    "ma5_exit": "5日MA割れ利確",
+    "rsi70_exit": "RSI70反落利確",
+    "volume_fade": "出来高減衰利確",
+    "atr_trailing_15": "ATRトレーリングx1.5",
+}
+
+ENTRY_PROFILE_LABELS = {
+    "current": "現行入口",
+    "ai_top10": "AI上位10件",
+    "ev_top10": "期待値上位10件",
+    "position_limited": "保有数制限",
+    "sector_limited": "セクター制限",
+    "regime_strict": "地合い厳格化",
+}
+
+EXIT_PROFILE_LABELS = {
+    "fixed6": "固定6%",
+    "fixed7": "固定7%",
+    "fixed10": "固定10%",
+    "trailing3": "トレーリング3%",
+    "trailing5": "トレーリング5%",
+    "pullback2": "反落-2%",
+    "ma5": "5日MA割れ",
+    "rsi70": "RSI70反落",
+    "atr15": "ATRx1.5",
+}
+
+EXIT_TYPE_LABELS = {
+    "fixed_tp_sl": "固定TP/SL",
+    "trailing_stop": "トレーリング",
+    "pullback_exit": "反落検知",
+    "ma_break_exit": "MA割れ",
+    "rsi_reversal_exit": "RSI反落",
+    "volume_fade_exit": "出来高減衰",
+    "atr_trailing": "ATRトレーリング",
+}
+
+
+def _decorate_case_test_case(case):
+    if not case:
+        return {}
+    case = dict(case)
+    key = str(case.get("case_key") or "")
+    rules = case.get("rules") or {}
+    if isinstance(rules, str):
+        try:
+            import json
+            rules = json.loads(rules)
+        except Exception:
+            rules = {}
+    exit_type = str(rules.get("exit_type") or "fixed_tp_sl")
+    entry_profile = str(rules.get("entry_profile") or "")
+    exit_profile = str(rules.get("exit_profile") or "")
+    if entry_profile and exit_profile:
+        display_name = f"{ENTRY_PROFILE_LABELS.get(entry_profile, entry_profile)} × {EXIT_PROFILE_LABELS.get(exit_profile, exit_profile)}"
+    else:
+        display_name = CASE_TEST_LABELS.get(key) or case.get("case_name") or key
+    case["display_name"] = display_name
+    case["rules_dict"] = rules
+    case["entry_profile"] = entry_profile
+    case["entry_label"] = ENTRY_PROFILE_LABELS.get(entry_profile, entry_profile)
+    case["exit_profile"] = exit_profile
+    case["exit_type"] = exit_type
+    case["exit_label"] = EXIT_PROFILE_LABELS.get(exit_profile) or EXIT_TYPE_LABELS.get(exit_type, exit_type)
+    return case
+
 @app.route("/web/case-tests")
 def web_case_tests():
     today = datetime.now(JST).date()
@@ -2297,7 +2376,7 @@ def web_case_tests():
             .execute()
             .data or []
         )
-        cases_by_id = {str(c.get("id")): c for c in cases}
+        cases_by_id = {str(c.get("id")): _decorate_case_test_case(c) for c in cases}
         runs = (
             supabase.table("trade_case_runs")
             .select("*")
@@ -2314,12 +2393,22 @@ def web_case_tests():
                 supabase.table("trade_case_results")
                 .select("*")
                 .eq("run_id", selected_run_id)
-                .order("expected_value_pct", desc=True)
+                .order("total_profit_pct", desc=True)
                 .execute()
                 .data or []
             )
             for row in results:
-                row["case"] = cases_by_id.get(str(row.get("case_id")), {})
+                case = cases_by_id.get(str(row.get("case_id")), {})
+                row["case"] = case
+                row["exit_type"] = case.get("exit_type") or "fixed_tp_sl"
+                row["exit_label"] = case.get("exit_label") or row["exit_type"]
+            results.sort(
+                key=lambda r: (
+                    float(r.get("total_profit_pct") or -999999),
+                    float(r.get("expected_value_pct") or -999999),
+                ),
+                reverse=True,
+            )
     except Exception as e:
         logger.warning("case tests page failed: %s", e)
         msg = str(e)
@@ -2373,7 +2462,7 @@ def web_case_test_detail(run_id, case_id):
         run_rows = supabase.table("trade_case_runs").select("*").eq("id", run_id).limit(1).execute().data or []
         case_rows = supabase.table("trade_case_definitions").select("*").eq("id", case_id).limit(1).execute().data or []
         run = run_rows[0] if run_rows else None
-        case = case_rows[0] if case_rows else None
+        case = _decorate_case_test_case(case_rows[0]) if case_rows else None
         rows = (
             supabase.table("trade_case_simulations")
             .select("*")
@@ -2426,3 +2515,4 @@ if __name__ == "__main__":
         debug=False,
         use_reloader=False,
     )
+
