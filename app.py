@@ -2278,6 +2278,124 @@ def web_virtual_trades():
     )
 
 
+@app.route("/web/case-tests")
+def web_case_tests():
+    today = datetime.now(JST).date()
+    default_start = (today - timedelta(days=30)).isoformat()
+    default_end = today.isoformat()
+    selected_run_id = request.args.get("run_id")
+    runs: list[dict] = []
+    results: list[dict] = []
+    cases_by_id: dict[str, dict] = {}
+    selected_run = None
+
+    try:
+        cases = (
+            supabase.table("trade_case_definitions")
+            .select("*")
+            .order("case_key")
+            .execute()
+            .data or []
+        )
+        cases_by_id = {str(c.get("id")): c for c in cases}
+        runs = (
+            supabase.table("trade_case_runs")
+            .select("*")
+            .order("started_at", desc=True)
+            .limit(20)
+            .execute()
+            .data or []
+        )
+        if not selected_run_id and runs:
+            selected_run_id = runs[0].get("id")
+        selected_run = next((r for r in runs if str(r.get("id")) == str(selected_run_id)), None)
+        if selected_run_id:
+            results = (
+                supabase.table("trade_case_results")
+                .select("*")
+                .eq("run_id", selected_run_id)
+                .order("expected_value_pct", desc=True)
+                .execute()
+                .data or []
+            )
+            for row in results:
+                row["case"] = cases_by_id.get(str(row.get("case_id")), {})
+    except Exception as e:
+        logger.warning("case tests page failed: %s", e)
+        msg = str(e)
+        if "WinError 10061" in msg or "Connection" in msg or "接続" in msg:
+            flash("Supabaseへの接続に失敗しています。ローカル端末からFlaskを起動し直してください。", "danger")
+        else:
+            flash("比較テスト用テーブルが未作成かもしれません。db/trade_case_tests.sql をSupabaseで実行してください。", "warning")
+
+    return render_template(
+        "web/case_tests.html",
+        runs=runs,
+        results=results,
+        selected_run=selected_run,
+        default_start=default_start,
+        default_end=default_end,
+        market_adjustment=_current_market_adjustment(),
+    )
+
+
+@app.route("/web/case-tests/run", methods=["POST"])
+def web_case_tests_run():
+    try:
+        start_s = request.form.get("period_start") or ""
+        end_s = request.form.get("period_end") or ""
+        start = datetime.fromisoformat(start_s).date()
+        end = datetime.fromisoformat(end_s).date()
+        if end < start:
+            flash("終了日は開始日以降にしてください。", "danger")
+            return redirect(url_for("web_case_tests"))
+        if (end - start).days > 90:
+            flash("比較テストは初期実装では90日以内に制限しています。", "danger")
+            return redirect(url_for("web_case_tests"))
+
+        from services.trade_case_tester import run_trade_case_test
+
+        result = run_trade_case_test(start, end, sb=supabase)
+        flash(f"比較テスト完了: candidates={result.get('candidates')} cases={result.get('cases')}", "success")
+        return redirect(url_for("web_case_tests", run_id=result.get("run_id")))
+    except Exception as e:
+        logger.exception("case test run failed")
+        flash(f"比較テスト失敗: {e}", "danger")
+        return redirect(url_for("web_case_tests"))
+
+
+@app.route("/web/case-tests/<run_id>/<case_id>")
+def web_case_test_detail(run_id, case_id):
+    run = None
+    case = None
+    rows: list[dict] = []
+    try:
+        run_rows = supabase.table("trade_case_runs").select("*").eq("id", run_id).limit(1).execute().data or []
+        case_rows = supabase.table("trade_case_definitions").select("*").eq("id", case_id).limit(1).execute().data or []
+        run = run_rows[0] if run_rows else None
+        case = case_rows[0] if case_rows else None
+        rows = (
+            supabase.table("trade_case_simulations")
+            .select("*")
+            .eq("run_id", run_id)
+            .eq("case_id", case_id)
+            .order("entry_date", desc=True)
+            .limit(500)
+            .execute()
+            .data or []
+        )
+    except Exception as e:
+        logger.exception("case test detail failed")
+        flash(f"詳細取得失敗: {e}", "danger")
+    return render_template(
+        "web/case_test_detail.html",
+        run=run,
+        case=case,
+        rows=rows,
+        market_adjustment=_current_market_adjustment(),
+    )
+
+
 @app.route("/admin/models")
 @app.route("/web/models")
 def web_models():

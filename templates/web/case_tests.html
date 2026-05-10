@@ -1,0 +1,124 @@
+{% extends "web/base.html" %}
+{% block title %}Case Tests{% endblock %}
+{% block page_label %}Case Tests{% endblock %}
+
+{% macro pct(v) -%}
+  {%- if v is none -%}<span class="muted">-</span>
+  {%- else -%}
+    {%- set fv = v|float -%}
+    {%- set cls = 'up-text' if fv > 0 else ('down-text' if fv < 0 else 'muted') -%}
+    <span class="{{ cls }} num">{{ "%+.2f"|format(fv) }}%</span>
+  {%- endif -%}
+{%- endmacro %}
+
+{% macro yen(v) -%}
+  {%- if v is none -%}<span class="muted">-</span>
+  {%- else -%}
+    {%- set fv = v|float -%}
+    {%- set cls = 'up-text' if fv > 0 else ('down-text' if fv < 0 else 'muted') -%}
+    <span class="{{ cls }} num">{{ "{:+,.0f}".format(fv) }} yen</span>
+  {%- endif -%}
+{%- endmacro %}
+
+{% block content %}
+<div class="page-head">
+  <h1 class="page-title">Case Tests<small>CASE TESTS</small></h1>
+</div>
+
+<div class="panel" style="margin-bottom:14px">
+  <div class="panel-head">
+    <div class="panel-title">Run New Test</div>
+  </div>
+  <form method="post" action="/web/case-tests/run" class="js-disable-on-submit" style="padding:0 16px 16px;display:flex;gap:10px;flex-wrap:wrap;align-items:end">
+    <label style="display:grid;gap:5px">
+      <span class="muted" style="font-size:11px">Start</span>
+      <input class="input" type="date" name="period_start" value="{{ default_start }}" required>
+    </label>
+    <label style="display:grid;gap:5px">
+      <span class="muted" style="font-size:11px">End</span>
+      <input class="input" type="date" name="period_end" value="{{ default_end }}" required>
+    </label>
+    <button class="btn primary sm" type="submit">Run Case Test</button>
+    <span class="muted" style="font-size:11px">Max 90 days. This does not modify virtual_trades.</span>
+  </form>
+</div>
+
+<div class="section-h">Runs</div>
+<div class="panel" style="margin-bottom:14px">
+  <div style="padding:10px 16px;display:flex;gap:8px;flex-wrap:wrap">
+    {% for run in runs %}
+      <a class="btn ghost sm {% if selected_run and selected_run.id == run.id %}active{% endif %}" href="/web/case-tests?run_id={{ run.id }}">
+        {{ run.period_start }} - {{ run.period_end }}
+        <span class="muted">{{ run.status }}</span>
+      </a>
+    {% else %}
+      <span class="muted">No runs yet.</span>
+    {% endfor %}
+  </div>
+</div>
+
+<div class="section-h">
+  Case Results
+  {% if selected_run %}<span class="muted" style="font-size:11px;margin-left:6px">{{ selected_run.started_at | jst }}</span>{% endif %}
+</div>
+<div class="panel">
+  <div class="table-wrap">
+    <table class="tbl">
+      <thead>
+        <tr>
+          <th>Case</th>
+          <th class="right">Entries</th>
+          <th class="right">Win</th>
+          <th class="right">EV</th>
+          <th class="right">Return</th>
+          <th class="right">Total Yen</th>
+          <th class="right">Max DD</th>
+          <th class="right">Avg Hold</th>
+          <th class="right">Max Open</th>
+          <th class="right">TP</th>
+          <th class="right">SL</th>
+          <th class="right">Open</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in results %}
+        {% set case = row.case or {} %}
+        <tr>
+          <td>
+            <div class="name">{{ case.case_name or row.case_id }}</div>
+            <div class="muted" style="font-size:11px">{{ case.case_key or "" }}</div>
+          </td>
+          <td class="right num">{{ row.entry_count or 0 }}</td>
+          <td class="right num">{% if row.win_rate is not none %}{{ "%.1f"|format(row.win_rate|float) }}%{% else %}<span class="muted">-</span>{% endif %}</td>
+          <td class="right">{{ pct(row.expected_value_pct) }}</td>
+          <td class="right">{{ pct(row.total_profit_pct) }}</td>
+          <td class="right">{{ yen(row.total_profit_yen) }}</td>
+          <td class="right">{{ pct(row.max_drawdown_pct) }}</td>
+          <td class="right num">{% if row.avg_holding_days is not none %}{{ "%.1f"|format(row.avg_holding_days|float) }}d{% else %}<span class="muted">-</span>{% endif %}</td>
+          <td class="right num">{{ row.max_open_positions or 0 }}</td>
+          <td class="right num">{{ row.tp_count or 0 }}</td>
+          <td class="right num">{{ row.sl_count or 0 }}</td>
+          <td class="right num">{{ row.open_count or 0 }}</td>
+          <td class="right"><a class="btn ghost sm" href="/web/case-tests/{{ row.run_id }}/{{ row.case_id }}">Detail</a></td>
+        </tr>
+        {% else %}
+        <tr><td colspan="13" class="center muted" style="padding:28px">No case results.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<script>
+document.querySelectorAll('.js-disable-on-submit').forEach(function(form) {
+  form.addEventListener('submit', function() {
+    var btn = form.querySelector('button[type="submit"]');
+    if (btn) {
+      btn.disabled = true;
+      btn.textContent = 'Running...';
+    }
+  });
+});
+</script>
+{% endblock %}

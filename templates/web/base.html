@@ -69,6 +69,10 @@
       <span>仮想売買</span>
       {% if counts and counts.trades is defined %}<span class="count">{{ counts.trades }}</span>{% endif %}
     </a>
+    <a class="side-link {% if request.path.startswith('/web/case-tests') %}active{% endif %}" href="/web/case-tests">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3v18h18"/><path d="M7 15l3-3 3 2 5-7"/><path d="M18 7h-4"/></svg>
+      <span>比較テスト</span>
+    </a>
     <div class="side-section">System</div>
     <a class="side-link {% if request.path in ['/web/models', '/admin/models'] %}active{% endif %}" href="/web/models">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v20"/><path d="M2 12h20"/><circle cx="12" cy="12" r="4"/></svg>

@@ -31,6 +31,7 @@ from bad_news_filter import analyze_bad_news
 from scoring import calculate_score
 from services.market_regime import evaluate_market_regime
 from services.signal_stage import SIGNAL_STAGES, evaluate_signal_stage
+from services.signal_history import record_rebound_signal
 from settings_loader import get_settings
 
 load_dotenv()
@@ -1083,6 +1084,31 @@ def run_monitor(*, smoke_relaxed: bool = False, dry_run: bool = False, force_no_
         if stage in SIGNAL_STAGES and not is_excluded and not dry_run:
             trade_item = {**item, **update_data}
             trade_item["entry_size_multiplier"] = market_adjustment["entry_size_multiplier"]
+            record_rebound_signal(
+                supabase,
+                source="monitor_rebound",
+                watchlist=trade_item,
+                result={
+                    "signal_stage": stage,
+                    "signal_score": score,
+                    "signal_probability": item.get("signal_probability"),
+                    "expected_value": item.get("expected_value"),
+                    "is_excluded": is_excluded,
+                    "exclude_reason": exclude_reason,
+                    "market_regime": market_adjustment.get("regime"),
+                    "market_regime_label": market_adjustment.get("label"),
+                    "market_threshold_adjust": market_adjustment.get("ai_threshold_adjust"),
+                    "market_regime_reason": market_adjustment.get("reason"),
+                    "market_nikkei_pct": market_adjustment.get("nikkei_pct_used"),
+                    "market_topix_pct": market_adjustment.get("topix_pct_used"),
+                    "market_nikkei_change_yen": market_adjustment.get("nikkei_change_yen_used"),
+                },
+                extra={
+                    "current_price": current,
+                    "volume_ratio": rebound.get("volume_ratio"),
+                    "rebound": rebound,
+                },
+            )
             entry_candidates.append({
                 "item": trade_item,
                 "current": current,

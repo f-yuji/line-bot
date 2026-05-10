@@ -34,6 +34,7 @@ from supabase import create_client
 from settings_loader import get_settings
 from services.market_regime import evaluate_market_regime
 from services.signal_stage import SIGNAL_STAGES, evaluate_signal_stage
+from services.signal_history import record_rebound_signal
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -405,15 +406,23 @@ def _persist_watchlist(sb, row: dict, result: dict, *, dry_run: bool, force: boo
         update["excluded_at"] = now
     if dry_run:
         logger.info("DRYRUN watchlist %s: %s", "update" if existing else "insert", update)
-        return {**(existing or {}), **update}
+        saved = {**(existing or {}), **update}
+        record_rebound_signal(sb, source="predict_rebound", snapshot=row, watchlist=saved, result=result, dry_run=True)
+        return saved
     if existing and not force:
         sb.table("stock_drop_watchlist").update(update).eq("id", existing["id"]).execute()
-        return {**existing, **update}
+        saved = {**existing, **update}
+        record_rebound_signal(sb, source="predict_rebound", snapshot=row, watchlist=saved, result=result, dry_run=dry_run)
+        return saved
     if existing and force:
         sb.table("stock_drop_watchlist").update(update).eq("id", existing["id"]).execute()
-        return {**existing, **update}
+        saved = {**existing, **update}
+        record_rebound_signal(sb, source="predict_rebound", snapshot=row, watchlist=saved, result=result, dry_run=dry_run)
+        return saved
     inserted = sb.table("stock_drop_watchlist").insert(update).execute().data or []
-    return inserted[0] if inserted else update
+    saved = inserted[0] if inserted else update
+    record_rebound_signal(sb, source="predict_rebound", snapshot=row, watchlist=saved, result=result, dry_run=dry_run)
+    return saved
 
 
 def _int_setting(cfg: dict, key: str, default: int) -> int:
