@@ -32,6 +32,27 @@ def _date_only(value: Any) -> str | None:
     return text[:10] if len(text) >= 10 else text
 
 
+def _clean_text(value: Any) -> str | None:
+    text = str(value or "").strip()
+    return text or None
+
+
+def _lookup_prime_stock(sb, code: str) -> dict:
+    try:
+        rows = (
+            sb.table("prime_stocks_cache")
+            .select("code,name,sector")
+            .eq("code", code)
+            .limit(1)
+            .execute()
+            .data or []
+        )
+        return rows[0] if rows else {}
+    except Exception as e:
+        logger.debug("signal_history prime stock lookup failed code=%s error=%s", code, e)
+        return {}
+
+
 def _signal_key(source: str, code: str, feature_snapshot_id: Any, signal_date: Any, stage: str) -> str:
     if feature_snapshot_id:
         anchor = f"fs:{feature_snapshot_id}"
@@ -69,6 +90,14 @@ def record_rebound_signal(
     code = str(snapshot.get("code") or watchlist.get("code") or "").strip()
     if not code:
         return
+
+    master = {}
+    raw_sector = _clean_text(snapshot.get("sector")) or _clean_text(watchlist.get("sector"))
+    raw_name = _clean_text(snapshot.get("name")) or _clean_text(watchlist.get("name"))
+    if not raw_sector or not raw_name:
+        master = _lookup_prime_stock(sb, code)
+    sector = raw_sector or _clean_text(master.get("sector"))
+    name = raw_name or _clean_text(master.get("name"))
 
     now = datetime.now(timezone.utc).isoformat()
     feature_snapshot_id = snapshot.get("id") or watchlist.get("feature_snapshot_id")
@@ -119,6 +148,9 @@ def record_rebound_signal(
         },
         **extra,
     }
+    price_at_signal = snapshot.get("close") or watchlist.get("price_at_drop")
+    current_price = extra.get("current_price") or watchlist.get("current_price") or price_at_signal
+
     row = {
         "signal_key": key,
         "source": source,
@@ -126,9 +158,9 @@ def record_rebound_signal(
         "watchlist_id": watchlist.get("id"),
         "feature_snapshot_id": feature_snapshot_id,
         "code": code,
-        "name": snapshot.get("name") or watchlist.get("name"),
+        "name": name,
         "market": snapshot.get("market") or watchlist.get("market") or "prime",
-        "sector": snapshot.get("sector") or watchlist.get("sector"),
+        "sector": sector,
         "signal_date": _date_only(signal_date),
         "detected_at": now,
         "last_seen_at": now,
@@ -136,8 +168,8 @@ def record_rebound_signal(
         "signal_probability": probability,
         "expected_value": expected_value,
         "rule_score": rule_score,
-        "current_price": extra.get("current_price") or watchlist.get("current_price"),
-        "price_at_signal": snapshot.get("close") or watchlist.get("price_at_drop"),
+        "current_price": current_price,
+        "price_at_signal": price_at_signal,
         "drop_pct": snapshot.get("drop_pct") or snapshot.get("day_change_pct") or watchlist.get("drop_pct"),
         "rsi14": snapshot.get("rsi14"),
         "volume_ratio": snapshot.get("volume_ratio_20d") or extra.get("volume_ratio"),

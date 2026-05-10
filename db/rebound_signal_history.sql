@@ -65,4 +65,20 @@ CREATE INDEX IF NOT EXISTS idx_rebound_signal_history_detected_at
 CREATE INDEX IF NOT EXISTS idx_rebound_signal_history_feature_snapshot
     ON rebound_signal_history (feature_snapshot_id);
 
+-- Backfill older rows created before the fallback logic existed.
+UPDATE rebound_signal_history
+SET current_price = price_at_signal,
+    updated_at = now()
+WHERE current_price IS NULL
+  AND price_at_signal IS NOT NULL;
+
+UPDATE rebound_signal_history h
+SET sector = NULLIF(p.sector, ''),
+    name = COALESCE(NULLIF(h.name, ''), NULLIF(p.name, ''), h.name),
+    updated_at = now()
+FROM prime_stocks_cache p
+WHERE h.code = p.code
+  AND (h.sector IS NULL OR h.sector = '')
+  AND NULLIF(p.sector, '') IS NOT NULL;
+
 NOTIFY pgrst, 'reload schema';
