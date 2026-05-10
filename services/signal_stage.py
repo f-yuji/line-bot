@@ -1,5 +1,10 @@
 """Shared signal_stage evaluation for rebound AI.
 
+Canonical stages:
+- early: 初動
+- confirmed: 本命
+- strong_confirmed: 強本命
+
 The database column names still use "probability" for compatibility, but the
 UI treats this value as an AI score rather than a calibrated win probability.
 """
@@ -56,12 +61,7 @@ def evaluate_signal_stage(
     settings: dict | None = None,
     market_regime: dict | None = None,
 ) -> dict:
-    """Return the single canonical signal_stage decision.
-
-    `ai_score` accepts either 0..1 or 0..100. `rule_score` is a 0..100 helper
-    score. `expected_value` is currently returned for callers' context but does
-    not gate the stage; the stage is intentionally AI-score-led.
-    """
+    """Return the single canonical signal_stage decision."""
 
     ai = _normalize_ai_score(ai_score)
     rule = _to_float(rule_score, None)
@@ -90,11 +90,14 @@ def evaluate_signal_stage(
         stage = "none"
         reason = f"AIスコア{early * 100:.0f}未満"
 
+    if regime_label and adjust:
+        reason = f"{reason}（{regime_label}補正）"
+
     return {
         "stage": stage,
         "stage_label": STAGE_LABELS[stage],
         "stage_rank": STAGE_RANK[stage],
-        "reason": f"{reason}（{regime_label}補正）" if regime_label and adjust else reason,
+        "reason": reason,
         "ai_score": ai,
         "rule_score": rule,
         "expected_value": _to_float(expected_value, None),

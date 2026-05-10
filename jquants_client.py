@@ -32,10 +32,12 @@ def normalize_code(code: Any) -> str:
     text = str(code or "").strip()
     if text.endswith(".T"):
         text = text[:-2]
-    digits = "".join(ch for ch in text if ch.isdigit())
-    if len(digits) >= 5 and digits[:4].isdigit():
-        return digits[:4]
-    return digits[:4] if len(digits) >= 4 else text
+    compact = "".join(ch for ch in text.upper() if ch.isalnum())
+    if len(compact) >= 5 and compact[-1] == "0" and compact[:4].isalnum():
+        return compact[:4]
+    if len(compact) >= 4 and compact[:4].isalnum():
+        return compact[:4]
+    return compact or text
 
 
 def _refresh_token_from_password() -> str | None:
@@ -244,3 +246,82 @@ def get_statements(
         else:
             df = cli.get_fin_summary(code=params["code"] or "", date_yyyymmdd=_fmt_date(date) or "")
         return df.to_dict("records")
+
+
+def get_weekly_margin_interest(
+    code: str | None = None,
+    date: str | date | None = None,
+    from_date: str | date | None = None,
+    to_date: str | date | None = None,
+) -> list[dict]:
+    params = {
+        "code": f"{normalize_code(code)}0" if code else None,
+        "date": _fmt_date(date),
+        "from": _fmt_date(from_date),
+        "to": _fmt_date(to_date),
+    }
+    if _USE_V2:
+        cli = _get_v2_client()
+        return cli.get_mkt_margin_interest(
+            code=params["code"] or "",
+            date_yyyymmdd=_fmt_date(date) or "",
+            from_yyyymmdd=_fmt_date(from_date) or "",
+            to_yyyymmdd=_fmt_date(to_date) or "",
+        ).to_dict("records")
+    return get("/markets/weekly_margin_interest", params=params, paginate=True)  # type: ignore[return-value]
+
+
+def get_daily_margin_interest(
+    code: str | None = None,
+    date: str | date | None = None,
+    from_date: str | date | None = None,
+    to_date: str | date | None = None,
+) -> list[dict]:
+    params = {
+        "code": f"{normalize_code(code)}0" if code else None,
+        "date": _fmt_date(date),
+        "from": _fmt_date(from_date),
+        "to": _fmt_date(to_date),
+    }
+    if _USE_V2:
+        cli = _get_v2_client()
+        if not code and not date and (from_date or to_date):
+            return cli.get_mkt_margin_alert_range(
+                start_dt=_fmt_date(from_date) or "20170101",
+                end_dt=_fmt_date(to_date) or datetime.now().date().isoformat(),
+            ).to_dict("records")
+        return cli.get_mkt_margin_alert(
+            code=params["code"] or "",
+            date_yyyymmdd=_fmt_date(date) or "",
+            from_yyyymmdd=_fmt_date(from_date) or "",
+            to_yyyymmdd=_fmt_date(to_date) or "",
+        ).to_dict("records")
+    return get("/markets/daily_margin_interest", params=params, paginate=True)  # type: ignore[return-value]
+
+
+def get_short_selling(
+    sector33code: str | None = None,
+    date: str | date | None = None,
+    from_date: str | date | None = None,
+    to_date: str | date | None = None,
+) -> list[dict]:
+    params = {
+        "sector33code": sector33code,
+        "date": _fmt_date(date),
+        "from": _fmt_date(from_date),
+        "to": _fmt_date(to_date),
+    }
+    if _USE_V2:
+        cli = _get_v2_client()
+        if not sector33code and not date and (from_date or to_date):
+            return cli.get_mkt_short_ratio_range(
+                start_dt=_fmt_date(from_date) or "20170101",
+                end_dt=_fmt_date(to_date) or datetime.now().date().isoformat(),
+            ).to_dict("records")
+        return cli.get_mkt_short_ratio(
+            sector_33_code=sector33code or "",
+            date_yyyymmdd=_fmt_date(date) or "",
+            from_yyyymmdd=_fmt_date(from_date) or "",
+            to_yyyymmdd=_fmt_date(to_date) or "",
+        ).to_dict("records")
+    return get("/markets/short_selling", params=params, paginate=True)  # type: ignore[return-value]

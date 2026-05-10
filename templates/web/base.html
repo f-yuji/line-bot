@@ -181,18 +181,18 @@ const _BADGE_MAP = {
 
 const _STAGE_MAP = {
   none: 'シグナルなし',
-  early: '初動シグナル',
-  confirmed: '通常シグナル',
-  strong_confirmed: '本命シグナル'
+  early: '初動',
+  confirmed: '本命',
+  strong_confirmed: '強本命'
 };
 
 function _getSignalBadge(r) {
   const stage = r.signal_stage || 'none';
   const status = r.status || '';
   if (status === 'excluded') return ['closed', '除外'];
-  if (stage === 'strong_confirmed') return ['notified', '本命シグナル'];
-  if (stage === 'confirmed') return ['signal', '通常シグナル'];
-  if (stage === 'early') return ['signal-early', '初動シグナル'];
+  if (stage === 'strong_confirmed') return ['notified', '強本命'];
+  if (stage === 'confirmed') return ['signal', '本命'];
+  if (stage === 'early') return ['signal-early', '初動'];
   if (status === 'notified' || r.rebound_notified_at) return ['notified', '通知済み'];
   if (status === 'watching') return ['watching', '監視中'];
   return ['watching', 'シグナルなし'];

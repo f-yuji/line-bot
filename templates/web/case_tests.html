@@ -22,7 +22,7 @@
 
 {% block content %}
 <div class="page-head">
-  <h1 class="page-title">比較テスト<small>CASE TESTS</small></h1>
+  <h1 class="page-title">比較テスト<small>ルール比較</small></h1>
 </div>
 
 <div class="panel" style="margin-bottom:14px">
@@ -39,11 +39,11 @@
       <input class="input" type="date" name="period_end" value="{{ default_end }}" required>
     </label>
     <button class="btn primary sm" type="submit">実行</button>
-    <span class="muted" style="font-size:11px">最大90日。本番の仮想売買は変更しません。</span>
+    <span class="muted" style="font-size:11px">対象期間は最大90日です。本番の仮想売買は変更しません。</span>
   </form>
 </div>
 
-<div class="section-h">テスト履歴</div>
+<div class="section-h">実行履歴</div>
 <div class="panel" style="margin-bottom:14px">
   <div style="padding:10px 16px;display:flex;gap:8px;flex-wrap:wrap">
     {% for run in runs %}
@@ -52,7 +52,7 @@
         <span class="muted">{{ run.status }}</span>
       </a>
     {% else %}
-      <span class="muted">まだテスト履歴がありません。</span>
+      <span class="muted">まだ実行履歴がありません。</span>
     {% endfor %}
   </div>
 </div>
@@ -73,16 +73,16 @@
           <th>出口</th>
           <th class="right">件数</th>
           <th class="right">勝率</th>
-          <th class="right">EV</th>
+          <th class="right">期待値</th>
           <th class="right">利回り</th>
           <th class="right">損益</th>
-          <th class="right">Max DD</th>
+          <th class="right">全体最大下落</th>
           <th class="right">平均ピーク</th>
-          <th class="right">平均DD</th>
+          <th class="right">銘柄平均下落</th>
           <th class="right">平均保有</th>
           <th class="right">最大保有</th>
-          <th class="right">TP</th>
-          <th class="right">SL</th>
+          <th class="right">利益決済</th>
+          <th class="right">損切</th>
           <th class="right">未決済</th>
           <th></th>
         </tr>
@@ -92,10 +92,9 @@
         {% set case = row.case or {} %}
         <tr>
           <td>
-            <div class="name">{{ case.display_name or case.case_name or row.case_id }}</div>
-            <div class="muted" style="font-size:11px">{{ case.case_key or "" }}</div>
+            <div class="name">{{ case.display_name or row.case_id }}</div>
           </td>
-          <td><span class="pill">{{ row.exit_label or row.exit_type or "固定TP/SL" }}</span></td>
+          <td><span class="pill">{{ row.exit_label or row.exit_type or "固定利確/損切" }}</span></td>
           <td class="right num">{{ row.entry_count or 0 }}</td>
           <td class="right num">{% if row.win_rate is not none %}{{ "%.1f"|format(row.win_rate|float) }}%{% else %}<span class="muted">-</span>{% endif %}</td>
           <td class="right">{{ pct(row.expected_value_pct) }}</td>
@@ -106,7 +105,7 @@
           <td class="right">{{ pct(row.avg_trade_drawdown_pct) }}</td>
           <td class="right num">{% if row.avg_holding_days is not none %}{{ "%.1f"|format(row.avg_holding_days|float) }}日{% else %}<span class="muted">-</span>{% endif %}</td>
           <td class="right num">{{ row.max_open_positions or 0 }}</td>
-          <td class="right num">{{ row.tp_count or 0 }}</td>
+          <td class="right num">{{ row.profit_exit_count if row.profit_exit_count is not none else (row.tp_count or 0) }}</td>
           <td class="right num">{{ row.sl_count or 0 }}</td>
           <td class="right num">{{ row.open_count or 0 }}</td>
           <td class="right"><a class="btn ghost sm" href="/web/case-tests/{{ row.run_id }}/{{ row.case_id }}">詳細</a></td>

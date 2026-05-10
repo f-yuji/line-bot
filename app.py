@@ -1774,11 +1774,11 @@ def get_signal_badge_label(row: dict) -> str:
     if status == "excluded":
         return "除外"
     if stage == "strong_confirmed":
-        return "本命シグナル"
+        return "強本命"
     if stage == "confirmed":
-        return "通常シグナル"
+        return "本命"
     if stage == "early":
-        return "初動シグナル"
+        return "初動"
     if status == "notified" or row.get("rebound_notified_at"):
         return "通知済み"
     if status == "watching":
@@ -2315,11 +2315,11 @@ EXIT_PROFILE_LABELS = {
     "pullback2": "反落-2%",
     "ma5": "5日MA割れ",
     "rsi70": "RSI70反落",
-    "atr15": "ATRx1.5",
+    "atr15": "ATR 1.5倍",
 }
 
 EXIT_TYPE_LABELS = {
-    "fixed_tp_sl": "固定TP/SL",
+    "fixed_tp_sl": "固定利確/損切",
     "trailing_stop": "トレーリング",
     "pullback_exit": "反落検知",
     "ma_break_exit": "MA割れ",
@@ -2327,6 +2327,74 @@ EXIT_TYPE_LABELS = {
     "volume_fade_exit": "出来高減衰",
     "atr_trailing": "ATRトレーリング",
 }
+
+
+def _case_rule_summary(rules: dict) -> str:
+    entry = ENTRY_PROFILE_LABELS.get(str(rules.get("entry_profile") or ""), "")
+    exit_profile = EXIT_PROFILE_LABELS.get(str(rules.get("exit_profile") or ""), "")
+    parts = []
+    if entry:
+        parts.append(f"入口は「{entry}」です。")
+    allowed = rules.get("allowed_stages") or []
+    if allowed:
+        stage_labels = {
+            "early": "初動",
+            "confirmed": "本命",
+            "strong_confirmed": "強本命",
+        }
+        stages = "、".join(stage_labels.get(str(s), str(s)) for s in allowed)
+        parts.append(f"対象段階は {stages}。")
+    if rules.get("min_ai_score") is not None:
+        parts.append(f"AI最低値は {float(rules.get('min_ai_score') or 0) * 100:.0f}%。")
+    if rules.get("entry_rank_limit") is not None:
+        parts.append(f"候補上位 {int(rules.get('entry_rank_limit') or 0)} 件まで。")
+    if rules.get("max_daily_entries") is not None:
+        parts.append(f"1日最大 {int(rules.get('max_daily_entries') or 0)} 件。")
+    if rules.get("max_open_positions") is not None:
+        parts.append(f"最大保有 {int(rules.get('max_open_positions') or 0)} 件。")
+    if rules.get("max_sector_positions") not in (None, 99):
+        parts.append(f"同一セクターは最大 {int(rules.get('max_sector_positions') or 0)} 件。")
+
+    exit_type = str(rules.get("exit_type") or "fixed_tp_sl")
+    if exit_type == "fixed_tp_sl":
+        parts.append(
+            f"出口は固定利確/損切りで、利確 {float(rules.get('tp_pct') or 0) * 100:.0f}%、"
+            f"損切り {float(rules.get('sl_pct') or 0) * 100:.0f}%、"
+            f"最大 {int(rules.get('max_holding_days') or 0)} 日保有。"
+        )
+    elif exit_type == "trailing_stop":
+        parts.append(
+            f"出口はトレーリングで、最高値から {abs(float(rules.get('trailing_drop_pct') or 0)) * 100:.0f}% 下落で決済。"
+            f"初期損切りは {float(rules.get('initial_sl_pct') or 0) * 100:.0f}%、"
+            f"最大 {int(rules.get('max_holding_days') or 0)} 日保有。"
+        )
+    elif exit_type == "pullback_exit":
+        parts.append(
+            f"出口は反落検知で、含み益中に前日比 {float(rules.get('pullback_day_pct') or 0) * 100:.0f}% 以下なら決済。"
+            f"初期損切りは {float(rules.get('initial_sl_pct') or 0) * 100:.0f}%、"
+            f"最大 {int(rules.get('max_holding_days') or 0)} 日保有。"
+        )
+    elif exit_type == "ma_break_exit":
+        parts.append(
+            f"出口は {int(rules.get('ma_period') or 5)} 日移動平均割れ。"
+            f"初期損切りは {float(rules.get('initial_sl_pct') or 0) * 100:.0f}%、"
+            f"最大 {int(rules.get('max_holding_days') or 0)} 日保有。"
+        )
+    elif exit_type == "rsi_reversal_exit":
+        parts.append(
+            f"出口はRSI反落で、RSI {float(rules.get('overbought_rsi') or 70):.0f} 超え後の失速を検知して決済。"
+            f"初期損切りは {float(rules.get('initial_sl_pct') or 0) * 100:.0f}%、"
+            f"最大 {int(rules.get('max_holding_days') or 0)} 日保有。"
+        )
+    elif exit_type == "atr_trailing":
+        parts.append(
+            f"出口はATRトレーリングで、ATR x{float(rules.get('atr_multiplier') or 0):.1f} を基準に追随。"
+            f"初期損切りは {float(rules.get('initial_sl_pct') or 0) * 100:.0f}%、"
+            f"最大 {int(rules.get('max_holding_days') or 0)} 日保有。"
+        )
+    elif exit_profile:
+        parts.append(f"出口は「{exit_profile}」。")
+    return "".join(parts)
 
 
 def _decorate_case_test_case(case):
@@ -2355,7 +2423,48 @@ def _decorate_case_test_case(case):
     case["exit_profile"] = exit_profile
     case["exit_type"] = exit_type
     case["exit_label"] = EXIT_PROFILE_LABELS.get(exit_profile) or EXIT_TYPE_LABELS.get(exit_type, exit_type)
+    case["display_description"] = _case_rule_summary(rules)
     return case
+
+
+PROFIT_EXIT_REASONS = {
+    "tp",
+    "trailing_stop",
+    "pullback_exit",
+    "ma_break_exit",
+    "rsi_reversal_exit",
+    "volume_fade_exit",
+    "atr_trailing",
+}
+
+
+def _case_test_profit_exit_counts(run_id: str) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    start = 0
+    page_size = 1000
+    while True:
+        rows = (
+            supabase.table("trade_case_simulations")
+            .select("case_id,exit_reason,profit_pct,status")
+            .eq("run_id", run_id)
+            .range(start, start + page_size - 1)
+            .execute()
+            .data or []
+        )
+        for row in rows:
+            if row.get("status") != "closed":
+                continue
+            try:
+                profit_pct = float(row.get("profit_pct") or 0)
+            except Exception:
+                profit_pct = 0
+            if row.get("exit_reason") in PROFIT_EXIT_REASONS and profit_pct > 0:
+                case_id = str(row.get("case_id"))
+                counts[case_id] = counts.get(case_id, 0) + 1
+        if len(rows) < page_size:
+            break
+        start += page_size
+    return counts
 
 @app.route("/web/case-tests")
 def web_case_tests():
@@ -2397,11 +2506,13 @@ def web_case_tests():
                 .execute()
                 .data or []
             )
+            profit_exit_counts = _case_test_profit_exit_counts(str(selected_run_id))
             for row in results:
                 case = cases_by_id.get(str(row.get("case_id")), {})
                 row["case"] = case
                 row["exit_type"] = case.get("exit_type") or "fixed_tp_sl"
                 row["exit_label"] = case.get("exit_label") or row["exit_type"]
+                row["profit_exit_count"] = profit_exit_counts.get(str(row.get("case_id")), row.get("tp_count") or 0)
             results.sort(
                 key=lambda r: (
                     float(r.get("total_profit_pct") or -999999),

@@ -26,9 +26,9 @@
   {%- set stage = r.signal_stage or "none" -%}
   {%- set status = r.status or "" -%}
   {%- if status == "excluded" -%}<span class="badge closed">除外</span>
-  {%- elif stage == "strong_confirmed" -%}<span class="badge notified">本命シグナル</span>
-  {%- elif stage == "confirmed" -%}<span class="badge signal">通常シグナル</span>
-  {%- elif stage == "early" -%}<span class="badge signal-early">初動シグナル</span>
+  {%- elif stage == "strong_confirmed" -%}<span class="badge notified">強本命</span>
+  {%- elif stage == "confirmed" -%}<span class="badge signal">本命</span>
+  {%- elif stage == "early" -%}<span class="badge signal-early">初動</span>
   {%- elif status == "notified" or r.rebound_notified_at -%}<span class="badge notified">通知済み</span>
   {%- elif status == "watching" -%}<span class="badge watching">監視中</span>
   {%- else -%}<span class="badge watching">シグナルなし</span>

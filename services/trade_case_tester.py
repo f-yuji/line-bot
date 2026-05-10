@@ -37,6 +37,16 @@ except Exception:  # pragma: no cover
 load_dotenv()
 logger = logging.getLogger(__name__)
 ROOT = Path(__file__).resolve().parents[1]
+MAX_FUTURE_DAYS = 20
+PROFIT_EXIT_REASONS = {
+    "tp",
+    "trailing_stop",
+    "pullback_exit",
+    "ma_break_exit",
+    "rsi_reversal_exit",
+    "volume_fade_exit",
+    "atr_trailing",
+}
 
 
 def _opt(name: str) -> str:
@@ -200,12 +210,16 @@ def _load_candidates(sb, period_start: date, period_end: date) -> list[dict]:
         ]
         + list(NUMERIC_FEATURES) + list(BOOL_FEATURES) + list(CATEGORICAL_FEATURES)
     ))
+    future_cols = []
+    for day in range(1, MAX_FUTURE_DAYS + 1):
+        future_cols.extend([
+            f"future_high_{day}d",
+            f"future_low_{day}d",
+            f"future_close_{day}d",
+        ])
     label_cols = [
         "id", "feature_snapshot_id", "trade_date", "code", "entry_price",
-        "future_high_1d", "future_high_2d", "future_high_3d", "future_high_4d", "future_high_5d",
-        "future_low_1d", "future_low_2d", "future_low_3d", "future_low_4d", "future_low_5d",
-        "future_close_1d", "future_close_2d", "future_close_3d", "future_close_4d", "future_close_5d",
-    ]
+    ] + future_cols
     start_s = period_start.isoformat()
     end_s = period_end.isoformat()
 
@@ -318,7 +332,7 @@ def _price_path(row: dict, rules: dict) -> tuple[float | None, date | None, list
     entry = _to_float(row.get("entry_price"), None) or _to_float(row.get("close"), None)
     if not entry or entry <= 0:
         return None, None, []
-    max_days = min(5, max(1, _to_int(rules.get("max_holding_days"), 5)))
+    max_days = min(MAX_FUTURE_DAYS, max(1, _to_int(rules.get("max_holding_days"), 5)))
     entry_date = _to_date(row.get("trade_date"))
     days: list[dict] = []
     prev_close = entry
@@ -326,6 +340,8 @@ def _price_path(row: dict, rules: dict) -> tuple[float | None, date | None, list
         high = _to_float(row.get(f"future_high_{day}d"), None)
         low = _to_float(row.get(f"future_low_{day}d"), None)
         close = _to_float(row.get(f"future_close_{day}d"), None)
+        if high is None and low is None and close is None:
+            break
         if high is None and close is not None:
             high = close
         if low is None and close is not None:
@@ -790,7 +806,10 @@ def _build_result(run_id: str, case_id: str, simulations: list[dict], max_concur
         "max_drawdown_pct": round(max_dd_pct, 3) if max_dd_pct is not None else None,
         "max_open_positions": max_concurrent,
         "avg_holding_days": round(sum(_to_float(s.get("holding_days"), 0) or 0 for s in closed) / closed_count, 2) if closed_count else None,
-        "tp_count": len([s for s in closed if s.get("exit_reason") == "tp"]),
+        "tp_count": len([
+            s for s in closed
+            if s.get("exit_reason") in PROFIT_EXIT_REASONS and (_to_float(s.get("profit_pct"), 0) or 0) > 0
+        ]),
         "sl_count": len([s for s in closed if s.get("exit_reason") == "sl"]),
         "timeout_count": len([s for s in closed if s.get("exit_reason") == "timeout"]),
         "avg_peak_profit_pct": round(sum(peak_values) / len(peak_values), 3) if peak_values else None,

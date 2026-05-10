@@ -10,6 +10,7 @@ import logging
 import math
 import os
 import sys
+import time
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
@@ -38,6 +39,7 @@ JST = timezone(timedelta(hours=9))
 DEFAULT_BATCH_SIZE = 200
 LABEL_5D = {"holding_days": 5, "take_profit_pct": 5.0, "stop_loss_pct": -3.0}
 LABEL_10D = {"holding_days": 10, "take_profit_pct": 7.0, "stop_loss_pct": -4.0}
+MAX_FUTURE_DAYS = 20
 
 
 def _opt(name: str) -> str:
@@ -118,6 +120,35 @@ def _fetch_all(query_factory, *, page_size: int = 1000) -> list[dict]:
             break
         start += page_size
     return rows
+
+
+def _with_retry(label: str, fn, *, retries: int = 4, base_sleep: float = 3.0):
+    for attempt in range(1, retries + 1):
+        try:
+            return fn()
+        except Exception as e:
+            msg = str(e)
+            retryable = any(
+                marker in msg
+                for marker in (
+                    "ConnectionTerminated",
+                    "RemoteProtocolError",
+                    "ReadTimeout",
+                    "ConnectTimeout",
+                    "Server disconnected",
+                    "temporarily unavailable",
+                    "429",
+                    "500",
+                    "502",
+                    "503",
+                    "504",
+                )
+            )
+            if not retryable or attempt >= retries:
+                raise
+            wait = base_sleep * attempt
+            logger.warning("%s retry attempt=%d/%d sleep=%.1fs error=%s", label, attempt, retries, wait, msg[:180])
+            time.sleep(wait)
 
 
 def _load_candidate_codes(sb, args: argparse.Namespace) -> list[str]:
@@ -214,15 +245,18 @@ def _existing_label_keys(sb, candidates: list[dict]) -> set[tuple[str, str]]:
 
 
 def _load_snapshot_rows(sb, code: str, min_date: str, max_date: str) -> list[dict]:
-    rows = (
-        sb.table("stock_feature_snapshots")
-        .select("trade_date, high, low, close")
-        .eq("code", code)
-        .gte("trade_date", min_date)
-        .lte("trade_date", max_date)
-        .order("trade_date")
-        .execute()
-        .data or []
+    rows = _with_retry(
+        f"snapshot load code={code}",
+        lambda: (
+            sb.table("stock_feature_snapshots")
+            .select("trade_date, high, low, close")
+            .eq("code", code)
+            .gte("trade_date", min_date)
+            .lte("trade_date", max_date)
+            .order("trade_date")
+            .execute()
+            .data or []
+        ),
     )
     return rows
 
@@ -362,9 +396,13 @@ def build_label(candidate: dict, future_rows: list[dict], args: argparse.Namespa
         return None
 
     compat = eval_5d if eval_5d and eval_5d.get("success") is not None else None
-    highs = [_to_float(r.get("high")) for r in future_rows[:5]]
-    lows = [_to_float(r.get("low")) for r in future_rows[:5]]
-    closes = [_to_float(r.get("close")) for r in future_rows[:5]]
+    future_days = max(
+        5,
+        min(MAX_FUTURE_DAYS, int(getattr(args, "future_days", MAX_FUTURE_DAYS) or MAX_FUTURE_DAYS)),
+    )
+    highs = [_to_float(r.get("high")) for r in future_rows[:future_days]]
+    lows = [_to_float(r.get("low")) for r in future_rows[:future_days]]
+    closes = [_to_float(r.get("close")) for r in future_rows[:future_days]]
     take_profit_price = entry_price * 1.05
     stop_loss_price = entry_price * 0.97
 
@@ -424,7 +462,7 @@ def build_label(candidate: dict, future_rows: list[dict], args: argparse.Namespa
             "label_10d_stop_loss_pct": LABEL_10D["stop_loss_pct"],
         })
 
-    for i in range(min(5, len(highs))):
+    for i in range(min(future_days, len(highs), len(lows), len(closes))):
         day = i + 1
         row[f"future_high_{day}d"] = highs[i]
         row[f"future_low_{day}d"] = lows[i]
@@ -436,7 +474,10 @@ def _upsert_rows(sb, rows: list[dict], batch_size: int) -> int:
     total = 0
     for i in range(0, len(rows), batch_size):
         batch = rows[i : i + batch_size]
-        sb.table("stock_rebound_labels").upsert(batch, on_conflict="code,trade_date").execute()
+        _with_retry(
+            "stock_rebound_labels upsert",
+            lambda batch=batch: sb.table("stock_rebound_labels").upsert(batch, on_conflict="code,trade_date").execute(),
+        )
         total += len(batch)
     return total
 
@@ -550,7 +591,8 @@ def run(args: argparse.Namespace) -> None:
     by_code: dict[str, int] = {}
     saved = 0
     flush_every = max(1, int(args.flush_every or args.batch_size or DEFAULT_BATCH_SIZE))
-    max_holding_days = 10 if str(args.label_mode or "both") in {"10d", "both"} or args.force_10d or args.force else 5
+    required_label_days = 10 if str(args.label_mode or "both") in {"10d", "both"} or args.force_10d or args.force else 5
+    max_holding_days = max(required_label_days, min(MAX_FUTURE_DAYS, int(args.future_days or MAX_FUTURE_DAYS)))
 
     for c in candidates:
         by_code[str(c["code"])] = by_code.get(str(c["code"]), 0) + 1
@@ -651,6 +693,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--stop-loss", type=float, default=-4.0)
     parser.add_argument("--holding-days", type=int, default=5)
     parser.add_argument("--label-mode", choices=["5d", "10d", "both"], default="both")
+    parser.add_argument("--future-days", type=int, default=MAX_FUTURE_DAYS)
     parser.add_argument("--force-5d", action="store_true")
     parser.add_argument("--force-10d", action="store_true")
     parser.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE)
