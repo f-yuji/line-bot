@@ -82,6 +82,10 @@ CREATE TABLE IF NOT EXISTS trade_case_simulations (
     market_regime_label text,
     market_nikkei_pct numeric,
     market_topix_pct numeric,
+    margin_date date,
+    margin_ratio numeric,
+    margin_long_outstanding numeric,
+    margin_short_outstanding numeric,
     created_at timestamptz DEFAULT now()
 );
 
@@ -95,7 +99,11 @@ ALTER TABLE trade_case_simulations
     ADD COLUMN IF NOT EXISTS max_drawdown_pct numeric,
     ADD COLUMN IF NOT EXISTS trailing_triggered boolean,
     ADD COLUMN IF NOT EXISTS exit_signal_value numeric,
-    ADD COLUMN IF NOT EXISTS exit_indicator text;
+    ADD COLUMN IF NOT EXISTS exit_indicator text,
+    ADD COLUMN IF NOT EXISTS margin_date date,
+    ADD COLUMN IF NOT EXISTS margin_ratio numeric,
+    ADD COLUMN IF NOT EXISTS margin_long_outstanding numeric,
+    ADD COLUMN IF NOT EXISTS margin_short_outstanding numeric;
 
 CREATE INDEX IF NOT EXISTS idx_trade_case_runs_started_at
     ON trade_case_runs (started_at DESC);
@@ -589,20 +597,73 @@ exit_templates(exit_key, exit_name, exit_rules) AS (
           "max_holding_days": 20
         }'::jsonb
     )
+),
+credit_templates(credit_key, credit_name, credit_rules) AS (
+    VALUES
+    (
+        'no_margin',
+        '',
+        '{}'::jsonb
+    ),
+    (
+        'margin_le20',
+        '信用倍率20倍以下',
+        '{
+          "credit_profile": "margin_le20",
+          "use_margin_filter": true,
+          "require_margin_data": true,
+          "max_margin_ratio": 20
+        }'::jsonb
+    ),
+    (
+        'margin_le10',
+        '信用倍率10倍以下',
+        '{
+          "credit_profile": "margin_le10",
+          "use_margin_filter": true,
+          "require_margin_data": true,
+          "max_margin_ratio": 10
+        }'::jsonb
+    ),
+    (
+        'margin_le5',
+        '信用倍率5倍以下',
+        '{
+          "credit_profile": "margin_le5",
+          "use_margin_filter": true,
+          "require_margin_data": true,
+          "max_margin_ratio": 5
+        }'::jsonb
+    ),
+    (
+        'short_pressure',
+        '売り残比率10%以上',
+        '{
+          "credit_profile": "short_pressure",
+          "use_margin_filter": true,
+          "require_margin_data": true,
+          "min_short_long_ratio": 0.10
+        }'::jsonb
+    )
 )
 INSERT INTO trade_case_definitions (case_key, case_name, description, rules)
 SELECT
-    'combo_' || e.entry_key || '__' || x.exit_key AS case_key,
-    e.entry_name || ' x ' || x.exit_name AS case_name,
-    'Generated entry and exit combination case.' AS description,
+    'combo_' || e.entry_key || '__' || x.exit_key ||
+      CASE WHEN c.credit_key = 'no_margin' THEN '' ELSE '__' || c.credit_key END AS case_key,
+    e.entry_name || ' x ' || x.exit_name ||
+      CASE WHEN c.credit_key = 'no_margin' THEN '' ELSE ' x ' || c.credit_name END AS case_name,
+    'Generated entry, exit and credit-filter combination case.' AS description,
     e.entry_rules
       || x.exit_rules
+      || c.credit_rules
       || jsonb_build_object(
             'entry_profile', e.entry_key,
-            'exit_profile', x.exit_key
+            'exit_profile', x.exit_key,
+            'credit_profile', c.credit_key
          ) AS rules
 FROM entry_templates e
 CROSS JOIN exit_templates x
+CROSS JOIN credit_templates c
 ON CONFLICT (case_key) DO UPDATE
 SET
     case_name = EXCLUDED.case_name,

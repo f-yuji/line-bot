@@ -2203,15 +2203,48 @@ def web_settings():
 
 @app.route("/web/virtual-trades")
 def web_virtual_trades():
+    def _exit_date_value(row: dict):
+        return row.get("exit_date") or row.get("sell_date")
+
+    def _is_open_virtual_trade(row: dict) -> bool:
+        return row.get("status") == "open" and not _exit_date_value(row)
+
+    def _is_closed_virtual_trade(row: dict) -> bool:
+        return row.get("status") == "closed" or bool(_exit_date_value(row))
+
+    def _load_virtual_trades(exit_col: str = "exit_date") -> tuple[list[dict], list[dict]]:
+        open_rows = (
+            supabase.table("virtual_trades").select("*")
+            .eq("status", "open")
+            .is_(exit_col, "null")
+            .order("buy_date", desc=True)
+            .execute()
+            .data or []
+        )
+        closed_condition = f"status.eq.closed,{exit_col}.not.is.null"
+        if exit_col != "sell_date":
+            closed_condition += ",sell_date.not.is.null"
+        closed_rows = (
+            supabase.table("virtual_trades").select("*")
+            .or_(closed_condition)
+            .order(exit_col, desc=True)
+            .limit(100)
+            .execute()
+            .data or []
+        )
+        return open_rows, closed_rows
+
     try:
-        open_trades = (
-            supabase.table("virtual_trades").select("*")
-            .eq("status", "open").order("buy_date", desc=True).execute().data or []
-        )
-        closed_trades = (
-            supabase.table("virtual_trades").select("*")
-            .eq("status", "closed").order("sell_date", desc=True).limit(100).execute().data or []
-        )
+        try:
+            open_trades, closed_trades = _load_virtual_trades("exit_date")
+        except Exception as e:
+            # Older virtual_trades schemas use sell_date as the exit date column.
+            logger.warning("virtual_trades exit_date query failed; fallback to sell_date: %s", e)
+            open_trades, closed_trades = _load_virtual_trades("sell_date")
+        open_trades = [t for t in open_trades if _is_open_virtual_trade(t)]
+        closed_trades = [t for t in closed_trades if _is_closed_virtual_trade(t)]
+        closed_ids = {str(t.get("id")) for t in closed_trades if t.get("id")}
+        open_trades = [t for t in open_trades if str(t.get("id")) not in closed_ids]
     except Exception as e:
         logger.error("virtual_trades error: %s", e)
         open_trades, closed_trades = [], []
@@ -2328,6 +2361,14 @@ EXIT_TYPE_LABELS = {
     "atr_trailing": "ATRトレーリング",
 }
 
+CREDIT_PROFILE_LABELS = {
+    "no_margin": "",
+    "margin_le20": "信用倍率20倍以下",
+    "margin_le10": "信用倍率10倍以下",
+    "margin_le5": "信用倍率5倍以下",
+    "short_pressure": "売り残比率10%以上",
+}
+
 
 def _case_rule_summary(rules: dict) -> str:
     entry = ENTRY_PROFILE_LABELS.get(str(rules.get("entry_profile") or ""), "")
@@ -2354,6 +2395,15 @@ def _case_rule_summary(rules: dict) -> str:
         parts.append(f"最大保有 {int(rules.get('max_open_positions') or 0)} 件。")
     if rules.get("max_sector_positions") not in (None, 99):
         parts.append(f"同一セクターは最大 {int(rules.get('max_sector_positions') or 0)} 件。")
+    if rules.get("use_margin_filter"):
+        if rules.get("max_margin_ratio") is not None:
+            parts.append(f"信用倍率は {float(rules.get('max_margin_ratio') or 0):.0f} 倍以下。")
+        if rules.get("min_margin_ratio") is not None:
+            parts.append(f"信用倍率は {float(rules.get('min_margin_ratio') or 0):.1f} 倍以上。")
+        if rules.get("min_short_long_ratio") is not None:
+            parts.append(f"信用売残/買残は {float(rules.get('min_short_long_ratio') or 0) * 100:.0f}% 以上。")
+        if rules.get("require_margin_data"):
+            parts.append("信用残データがある銘柄だけを対象にします。")
 
     exit_type = str(rules.get("exit_type") or "fixed_tp_sl")
     if exit_type == "fixed_tp_sl":
@@ -2412,8 +2462,16 @@ def _decorate_case_test_case(case):
     exit_type = str(rules.get("exit_type") or "fixed_tp_sl")
     entry_profile = str(rules.get("entry_profile") or "")
     exit_profile = str(rules.get("exit_profile") or "")
+    credit_profile = str(rules.get("credit_profile") or "")
     if entry_profile and exit_profile:
-        display_name = f"{ENTRY_PROFILE_LABELS.get(entry_profile, entry_profile)} × {EXIT_PROFILE_LABELS.get(exit_profile, exit_profile)}"
+        name_parts = [
+            ENTRY_PROFILE_LABELS.get(entry_profile, entry_profile),
+            EXIT_PROFILE_LABELS.get(exit_profile, exit_profile),
+        ]
+        credit_label = CREDIT_PROFILE_LABELS.get(credit_profile, credit_profile)
+        if credit_label:
+            name_parts.append(credit_label)
+        display_name = " × ".join(name_parts)
     else:
         display_name = CASE_TEST_LABELS.get(key) or case.get("case_name") or key
     case["display_name"] = display_name
@@ -2421,6 +2479,8 @@ def _decorate_case_test_case(case):
     case["entry_profile"] = entry_profile
     case["entry_label"] = ENTRY_PROFILE_LABELS.get(entry_profile, entry_profile)
     case["exit_profile"] = exit_profile
+    case["credit_profile"] = credit_profile
+    case["credit_label"] = CREDIT_PROFILE_LABELS.get(credit_profile, credit_profile)
     case["exit_type"] = exit_type
     case["exit_label"] = EXIT_PROFILE_LABELS.get(exit_profile) or EXIT_TYPE_LABELS.get(exit_type, exit_type)
     case["display_description"] = _case_rule_summary(rules)
@@ -2594,6 +2654,125 @@ def web_case_test_detail(run_id, case_id):
         rows=rows,
         market_adjustment=_current_market_adjustment(),
     )
+
+
+@app.route("/web/research-db")
+def web_research_db():
+    datasets: list[dict] = []
+    snapshots: list[dict] = []
+    periods: list[dict] = []
+    logs: list[dict] = []
+    try:
+        datasets = (
+            supabase.table("research_datasets")
+            .select("*")
+            .order("updated_at", desc=True)
+            .limit(200)
+            .execute()
+            .data or []
+        )
+        snapshots = (
+            supabase.table("research_case_snapshots")
+            .select("*")
+            .order("total_profit_pct", desc=True)
+            .limit(200)
+            .execute()
+            .data or []
+        )
+        periods = (
+            supabase.table("research_periods")
+            .select("*")
+            .order("period_start", desc=True)
+            .execute()
+            .data or []
+        )
+        logs = (
+            supabase.table("research_import_logs")
+            .select("*")
+            .order("started_at", desc=True)
+            .limit(100)
+            .execute()
+            .data or []
+        )
+    except Exception as e:
+        logger.exception("research db page failed")
+        flash(f"検証データベースの取得に失敗しました: {e}", "warning")
+    return render_template(
+        "web/research_db.html",
+        datasets=datasets,
+        snapshots=snapshots,
+        periods=periods,
+        logs=logs,
+        market_adjustment=_current_market_adjustment(),
+    )
+
+
+@app.route("/web/research-db/register-existing", methods=["POST"])
+def web_research_db_register_existing():
+    try:
+        from services.research_database import register_existing_datasets
+
+        rows = register_existing_datasets(sb=supabase)
+        flash(f"既存データを登録しました: {len(rows)}件", "success")
+    except Exception as e:
+        logger.exception("research db register-existing failed")
+        flash(f"既存データ登録に失敗しました: {e}", "danger")
+    return redirect(url_for("web_research_db"))
+
+
+@app.route("/web/research-db/snapshot-case-results", methods=["POST"])
+def web_research_db_snapshot_case_results():
+    try:
+        run_id = request.form.get("run_id") or ""
+        if not run_id:
+            latest = (
+                supabase.table("trade_case_runs")
+                .select("id")
+                .eq("status", "completed")
+                .order("started_at", desc=True)
+                .limit(1)
+                .execute()
+                .data or []
+            )
+            run_id = str(latest[0].get("id")) if latest else ""
+        if not run_id:
+            flash("保存できる比較テスト実行履歴がありません。", "warning")
+            return redirect(url_for("web_research_db"))
+
+        from services.research_database import snapshot_case_results
+
+        result = snapshot_case_results(run_id, sb=supabase)
+        flash(f"比較テスト結果を保存しました: {result.get('rows')}ケース", "success")
+    except Exception as e:
+        logger.exception("research db snapshot-case-results failed")
+        flash(f"比較テスト結果の保存に失敗しました: {e}", "danger")
+    return redirect(url_for("web_research_db"))
+
+
+@app.route("/web/research-db/add-period", methods=["POST"])
+def web_research_db_add_period():
+    try:
+        payload = {
+            "period_key": (request.form.get("period_key") or "").strip(),
+            "period_name": (request.form.get("period_name") or "").strip(),
+            "regime_type": (request.form.get("regime_type") or "custom").strip(),
+            "period_start": (request.form.get("period_start") or "").strip(),
+            "period_end": (request.form.get("period_end") or "").strip(),
+            "description": (request.form.get("description") or "").strip(),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        if not payload["period_key"] or not payload["period_name"] or not payload["period_start"] or not payload["period_end"]:
+            flash("期間キー、期間名、開始日、終了日は必須です。", "danger")
+            return redirect(url_for("web_research_db"))
+        if datetime.fromisoformat(payload["period_end"]).date() < datetime.fromisoformat(payload["period_start"]).date():
+            flash("終了日は開始日以降にしてください。", "danger")
+            return redirect(url_for("web_research_db"))
+        supabase.table("research_periods").upsert(payload, on_conflict="period_key").execute()
+        flash("相場期間を保存しました。", "success")
+    except Exception as e:
+        logger.exception("research db add-period failed")
+        flash(f"相場期間の保存に失敗しました: {e}", "danger")
+    return redirect(url_for("web_research_db"))
 
 
 @app.route("/admin/models")

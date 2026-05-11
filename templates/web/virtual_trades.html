@@ -169,7 +169,7 @@
           <td class="code">{{ t.code }}</td>
           <td class="name">{{ t.name or "" }}</td>
           <td class="muted num">{{ t.buy_date | jst("%Y-%m-%d") }}</td>
-          <td class="muted num">{{ t.sell_date | jst("%Y-%m-%d") }}</td>
+          <td class="muted num">{{ (t.exit_date or t.sell_date) | jst("%Y-%m-%d") }}</td>
           <td class="right num">{{ "{:,.0f}".format(t.buy_price) }}円</td>
           <td class="right num">{{ "{:,.0f}".format(t.sell_price) if t.sell_price is not none else "—" }}円</td>
           <td class="right num {% if (pnl or 0) >= 0 %}up-text{% else %}down-text{% endif %}">

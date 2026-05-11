@@ -73,6 +73,11 @@
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3v18h18"/><path d="M7 15l3-3 3 2 5-7"/><path d="M18 7h-4"/></svg>
       <span>比較テスト</span>
     </a>
+    <div class="side-section">Research</div>
+    <a class="side-link {% if request.path.startswith('/web/research-db') %}active{% endif %}" href="/web/research-db">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v6c0 1.7 3.6 3 8 3s8-1.3 8-3V5"/><path d="M4 11v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6"/></svg>
+      <span>検証データベース</span>
+    </a>
     <div class="side-section">System</div>
     <a class="side-link {% if request.path in ['/web/models', '/admin/models'] %}active{% endif %}" href="/web/models">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v20"/><path d="M2 12h20"/><circle cx="12" cy="12" r="4"/></svg>

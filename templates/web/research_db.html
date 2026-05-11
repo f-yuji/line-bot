@@ -1,0 +1,194 @@
+{% extends "web/base.html" %}
+{% block title %}検証データベース{% endblock %}
+{% block page_label %}RESEARCH DB{% endblock %}
+
+{% macro pct(v) -%}
+  {%- if v is none -%}<span class="muted">-</span>
+  {%- else -%}
+    {%- set fv = v|float -%}
+    {%- set cls = 'up-text' if fv > 0 else ('down-text' if fv < 0 else 'muted') -%}
+    <span class="{{ cls }} num">{{ "%+.2f"|format(fv) }}%</span>
+  {%- endif -%}
+{%- endmacro %}
+
+{% macro num(v) -%}
+  {%- if v is none -%}<span class="muted">-</span>
+  {%- else -%}<span class="num">{{ "{:,.0f}".format(v|float) }}</span>
+  {%- endif -%}
+{%- endmacro %}
+
+{% block content %}
+<div class="page-head">
+  <h1 class="page-title">検証データベース<small>過去検証データ管理</small></h1>
+</div>
+
+<div class="panel" style="margin-bottom:14px">
+  <div class="panel-head">
+    <div class="panel-title">操作</div>
+  </div>
+  <div style="padding:0 16px 16px;display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+    <form method="post" action="/web/research-db/register-existing" class="js-disable-on-submit">
+      <button class="btn primary sm" type="submit">既存データを登録</button>
+    </form>
+    <form method="post" action="/web/research-db/snapshot-case-results" class="js-disable-on-submit" style="display:flex;gap:8px;align-items:center">
+      <input class="input" name="run_id" placeholder="run_id 未指定なら最新" style="min-width:220px">
+      <button class="btn sm" type="submit">比較結果を保存</button>
+    </form>
+    <span class="muted" style="font-size:11px">重複する dataset_key は作らず、ログに skipped として残します。</span>
+  </div>
+</div>
+
+<div class="section-h">データセット一覧</div>
+<div class="panel" style="margin-bottom:14px">
+  <div class="table-wrap">
+    <table class="tbl">
+      <thead>
+        <tr>
+          <th>データ名</th>
+          <th>タイプ</th>
+          <th>期間</th>
+          <th class="right">件数</th>
+          <th>状態</th>
+          <th>元テーブル</th>
+          <th>作成</th>
+          <th>更新</th>
+          <th>メモ</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for d in datasets %}
+          <tr>
+            <td>
+              <strong>{{ d.dataset_name }}</strong>
+              <div class="muted" style="font-size:10px">{{ d.dataset_key }}</div>
+            </td>
+            <td>{{ d.dataset_type }}</td>
+            <td>{{ d.period_start or '-' }} - {{ d.period_end or '-' }}</td>
+            <td class="right">{{ num(d.row_count) }}</td>
+            <td><span class="badge">{{ d.status }}</span></td>
+            <td>{{ d.source_table or '-' }}</td>
+            <td>{{ d.created_at | jst }}</td>
+            <td>{{ d.updated_at | jst }}</td>
+            <td class="muted">{{ d.memo or '-' }}</td>
+          </tr>
+        {% else %}
+          <tr><td colspan="9" class="empty">まだ登録データがありません。</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="section-h">ケース結果スナップショット</div>
+<div class="panel" style="margin-bottom:14px">
+  <div class="table-wrap">
+    <table class="tbl">
+      <thead>
+        <tr>
+          <th>ケース名</th>
+          <th>期間</th>
+          <th class="right">件数</th>
+          <th class="right">勝率</th>
+          <th class="right">期待値</th>
+          <th class="right">総利回り</th>
+          <th class="right">最大下落</th>
+          <th class="right">平均保有</th>
+          <th>保存日時</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for s in snapshots %}
+          <tr>
+            <td>
+              <strong>{{ s.case_name }}</strong>
+              <div class="muted" style="font-size:10px">{{ s.case_key }}</div>
+            </td>
+            <td>{{ s.period_start }} - {{ s.period_end }}</td>
+            <td class="right">{{ num(s.entry_count) }}</td>
+            <td class="right">{{ pct(s.win_rate) }}</td>
+            <td class="right">{{ pct(s.expected_value_pct) }}</td>
+            <td class="right">{{ pct(s.total_profit_pct) }}</td>
+            <td class="right">{{ pct(s.max_drawdown_pct) }}</td>
+            <td class="right">{{ "%.1f日"|format(s.avg_holding_days|float) if s.avg_holding_days is not none else '-' }}</td>
+            <td>{{ s.created_at | jst }}</td>
+          </tr>
+        {% else %}
+          <tr><td colspan="9" class="empty">保存済みの比較結果はまだありません。</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="section-h">相場期間</div>
+<div class="panel" style="margin-bottom:14px">
+  <form method="post" action="/web/research-db/add-period" class="js-disable-on-submit" style="padding:14px 16px;display:grid;grid-template-columns:repeat(6,minmax(120px,1fr));gap:8px;align-items:end">
+    <label><span class="muted" style="font-size:11px">期間キー</span><input class="input" name="period_key" placeholder="2022_bear" required></label>
+    <label><span class="muted" style="font-size:11px">期間名</span><input class="input" name="period_name" placeholder="2022 下落相場" required></label>
+    <label><span class="muted" style="font-size:11px">種別</span><input class="input" name="regime_type" placeholder="bear" value="custom" required></label>
+    <label><span class="muted" style="font-size:11px">開始日</span><input class="input" type="date" name="period_start" required></label>
+    <label><span class="muted" style="font-size:11px">終了日</span><input class="input" type="date" name="period_end" required></label>
+    <label><span class="muted" style="font-size:11px">説明</span><input class="input" name="description" placeholder="検証メモ"></label>
+    <button class="btn sm" type="submit" style="grid-column:1 / -1;width:max-content">期間を保存</button>
+  </form>
+  <div class="table-wrap">
+    <table class="tbl">
+      <thead>
+        <tr><th>期間名</th><th>種別</th><th>開始日</th><th>終了日</th><th>説明</th></tr>
+      </thead>
+      <tbody>
+        {% for p in periods %}
+          <tr>
+            <td><strong>{{ p.period_name }}</strong><div class="muted" style="font-size:10px">{{ p.period_key }}</div></td>
+            <td>{{ p.regime_type }}</td>
+            <td>{{ p.period_start }}</td>
+            <td>{{ p.period_end }}</td>
+            <td class="muted">{{ p.description or '-' }}</td>
+          </tr>
+        {% else %}
+          <tr><td colspan="5" class="empty">期間定義がありません。</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="section-h">データ取得・登録ログ</div>
+<div class="panel">
+  <div class="table-wrap">
+    <table class="tbl">
+      <thead>
+        <tr>
+          <th>ジョブ</th>
+          <th>状態</th>
+          <th class="right">追加</th>
+          <th class="right">更新</th>
+          <th class="right">スキップ</th>
+          <th>開始</th>
+          <th>終了</th>
+          <th>エラー</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for l in logs %}
+          <tr>
+            <td>
+              {{ l.job_type }}
+              <div class="muted" style="font-size:10px">{{ l.dataset_key or '-' }}</div>
+            </td>
+            <td><span class="badge">{{ l.status }}</span></td>
+            <td class="right">{{ num(l.rows_inserted) }}</td>
+            <td class="right">{{ num(l.rows_updated) }}</td>
+            <td class="right">{{ num(l.rows_skipped) }}</td>
+            <td>{{ l.started_at | jst }}</td>
+            <td>{{ l.finished_at | jst }}</td>
+            <td class="muted">{{ l.error_message or '-' }}</td>
+          </tr>
+        {% else %}
+          <tr><td colspan="8" class="empty">ログはまだありません。</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

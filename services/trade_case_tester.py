@@ -11,6 +11,7 @@ import math
 import os
 from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
+from bisect import bisect_right
 from pathlib import Path
 from typing import Any
 
@@ -201,6 +202,66 @@ def _score_candidates(rows: list[dict], bundle: dict | None) -> list[dict]:
     return rows
 
 
+def _load_weekly_margin_rows(sb, period_start: date, period_end: date) -> list[dict]:
+    cols = (
+        "id,code,date,short_margin_outstanding,long_margin_outstanding,"
+        "margin_ratio,short_margin_change,long_margin_change"
+    )
+    start_s = (period_start - timedelta(days=45)).isoformat()
+    end_s = period_end.isoformat()
+
+    def query(last_id: int):
+        q = (
+            sb.table("stock_weekly_margin_interest")
+            .select(cols)
+            .gte("date", start_s)
+            .lte("date", end_s)
+            .order("id")
+        )
+        return q.gt("id", last_id) if last_id else q
+
+    try:
+        rows = _fetch_all(query, label="weekly_margin")
+        logger.info("[case_test] loaded weekly margin rows=%d", len(rows))
+        return rows
+    except Exception as e:
+        logger.warning("[case_test] weekly margin load failed: %s", e)
+        return []
+
+
+def _attach_weekly_margin(candidates: list[dict], margin_rows: list[dict]) -> None:
+    by_code: dict[str, list[tuple[date, dict]]] = defaultdict(list)
+    for row in margin_rows:
+        code = str(row.get("code") or "")
+        if not code:
+            continue
+        try:
+            d = _to_date(row.get("date"))
+        except Exception:
+            continue
+        by_code[code].append((d, row))
+
+    index: dict[str, tuple[list[date], list[dict]]] = {}
+    for code, items in by_code.items():
+        items.sort(key=lambda x: x[0])
+        index[code] = ([d for d, _ in items], [r for _, r in items])
+
+    for row in candidates:
+        code = str(row.get("code") or "")
+        trade_date = _to_date(row.get("trade_date"))
+        dates, rows = index.get(code, ([], []))
+        pos = bisect_right(dates, trade_date) - 1
+        if pos < 0:
+            continue
+        margin = rows[pos]
+        row["margin_date"] = margin.get("date")
+        row["margin_short_outstanding"] = _to_float(margin.get("short_margin_outstanding"), None)
+        row["margin_long_outstanding"] = _to_float(margin.get("long_margin_outstanding"), None)
+        row["margin_ratio"] = _to_float(margin.get("margin_ratio"), None)
+        row["margin_short_change"] = _to_float(margin.get("short_margin_change"), None)
+        row["margin_long_change"] = _to_float(margin.get("long_margin_change"), None)
+
+
 def _load_candidates(sb, period_start: date, period_end: date) -> list[dict]:
     snap_cols = sorted(set(
         [
@@ -264,6 +325,7 @@ def _load_candidates(sb, period_start: date, period_end: date) -> list[dict]:
                 merged[key] = value
         rows.append(merged)
     logger.info("[case_test] loaded candidate rows=%d", len(rows))
+    _attach_weekly_margin(rows, _load_weekly_margin_rows(sb, period_start, period_end))
     return _score_candidates(rows, _active_model_bundle(sb))
 
 
@@ -326,6 +388,34 @@ def _adjusted_rules(base_rules: dict, sample_row: dict | None = None) -> dict:
         if regime_rules.get("min_ai_score_add") is not None:
             rules["min_ai_score"] = float(rules.get("min_ai_score") or 0) + float(regime_rules["min_ai_score_add"])
     return rules
+
+
+def _passes_credit_rules(row: dict, rules: dict) -> bool:
+    if not rules.get("use_margin_filter"):
+        return True
+
+    margin_ratio = _to_float(row.get("margin_ratio"), None)
+    long_out = _to_float(row.get("margin_long_outstanding"), None)
+    short_out = _to_float(row.get("margin_short_outstanding"), None)
+
+    if rules.get("require_margin_data") and margin_ratio is None:
+        return False
+    if margin_ratio is None:
+        return True
+
+    if rules.get("max_margin_ratio") is not None and margin_ratio > float(rules["max_margin_ratio"]):
+        return False
+    if rules.get("min_margin_ratio") is not None and margin_ratio < float(rules["min_margin_ratio"]):
+        return False
+
+    short_long_ratio = (short_out / long_out) if long_out and short_out is not None else None
+    if rules.get("min_short_long_ratio") is not None:
+        if short_long_ratio is None or short_long_ratio < float(rules["min_short_long_ratio"]):
+            return False
+    if rules.get("max_short_long_ratio") is not None:
+        if short_long_ratio is not None and short_long_ratio > float(rules["max_short_long_ratio"]):
+            return False
+    return True
 
 
 def _price_path(row: dict, rules: dict) -> tuple[float | None, date | None, list[dict]]:
@@ -675,6 +765,8 @@ def _simulate_case(run_id: str, case: dict, candidates: list[dict]) -> tuple[lis
             continue
         if (_to_float(row.get("signal_probability"), 0) or 0) < min_ai:
             continue
+        if not _passes_credit_rules(row, rules):
+            continue
         by_date[str(row.get("trade_date"))].append(row)
 
     open_positions: list[dict] = []
@@ -730,6 +822,10 @@ def _simulate_case(run_id: str, case: dict, candidates: list[dict]) -> tuple[lis
                 "market_regime_label": row.get("market_regime_label"),
                 "market_nikkei_pct": row.get("market_nikkei_pct"),
                 "market_topix_pct": row.get("market_topix_pct"),
+                "margin_date": row.get("margin_date"),
+                "margin_ratio": row.get("margin_ratio"),
+                "margin_long_outstanding": row.get("margin_long_outstanding"),
+                "margin_short_outstanding": row.get("margin_short_outstanding"),
                 **exit_data,
             }
             simulations.append(sim)
@@ -873,6 +969,12 @@ def run_trade_case_test(
             "status": "completed",
             "finished_at": datetime.now(timezone.utc).isoformat(),
         }).eq("id", run_id).execute()
+        try:
+            from services.research_database import snapshot_case_results
+
+            snapshot_case_results(str(run_id), sb=sb)
+        except Exception:
+            logger.exception("[research_db] snapshot failed run_id=%s", run_id)
         logger.info("[case_test] completed run_id=%s cases=%d", run_id, len(cases))
         return {"run_id": run_id, "cases": len(cases), "candidates": len(candidates)}
     except Exception as e:
