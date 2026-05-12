@@ -1815,58 +1815,6 @@ def get_watchlist_counts(rows: list[dict]) -> dict:
     }
 
 
-def _hide_settled_signal_rows(rows: list[dict]) -> list[dict]:
-    watchlist_ids = [r.get("id") for r in rows if r.get("id")]
-    feature_ids = [r.get("feature_snapshot_id") for r in rows if r.get("feature_snapshot_id")]
-    closed_watchlist_ids: set[str] = set()
-    closed_feature_ids: set[str] = set()
-    try:
-        if watchlist_ids:
-            vt_rows = (
-                supabase.table("virtual_trades")
-                .select("watchlist_id,feature_snapshot_id,status")
-                .eq("status", "closed")
-                .in_("watchlist_id", watchlist_ids[:500])
-                .limit(1000)
-                .execute()
-                .data or []
-            )
-            closed_watchlist_ids.update(str(r.get("watchlist_id")) for r in vt_rows if r.get("watchlist_id"))
-            closed_feature_ids.update(str(r.get("feature_snapshot_id")) for r in vt_rows if r.get("feature_snapshot_id"))
-        if feature_ids:
-            vt_rows = (
-                supabase.table("virtual_trades")
-                .select("watchlist_id,feature_snapshot_id,status")
-                .eq("status", "closed")
-                .in_("feature_snapshot_id", feature_ids[:500])
-                .limit(1000)
-                .execute()
-                .data or []
-            )
-            closed_watchlist_ids.update(str(r.get("watchlist_id")) for r in vt_rows if r.get("watchlist_id"))
-            closed_feature_ids.update(str(r.get("feature_snapshot_id")) for r in vt_rows if r.get("feature_snapshot_id"))
-    except Exception as e:
-        logger.warning("settled signal lookup failed: %s", e)
-        return rows
-
-    filtered = []
-    hidden = 0
-    for row in rows:
-        if (
-            row.get("status") == "rebound_signal"
-            and (
-                str(row.get("id")) in closed_watchlist_ids
-                or str(row.get("feature_snapshot_id")) in closed_feature_ids
-            )
-        ):
-            hidden += 1
-            continue
-        filtered.append(row)
-    if hidden:
-        logger.info("hide settled signal rows: %d", hidden)
-    return filtered
-
-
 @app.route("/web/")
 @app.route("/web/dashboard")
 def web_dashboard():
@@ -1892,7 +1840,6 @@ def web_dashboard():
             .data or []
         )
         rows = [_with_ai_priority_stage(r, market_adjustment) for r in rows]
-        rows = _hide_settled_signal_rows(rows)
     except Exception as e:
         logger.error("dashboard error: %s", e)
         rows = []
@@ -1959,8 +1906,9 @@ def web_refresh_prices():
     try:
         open_trades = (
             supabase.table("virtual_trades")
-            .select("id,code,market,buy_price,quantity,status")
+            .select("id,code,market,buy_price,quantity,status,sell_date")
             .eq("status", "open")
+            .is_("sell_date", "null")
             .limit(200)
             .execute()
             .data or []
@@ -2062,7 +2010,6 @@ def web_watchlist():
             q = q.eq("status", status_filter)
         rows = q.limit(200).execute().data or []
         rows = [_with_ai_priority_stage(r, market_adjustment) for r in rows]
-        rows = _hide_settled_signal_rows(rows)
         rows.sort(
             key=lambda r: (
                 STAGE_RANK.get(r.get("signal_stage"), 0),
@@ -2115,7 +2062,6 @@ def web_signals():
             .data or []
         )
         rows = [_with_ai_priority_stage(r, market_adjustment) for r in rows]
-        rows = _hide_settled_signal_rows(rows)
     except Exception as e:
         logger.error("signals error: %s", e)
         rows = []
@@ -2308,6 +2254,70 @@ def web_virtual_trades():
         open_unrealized_pnl_total=open_unrealized_pnl_total,
         open_unrealized_pct_total=open_unrealized_pct_total,
         market_adjustment=_current_market_adjustment(),
+    )
+
+
+@app.route("/web/virtual-trades/performance")
+def web_virtual_trade_performance():
+    from services.virtual_trade_performance import aggregate, open_summary, top_card_summary
+
+    period = request.args.get("period", "weekly")
+    if period not in ("daily", "weekly", "monthly"):
+        period = "weekly"
+
+    try:
+        all_rows = (
+            supabase.table("virtual_trades")
+            .select("*")
+            .order("buy_date", desc=True)
+            .execute()
+            .data or []
+        )
+    except Exception as e:
+        logger.error("[virtual_trade_performance] load failed: %s", e)
+        all_rows = []
+
+    rows = aggregate(all_rows, period)
+    open_sum = open_summary(all_rows)
+    top = top_card_summary(all_rows)
+
+    return render_template(
+        "web/virtual_trade_performance.html",
+        rows=rows,
+        period=period,
+        open_sum=open_sum,
+        top=top,
+    )
+
+
+@app.route("/web/virtual-trades/performance/detail")
+def web_virtual_trade_performance_detail():
+    from services.virtual_trade_performance import detail_trades
+
+    period = request.args.get("period", "weekly")
+    period_start = request.args.get("period_start", "")
+    period_end = request.args.get("period_end", "")
+
+    try:
+        all_rows = (
+            supabase.table("virtual_trades")
+            .select("*")
+            .order("buy_date", desc=True)
+            .execute()
+            .data or []
+        )
+    except Exception as e:
+        logger.error("[virtual_trade_performance_detail] load failed: %s", e)
+        all_rows = []
+
+    trades = detail_trades(all_rows, period_start, period_end)
+
+    return render_template(
+        "web/virtual_trade_performance_detail.html",
+        trades=trades,
+        period=period,
+        period_start=period_start,
+        period_end=period_end,
     )
 
 

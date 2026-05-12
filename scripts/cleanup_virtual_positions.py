@@ -143,6 +143,7 @@ def run(args: argparse.Namespace) -> None:
         sb.table("virtual_trades")
         .select("*")
         .eq("status", "open")
+        .is_("sell_date", "null")
         .execute()
         .data or []
     )

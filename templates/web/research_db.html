@@ -182,7 +182,26 @@
             <td class="right">{{ num(l.rows_skipped) }}</td>
             <td>{{ l.started_at | jst }}</td>
             <td>{{ l.finished_at | jst }}</td>
-            <td class="muted">{{ l.error_message or '-' }}</td>
+            <td class="muted">
+              {% if l.error_message %}
+                {{ l.error_message }}
+              {% elif l.params %}
+                {% set p = l.params %}
+                {% if p.latest_feature_date %}
+                  {{ p.latest_feature_date }}
+                  / features {{ p.feature_snapshots or 0 }}
+                  / candidates {{ p.drop_tradeable_candidates or 0 }}
+                  / open {{ p.open_virtual_trades or 0 }}
+                  {% if p.ai_summary %}
+                    <div style="margin-top:4px;white-space:normal;max-width:520px">{{ p.ai_summary }}</div>
+                  {% endif %}
+                {% else %}
+                  -
+                {% endif %}
+              {% else %}
+                -
+              {% endif %}
+            </td>
           </tr>
         {% else %}
           <tr><td colspan="8" class="empty">ログはまだありません。</td></tr>

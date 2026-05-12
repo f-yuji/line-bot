@@ -406,11 +406,9 @@ J-Quantsは原則 `JQUANTS_REFRESH_TOKEN` を使います。V2クライアント
 
 ```text
 08:30 ニューススコア生成
-09:00 market_regime更新
-15:30 stock_feature_snapshots生成
-15:50 ニューススコアとmarket_regimeをfeaturesへ反映
-16:00 AI予測
-18:00 virtual_trades確認
+09:00 monitor-reboundで朝チェック
+12:00 monitor-reboundで昼チェック
+16:30 GitHub Actionsで決済チェック、stock_feature_snapshots生成、AI予測
 週末 LightGBM再学習
 ```
 

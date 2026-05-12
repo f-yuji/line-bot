@@ -437,7 +437,14 @@ def _entry_limit_state(sb) -> tuple[int, int, dict[str, int]]:
     today_entries = 0
     sector_counts: dict[str, int] = {}
     try:
-        rows = sb.table("virtual_trades").select("id,sector,status").eq("status", "open").execute().data or []
+        rows = (
+            sb.table("virtual_trades")
+            .select("id,sector,status,sell_date")
+            .eq("status", "open")
+            .is_("sell_date", "null")
+            .execute()
+            .data or []
+        )
         open_count = len(rows)
         for row in rows:
             sector = str(row.get("sector") or "unknown")
@@ -473,6 +480,7 @@ def _create_virtual_trade(sb, snapshot: dict, watch: dict, result: dict, *, dry_
             .select("id")
             .eq("code", snapshot["code"])
             .eq("status", "open")
+            .is_("sell_date", "null")
             .limit(1)
             .execute()
             .data or []

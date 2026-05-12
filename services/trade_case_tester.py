@@ -913,6 +913,142 @@ def _build_result(run_id: str, case_id: str, simulations: list[dict], max_concur
     }
 
 
+# ─── Readonly helpers (offset pagination + ID-batch loading) ─────────────────
+
+def _fetch_all_by_offset(query_factory, *, page_size: int = 1000, label: str = "rows") -> list[dict]:
+    """Offset pagination ordered by trade_date. Avoids timeout from cursor on mixed-date IDs."""
+    rows: list[dict] = []
+    offset = 0
+    while True:
+        data = query_factory().range(offset, offset + page_size - 1).execute().data or []
+        rows.extend(data)
+        if len(data) < page_size:
+            break
+        offset += page_size
+        if len(rows) % 10000 == 0:
+            logger.info("[case_test] load %s: %d rows", label, len(rows))
+    return rows
+
+
+def _fetch_snapshots_by_ids(sb, ids: list[int], snap_cols: list[str], *, batch_size: int = 500) -> list[dict]:
+    """Batch load snapshots by ID set. Bypasses slow composite-filter date+flag scans."""
+    rows: list[dict] = []
+    for i in range(0, len(ids), batch_size):
+        batch = ids[i : i + batch_size]
+        data = (
+            sb.table("stock_feature_snapshots")
+            .select(",".join(snap_cols))
+            .in_("id", batch)
+            .execute()
+            .data or []
+        )
+        rows.extend(data)
+    return rows
+
+
+def _load_candidates_v2(sb, period_start: date, period_end: date) -> list[dict]:
+    """Timeout-safe loader: labels first (offset pagination) → snapshot IDs → batch load."""
+    snap_cols = sorted(set(
+        [
+            "id", "trade_date", "code", "name", "market", "sector", "close",
+            "is_drop_candidate", "is_tradeable", "drop_pct", "rsi14",
+            "volume_ratio_20d", "bad_news_score", "market_shock_score",
+        ]
+        + list(NUMERIC_FEATURES) + list(BOOL_FEATURES) + list(CATEGORICAL_FEATURES)
+    ))
+    future_cols: list[str] = []
+    for day in range(1, MAX_FUTURE_DAYS + 1):
+        future_cols += [f"future_high_{day}d", f"future_low_{day}d", f"future_close_{day}d"]
+    label_cols = ["id", "feature_snapshot_id", "trade_date", "code", "entry_price"] + future_cols
+    start_s = period_start.isoformat()
+    end_s = period_end.isoformat()
+
+    def label_query():
+        return (
+            sb.table("stock_rebound_labels")
+            .select(",".join(label_cols))
+            .gte("trade_date", start_s)
+            .lte("trade_date", end_s)
+            .not_.is_("future_high_5d", "null")
+            .not_.is_("future_low_5d", "null")
+            .order("trade_date")
+        )
+
+    labels = _fetch_all_by_offset(label_query, label="labels")
+    logger.info("[case_test] v2 labels loaded rows=%d", len(labels))
+
+    snap_ids = [int(r["feature_snapshot_id"]) for r in labels if r.get("feature_snapshot_id")]
+    if not snap_ids:
+        logger.warning("[case_test] v2 no labels for period %s..%s", start_s, end_s)
+        return []
+
+    snapshots = _fetch_snapshots_by_ids(sb, snap_ids, snap_cols)
+    logger.info("[case_test] v2 snapshots loaded rows=%d", len(snapshots))
+
+    snap_by_id = {
+        str(s["id"]): s
+        for s in snapshots
+        if s.get("is_drop_candidate") and s.get("is_tradeable")
+    }
+
+    rows: list[dict] = []
+    for label in labels:
+        snap = snap_by_id.get(str(label.get("feature_snapshot_id")))
+        if not snap:
+            continue
+        merged = dict(snap)
+        for key, value in label.items():
+            if key in {"id", "code", "trade_date"}:
+                merged[f"label_{key}"] = value
+            else:
+                merged[key] = value
+        rows.append(merged)
+
+    logger.info("[case_test] v2 merged candidate rows=%d", len(rows))
+    _attach_weekly_margin(rows, _load_weekly_margin_rows(sb, period_start, period_end))
+    return _score_candidates(rows, _active_model_bundle(sb))
+
+
+def run_trade_case_test_readonly(
+    period_start: str | date,
+    period_end: str | date,
+    case_keys: list[str] | None = None,
+    sb=None,
+) -> tuple[list[dict], dict[str, list[dict]], dict[str, dict]]:
+    """Read-only variant: no 90-day limit, no DB writes.
+
+    Returns (cases, sims_by_case_key, results_by_case_key).
+    """
+    sb = sb or _build_supabase()
+    start = _to_date(period_start)
+    end = _to_date(period_end)
+    if end < start:
+        raise ValueError("period_end must be after period_start")
+
+    run_id = f"readonly_{start.isoformat()}_{end.isoformat()}"
+    logger.info("[case_test] readonly start period=%s..%s", start, end)
+
+    q = sb.table("trade_case_definitions").select("*").eq("is_enabled", True).order("case_key")
+    if case_keys:
+        q = q.in_("case_key", case_keys)
+    cases = q.execute().data or []
+
+    candidates = _load_candidates_v2(sb, start, end)
+    logger.info("[case_test] readonly candidates=%d cases=%d", len(candidates), len(cases))
+
+    sims_by_case: dict[str, list[dict]] = {}
+    results_by_case: dict[str, dict] = {}
+    for case in cases:
+        case_key = str(case.get("case_key") or case.get("id"))
+        sims, result = _simulate_case(run_id, case, candidates)
+        sims_by_case[case_key] = sims
+        results_by_case[case_key] = result
+
+    return cases, sims_by_case, results_by_case
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+
 def _insert_batch(sb, table: str, rows: list[dict], batch_size: int = 500) -> None:
     for i in range(0, len(rows), batch_size):
         sb.table(table).insert(rows[i:i + batch_size]).execute()

@@ -27,7 +27,27 @@
       "Bash(Select-Object -First 5)",
       "Bash(git -C \"c:\\\\Users\\\\f-yuj\\\\dev\\\\line_bot\" diff --stat HEAD)",
       "Bash(Get-ChildItem -Recurse -Directory)",
-      "Bash(Select-Object -ExpandProperty FullName)"
+      "Bash(Select-Object -ExpandProperty FullName)",
+      "Bash(python scripts/check_scenario_data.py)",
+      "Bash(python -c \"import scripts.backtest_scenarios; print\\('import OK'\\)\")",
+      "Bash(python scripts/backtest_scenarios.py)",
+      "Bash(python -c \"import pandas, numpy, joblib; print\\('all OK'\\)\")",
+      "Bash(where python *)",
+      "Bash(C:\\\\Users\\\\f-yuj\\\\AppData\\\\Local\\\\Python\\\\bin\\\\python.exe -c \"import pandas, numpy, joblib; print\\('all OK'\\)\")",
+      "PowerShell($py = \"C:\\\\Users\\\\f-yuj\\\\AppData\\\\Local\\\\Python\\\\bin\\\\python.exe\"; if \\(Test-Path $py\\) { & $py -c \"import pandas; print\\('OK'\\)\" } else { \"not found\" })",
+      "PowerShell(& \"C:\\\\Users\\\\f-yuj\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python312\\\\python.exe\" -c \"import pandas, numpy, joblib, supabase; print\\('all OK'\\)\" 2>&1)",
+      "Bash(pip list *)",
+      "Bash(python -c \"import sys; print\\(sys.executable\\)\")",
+      "Bash(python -c \"import sys; [print\\(p\\) for p in sys.path]\")",
+      "Bash(/c/Users/f-yuj/dev/line_bot/venv/Scripts/python.exe -c \"import pandas, numpy, joblib; print\\('all OK'\\)\")",
+      "Bash(venv/Scripts/python.exe scripts/backtest_scenarios.py)",
+      "Bash(venv/Scripts/python.exe -c \"from services.trade_case_tester import run_trade_case_test_readonly, _load_candidates_v2, _fetch_all_by_offset, _fetch_snapshots_by_ids; print\\('imports OK'\\)\")",
+      "Bash(venv/Scripts/python.exe -c \"import scripts.backtest_regimes; print\\('module OK'\\)\")",
+      "Bash(venv/Scripts/python.exe scripts/backtest_regimes.py --scenario custom_recent)",
+      "Bash(Get-ChildItem -Path \"c:\\\\Users\\\\f-yuj\\\\dev\\\\line_bot\" -Recurse -Name -Filter \"*.py\")",
+      "Bash(Select-String \"app\")",
+      "Bash(grep -E \"\\\\.html$|\\\\.css$\")",
+      "Bash(venv/Scripts/python.exe -c ' *)"
     ]
   }
 }

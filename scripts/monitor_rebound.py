@@ -622,6 +622,7 @@ def _create_virtual_trade(
             .select("id")
             .eq("code", code)
             .eq("status", "open")
+            .is_("sell_date", "null")
             .execute()
         )
         if existing.data:
@@ -692,7 +693,14 @@ def _entry_limit_state(now_utc: datetime) -> tuple[int, int, dict[str, int]]:
     today_entries = 0
     sector_counts: dict[str, int] = {}
     try:
-        rows = supabase.table("virtual_trades").select("id,sector,status").eq("status", "open").execute().data or []
+        rows = (
+            supabase.table("virtual_trades")
+            .select("id,sector,status,sell_date")
+            .eq("status", "open")
+            .is_("sell_date", "null")
+            .execute()
+            .data or []
+        )
         open_count = len(rows)
         for row in rows:
             sector = str(row.get("sector") or "unknown")
@@ -775,7 +783,13 @@ def _create_ranked_virtual_trades(
 
 def _manage_virtual_trades(cfg: dict, now_utc: datetime, *, dry_run: bool = False) -> None:
     try:
-        res = supabase.table("virtual_trades").select("*").eq("status", "open").execute()
+        res = (
+            supabase.table("virtual_trades")
+            .select("*")
+            .eq("status", "open")
+            .is_("sell_date", "null")
+            .execute()
+        )
         open_trades = res.data or []
     except Exception as e:
         logger.error("virtual_trades fetch failed: %s", e)

@@ -149,7 +149,14 @@ def run(args: argparse.Namespace) -> None:
     if not HAS_DEPS:
         raise RuntimeError("pandas and yfinance are required")
     sb = _build_supabase()
-    rows = sb.table("virtual_trades").select("*").eq("status", "open").execute().data or []
+    rows = (
+        sb.table("virtual_trades")
+        .select("*")
+        .eq("status", "open")
+        .is_("sell_date", "null")
+        .execute()
+        .data or []
+    )
     logger.info("open virtual trades=%d", len(rows))
     checked = closed = skipped = errors = 0
     for trade in rows:

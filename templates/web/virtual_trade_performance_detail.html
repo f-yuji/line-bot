@@ -1,0 +1,104 @@
+{% extends "web/base.html" %}
+{% block title %}仮想売買成績 詳細{% endblock %}
+{% block page_label %}仮想売買成績 <small style="font-size:10px;color:var(--text-dim);font-weight:400">DETAIL</small>{% endblock %}
+
+{% macro pct(v) -%}
+  {%- if v is none -%}<span class="muted">—</span>
+  {%- else -%}
+    {%- set cls = 'up-text' if v > 0 else ('down-text' if v < 0 else 'muted') -%}
+    <span class="{{ cls }} num">{{ "{:+.2f}".format(v) }}%</span>
+  {%- endif -%}
+{%- endmacro %}
+
+{% macro yen(v) -%}
+  {%- if v is none -%}<span class="muted">—</span>
+  {%- else -%}
+    {%- set cls = 'up-text' if v > 0 else ('down-text' if v < 0 else 'muted') -%}
+    <span class="{{ cls }} num">{{ "{:+,.0f}".format(v) }}円</span>
+  {%- endif -%}
+{%- endmacro %}
+
+{% block content %}
+{# ── パンくず ── #}
+<div style="margin-bottom:14px;font-size:11px;color:var(--text-dim)">
+  <a href="/web/virtual-trades/performance?period={{ period }}" style="color:var(--accent);text-decoration:none">← 成績一覧に戻る</a>
+  <span style="margin:0 6px">/</span>
+  <span>{{ period_start }} 〜 {{ period_end }}</span>
+</div>
+
+<div class="panel">
+  <div class="panel-head">
+    <div class="panel-title">
+      決済一覧
+      <span class="muted" style="font-weight:400;font-size:10px">{{ period_start }} 〜 {{ period_end }}</span>
+    </div>
+    <div style="font-size:11px;color:var(--text-dim)">{{ trades|length }}件</div>
+  </div>
+
+  {% if trades %}
+  <div style="overflow-x:auto">
+  <table class="tbl">
+    <thead>
+      <tr>
+        <th>コード</th>
+        <th>銘柄名</th>
+        <th class="right">entry_date</th>
+        <th class="right">exit_date</th>
+        <th class="right">買値</th>
+        <th class="right">売値</th>
+        <th class="right">損益%</th>
+        <th class="right">損益円</th>
+        <th class="right">保有日数</th>
+        <th>決済理由</th>
+        <th>ステージ</th>
+        <th class="right">AIスコア</th>
+        <th>地合い</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for t in trades %}
+      <tr>
+        <td class="code">{{ t.code }}</td>
+        <td class="name" style="max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ t.name or "—" }}</td>
+        <td class="right num" style="font-size:11px">{{ (t.buy_date or "")[:10] or "—" }}</td>
+        <td class="right num" style="font-size:11px">{{ (t.sell_date or "")[:10] or "—" }}</td>
+        <td class="right num">{{ "{:,.0f}".format(t.buy_price|float) if t.buy_price else "—" }}</td>
+        <td class="right num">{{ "{:,.0f}".format(t.sell_price|float) if t.sell_price else "—" }}</td>
+        <td class="right">{{ pct(t.profit_loss_pct) }}</td>
+        <td class="right">{{ yen(t.profit_loss) }}</td>
+        <td class="right num">
+          {% if t._holding_days is not none %}{{ t._holding_days }}日{% else %}<span class="muted">—</span>{% endif %}
+        </td>
+        <td>
+          {% set reason = t._exit_reason %}
+          {% if reason == 'take_profit' %}
+            <span class="badge notified">利確</span>
+          {% elif reason == 'stop_loss' %}
+            <span class="badge" style="color:#ff3b3b;border-color:rgba(255,59,59,.35);background:rgba(255,59,59,.08)">損切</span>
+          {% elif reason == 'expired' %}
+            <span class="badge closed">期限</span>
+          {% elif reason %}
+            <span class="badge">{{ reason }}</span>
+          {% else %}
+            <span class="muted">—</span>
+          {% endif %}
+        </td>
+        <td>
+          {% if t.signal_stage %}
+            <span class="badge">{{ t.signal_stage }}</span>
+          {% else %}<span class="muted">—</span>{% endif %}
+        </td>
+        <td class="right num">
+          {% if t._ai_score is not none %}{{ "%.2f"|format(t._ai_score) }}{% else %}<span class="muted">—</span>{% endif %}
+        </td>
+        <td style="font-size:10px;color:var(--text-dim)">{{ t.market_regime_label or t.market_regime or "—" }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% else %}
+  <div style="padding:24px;text-align:center;color:var(--text-dim);font-size:12px">この期間に決済済みトレードはありません</div>
+  {% endif %}
+</div>
+{% endblock %}

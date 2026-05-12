@@ -5,14 +5,11 @@ on:
   schedule:
     
     - cron: "0 23 * * 0-4"
-    - cron: "0 5 * * 1-5"
     # scan_prime is disabled: the AI rebound pipeline supersedes the raw TSE Prime drop ranking.
     - cron: "0 0 * * 1-5"   # 09:00 JST
     - cron: "0 3 * * 1-5"   # 12:00 JST
-    - cron: "30 6 * * 1-5"  # 15:30 JST
-    - cron: "0 9 * * 1-5"   # 18:00 JST
+    - cron: "30 7 * * 1-5"  # 16:30 JST (AI rebound daily pipeline)
     - cron: "0 12 * * 6"    # 21:00 JST Sat (weekly model training)
-    - cron: "30 21 * * 1-5" # 06:30 JST 翌日 (scan_dow: NY引け後)
 
 jobs:
   run-financials:
@@ -25,21 +22,6 @@ jobs:
           python-version: '3.11'
       - run: pip install -r requirements.txt
       - run: python nikkei_alert.py --fetch-financials
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
-          LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
-
-  run-drop:
-    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '0 5 * * 1-5'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-      - run: pip install -r requirements.txt
-      - run: python nikkei_alert.py
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
@@ -64,7 +46,7 @@ jobs:
           SUPABASE_MODE: prod
 
   monitor-rebound:
-    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '0 0 * * 1-5' || github.event.schedule == '0 3 * * 1-5' || github.event.schedule == '30 6 * * 1-5' || github.event.schedule == '0 9 * * 1-5'
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '0 0 * * 1-5' || github.event.schedule == '0 3 * * 1-5'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -81,22 +63,126 @@ jobs:
           ENV: prod
           SUPABASE_MODE: prod
 
-  scan-dow:
-    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '30 21 * * 1-5'
+  rebound-ai-daily:
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '30 7 * * 1-5'
     runs-on: ubuntu-latest
+    env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+      JQUANTS_API_KEY: ${{ secrets.JQUANTS_API_KEY }}
+      JQUANTS_REFRESH_TOKEN: ${{ secrets.JQUANTS_REFRESH_TOKEN }}
+      JQUANTS_EMAIL: ${{ secrets.JQUANTS_EMAIL }}
+      JQUANTS_PASSWORD: ${{ secrets.JQUANTS_PASSWORD }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      ENV: prod
+      SUPABASE_MODE: prod
+      HTTP_PROXY: ""
+      HTTPS_PROXY: ""
+      ALL_PROXY: ""
+      GIT_HTTP_PROXY: ""
+      GIT_HTTPS_PROXY: ""
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
       - run: pip install -r requirements.txt
-      - run: python scripts/scan_dow.py
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
-          LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
-          ENV: prod
-          SUPABASE_MODE: prod
+      - name: Check open virtual trades
+        run: python scripts/check_virtual_trades.py
+      - name: Generate today's feature snapshots
+        run: >
+          python scripts/generate_feature_snapshots.py
+          --date today
+          --source jquants
+          --sleep-seconds 0.2
+          --max-retries 2
+          --retry-wait-seconds 30
+          --cooldown-on-429 120
+      - name: Predict rebound entries
+        run: python scripts/predict_rebound.py --latest
+      - name: Save UI log
+        if: success()
+        run: python scripts/log_rebound_ai_daily.py --status completed
+      - name: Save failed UI log
+        if: failure()
+        run: python scripts/log_rebound_ai_daily.py --status failed --error-message "rebound-ai-daily failed; check GitHub Actions logs"
+      - name: Summarize rebound AI run
+        run: |
+          python - <<'PY'
+          import os
+          from collections import Counter
+          from settings_loader import _build_supabase
+
+          sb = _build_supabase()
+          latest = (
+              sb.table("stock_feature_snapshots")
+              .select("trade_date")
+              .order("trade_date", desc=True)
+              .limit(1)
+              .execute()
+              .data
+              or []
+          )
+          latest_date = latest[0]["trade_date"] if latest else None
+          snapshot_total = snapshot_drop = None
+          if latest_date:
+              snapshot_total = (
+                  sb.table("stock_feature_snapshots")
+                  .select("id", count="exact")
+                  .eq("trade_date", latest_date)
+                  .limit(1)
+                  .execute()
+                  .count
+              )
+              snapshot_drop = (
+                  sb.table("stock_feature_snapshots")
+                  .select("id", count="exact")
+                  .eq("trade_date", latest_date)
+                  .eq("is_drop_candidate", True)
+                  .eq("is_tradeable", True)
+                  .limit(1)
+                  .execute()
+                  .count
+              )
+          open_trades = (
+              sb.table("virtual_trades")
+              .select("id", count="exact")
+              .eq("status", "open")
+              .is_("sell_date", "null")
+              .limit(1)
+              .execute()
+              .count
+          )
+          today_trades = (
+              sb.table("virtual_trades")
+              .select("code,name,signal_stage,entry_probability,expected_value,created_at")
+              .order("created_at", desc=True)
+              .limit(10)
+              .execute()
+              .data
+              or []
+          )
+          lines = [
+              "# Rebound AI daily summary",
+              "",
+              f"- latest feature date: `{latest_date}`",
+              f"- feature snapshots: `{snapshot_total}`",
+              f"- drop/tradeable candidates: `{snapshot_drop}`",
+              f"- open virtual trades: `{open_trades}`",
+              "",
+              "## Recent virtual trades",
+              "",
+          ]
+          for row in today_trades:
+              lines.append(
+                  f"- `{row.get('code')}` {row.get('name') or ''} "
+                  f"{row.get('signal_stage')} prob={row.get('entry_probability')} ev={row.get('expected_value')}"
+              )
+          text = "\n".join(lines)
+          print(text)
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as f:
+              f.write(text + "\n")
+          PY
 
   train-rebound-models:
     if: github.event_name == 'workflow_dispatch' || github.event.schedule == '0 12 * * 6'
