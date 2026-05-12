@@ -1,0 +1,25 @@
+﻿scenario,mix_name,total_return_pct,max_drawdown_pct,win_rate_days,avg_daily_return_pct,best_day_pct,worst_day_pct,profit_factor,active_days,total_trades,notes
+2020_covid_crash,core_mix,0.9099,-0.5269,48.08,0.0128,0.4182,-0.1288,1.7417,52,179,"zero trades: combo_current__pullback2__margin_le20, combo_current__ma5__margin_le20, combo_current__rsi70__margin_le5"
+2020_covid_crash,pullback2_only,0.0,0.0,,0.0,0.0,0.0,,0,0,zero trades: combo_current__pullback2__margin_le20
+2020_covid_crash,defensive_mix,1.8198,-1.0538,48.08,0.0256,0.8364,-0.2576,1.7417,52,179,"zero trades: combo_current__pullback2__margin_le20, combo_current__rsi70__margin_le5, combo_current__ma5__margin_le20"
+2020_covid_crash,bull_mix,0.9099,-0.5269,48.08,0.0128,0.4182,-0.1288,1.7417,52,179,"zero trades: combo_current__ma5__margin_le20, combo_current__pullback2__margin_le20, combo_current__rsi70__margin_le5"
+2022_rate_hike_bear,core_mix,0.3147,-1.1018,43.95,0.0009,0.4356,-0.3799,1.0451,314,834,"zero trades: combo_current__pullback2__margin_le20, combo_current__ma5__margin_le20, combo_current__rsi70__margin_le5"
+2022_rate_hike_bear,pullback2_only,0.0,0.0,,0.0,0.0,0.0,,0,0,zero trades: combo_current__pullback2__margin_le20
+2022_rate_hike_bear,defensive_mix,0.6295,-2.2035,43.95,0.0017,0.8712,-0.7598,1.0451,314,834,"zero trades: combo_current__pullback2__margin_le20, combo_current__rsi70__margin_le5, combo_current__ma5__margin_le20"
+2022_rate_hike_bear,bull_mix,0.3147,-1.1018,43.95,0.0009,0.4356,-0.3799,1.0451,314,834,"zero trades: combo_current__ma5__margin_le20, combo_current__pullback2__margin_le20, combo_current__rsi70__margin_le5"
+2023_rebound,core_mix,48.5503,-5.1207,65.71,0.133,4.2882,-1.6332,2.7258,347,2467,
+2023_rebound,pullback2_only,49.8557,-5.2646,54.32,0.1366,8.0996,-1.6896,2.5528,278,600,
+2023_rebound,defensive_mix,48.7672,-4.3421,63.11,0.1336,3.4347,-1.4257,2.7702,347,2467,
+2023_rebound,bull_mix,48.1757,-5.4021,64.55,0.132,3.6499,-1.6837,2.6715,347,2467,
+2024_ai_bubble,core_mix,68.7112,-5.1513,69.6,0.1877,4.9892,-2.9177,3.2646,352,2681,
+2024_ai_bubble,pullback2_only,70.2183,-6.5654,58.84,0.1919,9.8101,-3.3089,2.9332,277,640,
+2024_ai_bubble,defensive_mix,70.5024,-3.6001,70.45,0.1926,3.9577,-2.4913,3.4691,352,2681,
+2024_ai_bubble,bull_mix,68.0793,-5.6103,69.03,0.186,4.2404,-3.0749,3.2377,352,2681,
+2025_ai_bubble,core_mix,60.661,-3.6389,71.3,0.1662,4.4339,-1.8579,3.3315,345,2610,
+2025_ai_bubble,pullback2_only,68.3646,-3.8434,61.65,0.1873,6.5888,-2.4225,3.2257,266,636,
+2025_ai_bubble,defensive_mix,62.3929,-2.8288,71.88,0.1709,4.821,-1.8791,3.3241,345,2610,
+2025_ai_bubble,bull_mix,57.5176,-4.1921,70.72,0.1576,4.3196,-1.8382,3.1958,345,2610,
+custom_recent,core_mix,12.3447,-7.8343,63.64,0.1357,5.9749,-2.1787,2.0288,77,684,
+custom_recent,pullback2_only,13.8601,-8.0551,47.46,0.1523,7.1281,-2.1455,2.0449,59,163,
+custom_recent,defensive_mix,12.8608,-7.636,67.53,0.1413,5.1209,-2.2892,2.1176,77,684,
+custom_recent,bull_mix,11.6734,-7.8051,62.34,0.1283,5.9642,-2.1372,1.9739,77,684,

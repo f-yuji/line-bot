@@ -395,9 +395,8 @@ def run(args: argparse.Namespace) -> None:
             )
 
             missing = [case_key for case_key in weights if case_key not in found_case_keys]
-            notes = ""
+            notes_parts: list[str] = []
             if missing:
-                notes = f"missing case_key: {', '.join(missing)}"
                 all_summary_rows.append({
                     "scenario": scenario_name,
                     "mix_name": mix_name,
@@ -410,9 +409,18 @@ def run(args: argparse.Namespace) -> None:
                     "profit_factor": None,
                     "active_days": 0,
                     "total_trades": 0,
-                    "notes": notes,
+                    "notes": f"missing case_key: {', '.join(missing)}",
                 })
                 continue
+
+            zero_trade_cases = [
+                case_key
+                for case_key in weights
+                if not sims_by_case.get(case_key)
+            ]
+            if zero_trade_cases:
+                notes_parts.append(f"zero trades: {', '.join(zero_trade_cases)}")
+            notes = " | ".join(notes_parts)
 
             equity_rows, summary = _equity_rows_for_mix(
                 scenario_name,

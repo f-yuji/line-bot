@@ -941,7 +941,7 @@ def run_monitor(*, smoke_relaxed: bool = False, dry_run: bool = False, force_no_
             )
             continue
 
-        if prev_status == "watching":
+        if prev_status in {"watching", "rebound_signal"}:
             drop_detected_at = item.get("drop_detected_at")
             if drop_detected_at:
                 try:
@@ -949,13 +949,13 @@ def run_monitor(*, smoke_relaxed: bool = False, dry_run: bool = False, force_no_
                     biz = _biz_days(drop_dt, now_utc)
                     if biz > watch_days_limit:
                         if dry_run:
-                            logger.info("DRYRUN watch expired: %s biz=%d", code, biz)
+                            logger.info("DRYRUN watch/signal expired: %s status=%s biz=%d", code, prev_status, biz)
                         else:
                             supabase.table("stock_drop_watchlist").update({
                                 "status": "closed",
                                 "updated_at": now_utc.isoformat(),
                             }).eq("id", item_id).execute()
-                        logger.info("watch expired: %s biz=%d", code, biz)
+                        logger.info("watch/signal expired: %s status=%s biz=%d", code, prev_status, biz)
                         continue
                 except Exception as e:
                     logger.warning("watch limit check error: %s %s", code, e)
@@ -999,9 +999,6 @@ def run_monitor(*, smoke_relaxed: bool = False, dry_run: bool = False, force_no_
             new_status = "excluded"
             exclude_reason = "強悪材料検出: " + (bad_analysis.get("reason") or "keyword matched")
         elif stage in SIGNAL_STAGES:
-            new_status = "rebound_signal"
-            exclude_reason = None
-        elif prev_status == "rebound_signal":
             new_status = "rebound_signal"
             exclude_reason = None
         else:

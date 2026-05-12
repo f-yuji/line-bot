@@ -8,6 +8,7 @@ supabase
 stripe
 yfinance
 pandas
+matplotlib
 gunicorn
 numpy
 lightgbm

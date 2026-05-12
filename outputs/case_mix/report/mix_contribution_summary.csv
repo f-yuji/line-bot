@@ -1,0 +1,79 @@
+﻿scenario,mix_name,case_key,weight,return_contribution_pct,contribution_share_pct,avg_trade_return_pct,win_rate,trades,risk_score,notes
+2020_covid_crash,core_mix,combo_current__pullback2__margin_le20,0.5,0.0,0.0,,,0,0.0,no trades
+2020_covid_crash,core_mix,combo_current__ma5__margin_le20,0.25,0.0,0.0,,,0,0.0,no trades
+2020_covid_crash,core_mix,combo_current__rsi70__margin_le5,0.15,0.0,0.0,,,0,0.0,no trades
+2020_covid_crash,core_mix,combo_current__fixed10,0.1,0.9099,100.0,0.9453,36.87,179,5.7905,dd heavy
+2020_covid_crash,pullback2_only,combo_current__pullback2__margin_le20,1.0,0.0,,,,0,0.0,no trades
+2020_covid_crash,defensive_mix,combo_current__pullback2__margin_le20,0.4,0.0,0.0,,,0,0.0,no trades
+2020_covid_crash,defensive_mix,combo_current__rsi70__margin_le5,0.3,0.0,0.0,,,0,0.0,no trades
+2020_covid_crash,defensive_mix,combo_current__fixed10,0.2,1.8198,100.0,0.9453,36.87,179,2.8953,dd heavy
+2020_covid_crash,defensive_mix,combo_current__ma5__margin_le20,0.1,0.0,0.0,,,0,0.0,no trades
+2020_covid_crash,bull_mix,combo_current__ma5__margin_le20,0.4,0.0,0.0,,,0,0.0,no trades
+2020_covid_crash,bull_mix,combo_current__pullback2__margin_le20,0.4,0.0,0.0,,,0,0.0,no trades
+2020_covid_crash,bull_mix,combo_current__rsi70__margin_le5,0.1,0.0,0.0,,,0,0.0,no trades
+2020_covid_crash,bull_mix,combo_current__fixed10,0.1,0.9099,100.0,0.9453,36.87,179,5.7905,dd heavy
+2022_rate_hike_bear,core_mix,combo_current__pullback2__margin_le20,0.5,0.0,0.0,,,0,0.0,no trades
+2022_rate_hike_bear,core_mix,combo_current__ma5__margin_le20,0.25,0.0,0.0,,,0,0.0,no trades
+2022_rate_hike_bear,core_mix,combo_current__rsi70__margin_le5,0.15,0.0,0.0,,,0,0.0,no trades
+2022_rate_hike_bear,core_mix,combo_current__fixed10,0.1,0.3147,100.0,0.6407,38.01,834,35.0099,dd heavy
+2022_rate_hike_bear,pullback2_only,combo_current__pullback2__margin_le20,1.0,0.0,,,,0,0.0,no trades
+2022_rate_hike_bear,defensive_mix,combo_current__pullback2__margin_le20,0.4,0.0,0.0,,,0,0.0,no trades
+2022_rate_hike_bear,defensive_mix,combo_current__rsi70__margin_le5,0.3,0.0,0.0,,,0,0.0,no trades
+2022_rate_hike_bear,defensive_mix,combo_current__fixed10,0.2,0.6295,100.0,0.6407,38.01,834,17.5021,dd heavy
+2022_rate_hike_bear,defensive_mix,combo_current__ma5__margin_le20,0.1,0.0,0.0,,,0,0.0,no trades
+2022_rate_hike_bear,bull_mix,combo_current__ma5__margin_le20,0.4,0.0,0.0,,,0,0.0,no trades
+2022_rate_hike_bear,bull_mix,combo_current__pullback2__margin_le20,0.4,0.0,0.0,,,0,0.0,no trades
+2022_rate_hike_bear,bull_mix,combo_current__rsi70__margin_le5,0.1,0.0,0.0,,,0,0.0,no trades
+2022_rate_hike_bear,bull_mix,combo_current__fixed10,0.1,0.3147,100.0,0.6407,38.01,834,35.0099,dd heavy
+2023_rebound,core_mix,combo_current__pullback2__margin_le20,0.5,24.9278,51.34,1.9591,56.5,600,0.2112,efficient
+2023_rebound,core_mix,combo_current__ma5__margin_le20,0.25,11.5126,23.71,1.8904,56.72,580,0.5997,efficient
+2023_rebound,core_mix,combo_current__rsi70__margin_le5,0.15,6.8898,14.19,1.7315,60.6,571,0.7644,efficient
+2023_rebound,core_mix,combo_current__fixed10,0.1,5.2201,10.75,2.0734,50.42,716,0.8946,efficient
+2023_rebound,pullback2_only,combo_current__pullback2__margin_le20,1.0,49.8557,100.0,1.9591,56.5,600,0.1056,efficient
+2023_rebound,defensive_mix,combo_current__pullback2__margin_le20,0.4,19.9423,40.89,1.9591,56.5,600,0.264,efficient
+2023_rebound,defensive_mix,combo_current__rsi70__margin_le5,0.3,13.7797,28.26,1.7315,60.6,571,0.3822,efficient
+2023_rebound,defensive_mix,combo_current__fixed10,0.2,10.4402,21.41,2.0734,50.42,716,0.4473,efficient
+2023_rebound,defensive_mix,combo_current__ma5__margin_le20,0.1,4.605,9.44,1.8904,56.72,580,1.4992,
+2023_rebound,bull_mix,combo_current__ma5__margin_le20,0.4,18.4201,38.24,1.8904,56.72,580,0.3748,efficient
+2023_rebound,bull_mix,combo_current__pullback2__margin_le20,0.4,19.9423,41.39,1.9591,56.5,600,0.264,efficient
+2023_rebound,bull_mix,combo_current__rsi70__margin_le5,0.1,4.5932,9.53,1.7315,60.6,571,1.1467,
+2023_rebound,bull_mix,combo_current__fixed10,0.1,5.2201,10.84,2.0734,50.42,716,0.8946,efficient
+2024_ai_bubble,core_mix,combo_current__pullback2__margin_le20,0.5,35.1091,51.1,2.6297,59.22,640,0.187,efficient
+2024_ai_bubble,core_mix,combo_current__ma5__margin_le20,0.25,15.4931,22.55,2.2822,59.62,629,0.4747,efficient
+2024_ai_bubble,core_mix,combo_current__rsi70__margin_le5,0.15,8.7176,12.69,1.8182,61.41,640,0.4129,efficient
+2024_ai_bubble,core_mix,combo_current__fixed10,0.1,9.3913,13.67,2.7462,54.92,772,0.4144,efficient
+2024_ai_bubble,pullback2_only,combo_current__pullback2__margin_le20,1.0,70.2183,100.0,2.6297,59.22,640,0.0935,efficient
+2024_ai_bubble,defensive_mix,combo_current__pullback2__margin_le20,0.4,28.0873,39.84,2.6297,59.22,640,0.2337,efficient
+2024_ai_bubble,defensive_mix,combo_current__rsi70__margin_le5,0.3,17.4353,24.73,1.8182,61.41,640,0.2065,efficient
+2024_ai_bubble,defensive_mix,combo_current__fixed10,0.2,18.7826,26.64,2.7462,54.92,772,0.2072,efficient
+2024_ai_bubble,defensive_mix,combo_current__ma5__margin_le20,0.1,6.1972,8.79,2.2822,59.62,629,1.1867,
+2024_ai_bubble,bull_mix,combo_current__ma5__margin_le20,0.4,24.789,36.41,2.2822,59.62,629,0.2967,efficient
+2024_ai_bubble,bull_mix,combo_current__pullback2__margin_le20,0.4,28.0873,41.26,2.6297,59.22,640,0.2337,efficient
+2024_ai_bubble,bull_mix,combo_current__rsi70__margin_le5,0.1,5.8118,8.54,1.8182,61.41,640,0.6194,efficient
+2024_ai_bubble,bull_mix,combo_current__fixed10,0.1,9.3913,13.79,2.7462,54.92,772,0.4144,efficient
+2025_ai_bubble,core_mix,combo_current__pullback2__margin_le20,0.5,34.1823,56.35,3.3228,61.01,636,0.1124,efficient
+2025_ai_bubble,core_mix,combo_current__ma5__margin_le20,0.25,11.194,18.45,3.3245,59.87,618,0.5766,efficient
+2025_ai_bubble,core_mix,combo_current__rsi70__margin_le5,0.15,9.0701,14.95,2.6454,62.88,617,0.514,efficient
+2025_ai_bubble,core_mix,combo_current__fixed10,0.1,6.2146,10.24,2.9022,56.02,739,0.6028,efficient
+2025_ai_bubble,pullback2_only,combo_current__pullback2__margin_le20,1.0,68.3646,100.0,3.3228,61.01,636,0.0562,efficient
+2025_ai_bubble,defensive_mix,combo_current__pullback2__margin_le20,0.4,27.3458,43.83,3.3228,61.01,636,0.1405,efficient
+2025_ai_bubble,defensive_mix,combo_current__rsi70__margin_le5,0.3,18.1402,29.07,2.6454,62.88,617,0.257,efficient
+2025_ai_bubble,defensive_mix,combo_current__fixed10,0.2,12.4292,19.92,2.9022,56.02,739,0.3014,efficient
+2025_ai_bubble,defensive_mix,combo_current__ma5__margin_le20,0.1,4.4776,7.18,3.3245,59.87,618,1.4415,
+2025_ai_bubble,bull_mix,combo_current__ma5__margin_le20,0.4,17.9104,31.14,3.3245,59.87,618,0.3604,efficient
+2025_ai_bubble,bull_mix,combo_current__pullback2__margin_le20,0.4,27.3458,47.54,3.3228,61.01,636,0.1405,efficient
+2025_ai_bubble,bull_mix,combo_current__rsi70__margin_le5,0.1,6.0467,10.51,2.6454,62.88,617,0.771,efficient
+2025_ai_bubble,bull_mix,combo_current__fixed10,0.1,6.2146,10.8,2.9022,56.02,739,0.6028,efficient
+custom_recent,core_mix,combo_current__pullback2__margin_le20,0.5,6.9301,56.14,1.0763,42.94,163,1.1623,
+custom_recent,core_mix,combo_current__ma5__margin_le20,0.25,2.1954,17.78,0.9643,40.74,162,3.9118,dd heavy
+custom_recent,core_mix,combo_current__rsi70__margin_le5,0.15,1.8077,14.64,0.9871,44.58,166,4.7982,dd heavy
+custom_recent,core_mix,combo_current__fixed10,0.1,1.4115,11.43,1.2088,39.9,193,3.6638,dd heavy
+custom_recent,pullback2_only,combo_current__pullback2__margin_le20,1.0,13.8601,100.0,1.0763,42.94,163,0.5812,efficient
+custom_recent,defensive_mix,combo_current__pullback2__margin_le20,0.4,5.544,43.11,1.0763,42.94,163,1.4529,
+custom_recent,defensive_mix,combo_current__rsi70__margin_le5,0.3,3.6155,28.11,0.9871,44.58,166,2.399,dd heavy
+custom_recent,defensive_mix,combo_current__fixed10,0.2,2.8231,21.95,1.2088,39.9,193,1.8318,
+custom_recent,defensive_mix,combo_current__ma5__margin_le20,0.1,0.8782,6.83,0.9643,40.74,162,9.779,dd heavy
+custom_recent,bull_mix,combo_current__ma5__margin_le20,0.4,3.5126,30.09,0.9643,40.74,162,2.4449,dd heavy
+custom_recent,bull_mix,combo_current__pullback2__margin_le20,0.4,5.544,47.49,1.0763,42.94,163,1.4529,
+custom_recent,bull_mix,combo_current__rsi70__margin_le5,0.1,1.2052,10.32,0.9871,44.58,166,7.1969,dd heavy
+custom_recent,bull_mix,combo_current__fixed10,0.1,1.4115,12.09,1.2088,39.9,193,3.6638,dd heavy

@@ -116,6 +116,90 @@ def _target_date(sb, args: argparse.Namespace) -> str:
     return latest
 
 
+def _parse_trade_date_jst(value: Any) -> str | None:
+    if not value:
+        return None
+    text = str(value)
+    try:
+        dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=JST)
+        return dt.astimezone(JST).date().isoformat()
+    except Exception:
+        return text[:10] if len(text) >= 10 else None
+
+
+def _snapshot_trade_dates(sb, snapshot_ids: list[Any]) -> dict[Any, str]:
+    out: dict[Any, str] = {}
+    clean_ids = [sid for sid in snapshot_ids if sid]
+    for i in range(0, len(clean_ids), 100):
+        rows = (
+            sb.table("stock_feature_snapshots")
+            .select("id,trade_date")
+            .in_("id", clean_ids[i:i + 100])
+            .execute()
+            .data or []
+        )
+        for row in rows:
+            out[row.get("id")] = str(row.get("trade_date"))
+    return out
+
+
+def _close_stale_watchlist_rows(sb, target_date: str, *, dry_run: bool) -> None:
+    """Close stale current-state rows before writing today's predictions.
+
+    The current state table is intentionally not history. For daily prediction
+    runs, only rows tied to the target feature snapshot date should remain in
+    watching/rebound_signal. Signal history stays in rebound_signal_history.
+    """
+
+    rows = (
+        sb.table("stock_drop_watchlist")
+        .select("id,code,status,feature_snapshot_id,drop_detected_at")
+        .in_("status", ["watching", "rebound_signal"])
+        .execute()
+        .data or []
+    )
+    if not rows:
+        return
+
+    snapshot_dates = _snapshot_trade_dates(sb, [r.get("feature_snapshot_id") for r in rows])
+    stale_ids: list[Any] = []
+    stale_by_status: dict[str, int] = {}
+    for row in rows:
+        snapshot_id = row.get("feature_snapshot_id")
+        trade_date = snapshot_dates.get(snapshot_id) if snapshot_id else None
+        if trade_date is None:
+            trade_date = _parse_trade_date_jst(row.get("drop_detected_at"))
+        if trade_date and trade_date >= target_date:
+            continue
+        stale_ids.append(row.get("id"))
+        status = str(row.get("status") or "unknown")
+        stale_by_status[status] = stale_by_status.get(status, 0) + 1
+
+    stale_ids = [sid for sid in stale_ids if sid]
+    if not stale_ids:
+        logger.info("stale watchlist cleanup: none target_date=%s active_rows=%d", target_date, len(rows))
+        return
+
+    logger.info(
+        "%sstale watchlist cleanup: close=%d target_date=%s by_status=%s",
+        "DRYRUN " if dry_run else "",
+        len(stale_ids),
+        target_date,
+        stale_by_status,
+    )
+    if dry_run:
+        return
+
+    now = datetime.now(timezone.utc).isoformat()
+    for i in range(0, len(stale_ids), 100):
+        sb.table("stock_drop_watchlist").update({
+            "status": "closed",
+            "updated_at": now,
+        }).in_("id", stale_ids[i:i + 100]).execute()
+
+
 def _load_active_model_row(sb, model_name: str = "rebound_lgbm") -> dict | None:
     try:
         rows = (
@@ -728,6 +812,8 @@ def run(args: argparse.Namespace) -> None:
     update_market_regime_for_latest_trade_date(sb)
 
     target_date = _target_date(sb, args)
+    if not args.date and not args.code:
+        _close_stale_watchlist_rows(sb, target_date, dry_run=args.dry_run)
     regime = _current_mode(sb, target_date)
     mode = str(regime.get("mode") or "normal")
     logger.info("[market_data_for_regime] %s", regime)
