@@ -30,8 +30,10 @@ from supabase import create_client
 from bad_news_filter import analyze_bad_news
 from scoring import calculate_score
 from services.market_regime import evaluate_market_regime
+from services.entry_credit_filter import attach_entry_margin_data, evaluate_entry_credit_filter
 from services.signal_stage import SIGNAL_STAGES, evaluate_signal_stage
 from services.signal_history import record_rebound_signal
+from services.virtual_trade_exit import close_related_watchlist, evaluate_virtual_trade_exit
 from settings_loader import get_settings
 
 load_dotenv()
@@ -793,10 +795,31 @@ def _create_ranked_virtual_trades(
         rank_limit = max(1, rank_limit // 2)
         logger.info("[market_regime_limit] regime=panic_rebound entry_rank_limit=%d original=%d", rank_limit, original)
 
-    ranked_all = sorted(candidates, key=_entry_rank_value, reverse=True)
-    strong = [c for c in ranked_all if c["item"].get("signal_stage") == "strong_confirmed"]
-    normal = [c for c in ranked_all if c["item"].get("signal_stage") != "strong_confirmed"]
-    ranked = strong + (normal[:rank_limit] if rank_limit > 0 else normal)
+    attach_entry_margin_data(supabase, [c["item"] for c in candidates])
+    filtered_candidates: list[dict] = []
+    for candidate in candidates:
+        item = candidate["item"]
+        credit = evaluate_entry_credit_filter(supabase, item, cfg)
+        if not credit.passed:
+            logger.info(
+                "[entry_margin_filter] skip code=%s reason=%s margin_ratio=%s margin_date=%s limit=%s",
+                item.get("code"),
+                credit.reason,
+                credit.margin_ratio,
+                credit.margin_date,
+                cfg.get("entry_max_margin_ratio"),
+            )
+            _mark_watchlist_status(item, "signal_skipped", str(credit.reason or "margin_ratio_filter"), now_utc)
+            continue
+        if credit.margin_ratio is not None:
+            item["margin_ratio"] = credit.margin_ratio
+            item["margin_date"] = credit.margin_date
+        filtered_candidates.append(candidate)
+    if not filtered_candidates:
+        return
+
+    ranked_all = sorted(filtered_candidates, key=_entry_rank_value, reverse=True)
+    ranked = ranked_all[:rank_limit] if rank_limit > 0 else ranked_all
     ranked_ids = {c["item"].get("id") for c in ranked if c["item"].get("id")}
     for candidate in ranked_all:
         item = candidate["item"]
@@ -808,17 +831,16 @@ def _create_ranked_virtual_trades(
         item = candidate["item"]
         code = item.get("code", "")
         sector = str(item.get("sector") or "unknown")
-        is_strong = item.get("signal_stage") == "strong_confirmed"
         if max_open and open_count >= max_open:
             logger.info("[position_limit] skip code=%s open_positions=%d limit=%d", code, open_count, max_open)
             _mark_watchlist_status(item, "signal_skipped", "max_open_positions", now_utc)
             continue
-        if max_daily and today_entries >= max_daily and not is_strong:
+        if max_daily and today_entries >= max_daily:
             logger.info("[daily_entry_limit] skip code=%s today_entries=%d limit=%d", code, today_entries, max_daily)
             _mark_watchlist_status(item, "signal_skipped", "max_daily_entries", now_utc)
             continue
         current_sector = sector_counts.get(sector, 0)
-        if max_sector and current_sector >= max_sector and not is_strong:
+        if max_sector and current_sector >= max_sector:
             logger.info("[sector_limit] skip code=%s sector=%s current=%d limit=%d", code, sector, current_sector, max_sector)
             _mark_watchlist_status(item, "signal_skipped", "max_sector_positions", now_utc)
             continue
@@ -853,11 +875,6 @@ def _manage_virtual_trades(cfg: dict, now_utc: datetime, *, dry_run: bool = Fals
     if not open_trades:
         return
 
-    if dry_run:
-        logger.info("DRYRUN virtual trade management skipped: open=%d", len(open_trades))
-        return
-
-    watch_limit = int(cfg.get("watch_days_limit", 5))
     for trade in open_trades:
         if not is_japanese_watchlist_item(trade):
             logger.info(
@@ -867,66 +884,27 @@ def _manage_virtual_trades(cfg: dict, now_utc: datetime, *, dry_run: bool = Fals
             )
             continue
         code = trade.get("code", "")
-        hist = _fetch_history(code, trade.get("market", ""))
-        if hist is None:
-            continue
-        closes, _ = hist
-        current = float(closes.iloc[-1])
-        buy_price = float(trade.get("buy_price") or 0)
-        if buy_price <= 0:
-            continue
-
-        pnl_pct = round((current - buy_price) / buy_price * 100, 2)
-        max_return_pct = max(_to_float(trade.get("max_return_pct"), pnl_pct) or pnl_pct, pnl_pct)
-        max_drawdown_pct = min(_to_float(trade.get("max_drawdown_pct"), pnl_pct) or pnl_pct, pnl_pct)
-
-        biz = 0
-        buy_dt = trade.get("buy_date", "")
-        if buy_dt:
-            try:
-                dt = datetime.fromisoformat(str(buy_dt).replace("Z", "+00:00"))
-                biz = _biz_days(dt, now_utc)
-            except Exception:
-                pass
-
-        exit_reason = None
-        if pnl_pct >= 5.0:
-            exit_reason = "take_profit"
-        elif pnl_pct <= -4.0:
-            exit_reason = "stop_loss"
-        elif biz >= watch_limit:
-            exit_reason = "expired"
-
-        update_data = {
-            "max_return_pct": round(max_return_pct, 2),
-            "max_drawdown_pct": round(max_drawdown_pct, 2),
-            "exit_checked_at": now_utc.isoformat(),
-            "updated_at": now_utc.isoformat(),
-        }
-
-        if exit_reason:
-            pnl = round((current - buy_price) * int(trade.get("quantity") or 100), 0)
-            update_data.update({
-                "sell_price": current,
-                "sell_date": now_utc.isoformat(),
-                "sell_reason": exit_reason,
-                "exit_reason": exit_reason,
-                "profit_loss": pnl,
-                "profit_loss_pct": pnl_pct,
-                "status": "closed",
-            })
-
         try:
+            result = evaluate_virtual_trade_exit(trade, settings=cfg, now=now_utc)
+            if not result:
+                continue
+            update_data = result.update
+            exit_reason = update_data.get("exit_reason")
+            if dry_run:
+                logger.info("DRYRUN virtual trade management: code=%s update=%s detail=%s", code, update_data, result.dry_log)
+                if exit_reason:
+                    close_related_watchlist(supabase, trade, str(exit_reason), dry_run=True)
+                continue
             supabase.table("virtual_trades").update(update_data).eq("id", trade["id"]).execute()
             if exit_reason:
-                item = {
-                    "id": trade.get("watchlist_id"),
-                    "code": code,
-                    "status": "entered",
-                }
-                if item["id"]:
-                    _mark_watchlist_status(item, "closed", f"virtual_trade_closed:{exit_reason}", now_utc, trade_id=trade.get("id"))
-                logger.info("virtual exit: %s %s pnl=%.1f%%", code, exit_reason, pnl_pct)
+                close_related_watchlist(supabase, trade, str(exit_reason), dry_run=False)
+                logger.info(
+                    "[virtual_exit] code=%s reason=%s sell_price=%s pnl_pct=%s",
+                    code,
+                    exit_reason,
+                    update_data.get("sell_price"),
+                    update_data.get("profit_loss_pct"),
+                )
         except Exception as e:
             logger.error("virtual_trade update error: %s %s", code, e)
 

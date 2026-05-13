@@ -209,19 +209,31 @@ def _load_weekly_margin_rows(sb, period_start: date, period_end: date) -> list[d
     )
     start_s = (period_start - timedelta(days=45)).isoformat()
     end_s = period_end.isoformat()
+    page_size = 1000
 
-    def query(last_id: int):
-        q = (
-            sb.table("stock_weekly_margin_interest")
-            .select(cols)
-            .gte("date", start_s)
-            .lte("date", end_s)
-            .order("id")
-        )
-        return q.gt("id", last_id) if last_id else q
-
+    # Use offset pagination ordered by date — date index is efficient;
+    # id-cursor ordering is slow when recently-imported historical rows have
+    # high IDs and the query can't use the date index for ordering.
     try:
-        rows = _fetch_all(query, label="weekly_margin")
+        rows: list[dict] = []
+        offset = 0
+        while True:
+            data = (
+                sb.table("stock_weekly_margin_interest")
+                .select(cols)
+                .gte("date", start_s)
+                .lte("date", end_s)
+                .order("date")
+                .range(offset, offset + page_size - 1)
+                .execute()
+                .data or []
+            )
+            rows.extend(data)
+            if len(data) < page_size:
+                break
+            offset += page_size
+            if len(rows) % 10000 == 0:
+                logger.info("[case_test] load weekly_margin progress rows=%d", len(rows))
         logger.info("[case_test] loaded weekly margin rows=%d", len(rows))
         return rows
     except Exception as e:

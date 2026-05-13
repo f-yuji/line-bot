@@ -49,6 +49,16 @@ DEFAULTS: dict = {
     "max_daily_entries":        5,
     "entry_rank_limit":         10,
     "max_sector_positions":     2,
+    "entry_margin_filter_enabled": True,
+    "entry_margin_require_data": True,
+    "entry_max_margin_ratio":   5.0,
+    "virtual_exit_pullback_pct": 2.0,
+    "virtual_exit_rsi_level":    75.0,
+    "virtual_exit_rsi_pullback_pct": 1.0,
+    "virtual_exit_stop_loss_pct": 4.0,
+    "virtual_exit_ma5_failure_pct": 2.0,
+    "virtual_exit_holding_days": 5,
+    "virtual_exit_extend_high_update_days": 2,
 }
 
 _cache: dict | None = None

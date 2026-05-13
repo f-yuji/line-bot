@@ -25,6 +25,21 @@
         </div>
       </div>
       {% endfor %}
+      <div class="form-row" style="grid-template-columns:1fr auto">
+        <label>信用倍率フィルタ</label>
+        <input type="checkbox" name="entry_margin_filter_enabled" {% if cfg.entry_margin_filter_enabled %}checked{% endif %} style="accent-color:var(--accent);width:16px;height:16px">
+      </div>
+      <div class="form-row" style="grid-template-columns:1fr auto">
+        <label>信用倍率データ必須</label>
+        <input type="checkbox" name="entry_margin_require_data" {% if cfg.entry_margin_require_data %}checked{% endif %} style="accent-color:var(--accent);width:16px;height:16px">
+      </div>
+      <div class="form-row">
+        <label>信用倍率上限</label>
+        <div class="input-group">
+          <input type="number" step="0.1" min="0" name="entry_max_margin_ratio" value="{{ cfg.entry_max_margin_ratio }}">
+          <span class="unit">倍以下</span>
+        </div>
+      </div>
     </div>
 
     <div class="form-card">
@@ -121,11 +136,11 @@
     </div>
 
     <div class="form-card">
-      <h3>AI Predict</h3>
+      <h3>AI予測</h3>
       {% for key, label in [
-        ("ai_predict_enabled", "AI predict"),
-        ("ai_notify_enabled", "AI notify"),
-        ("ai_notify_early_enabled", "Early notify")
+        ("ai_predict_enabled", "AI予測 有効"),
+        ("ai_notify_enabled", "AI通知 有効"),
+        ("ai_notify_early_enabled", "早期通知 有効")
       ] %}
       <div class="form-row" style="grid-template-columns:1fr auto">
         <label>{{ label }}</label>
@@ -133,10 +148,10 @@
       </div>
       {% endfor %}
       {% for key, label in [
-        ("ai_probability_early", "early probability"),
-        ("ai_probability_confirmed", "confirmed probability"),
-        ("ai_probability_strong", "strong probability"),
-        ("ai_expected_value_min", "expected value min")
+        ("ai_probability_early", "早期確率"),
+        ("ai_probability_confirmed", "確定確率"),
+        ("ai_probability_strong", "強シグナル確率"),
+        ("ai_expected_value_min", "期待値 最小")
       ] %}
       <div class="form-row">
         <label>{{ label }}</label>
@@ -159,6 +174,37 @@
         <label>{{ label }}</label>
         <div class="input-group">
           <input type="number" step="1" min="0" name="{{ key }}" value="{{ cfg[key] }}">
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+
+    <div class="form-card">
+      <h3>仮想売買の出口</h3>
+      {% for key, label, unit, step in [
+        ("virtual_exit_pullback_pct", "通常反落利確", "%", "0.1"),
+        ("virtual_exit_rsi_level", "RSI引き締めライン", "", "0.1"),
+        ("virtual_exit_rsi_pullback_pct", "RSI後の反落利確", "%", "0.1"),
+        ("virtual_exit_stop_loss_pct", "終値損切り", "%", "0.1"),
+        ("virtual_exit_ma5_failure_pct", "MA5回復後の再崩れ", "%", "0.1")
+      ] %}
+      <div class="form-row">
+        <label>{{ label }}</label>
+        <div class="input-group">
+          <input type="number" step="{{ step }}" min="0" name="{{ key }}" value="{{ cfg[key] }}">
+          {% if unit %}<span class="unit">{{ unit }}</span>{% endif %}
+        </div>
+      </div>
+      {% endfor %}
+      {% for key, label in [
+        ("virtual_exit_holding_days", "保有期限"),
+        ("virtual_exit_extend_high_update_days", "高値更新なら延長")
+      ] %}
+      <div class="form-row">
+        <label>{{ label }}</label>
+        <div class="input-group">
+          <input type="number" step="1" min="0" name="{{ key }}" value="{{ cfg[key] }}">
+          <span class="unit">日</span>
         </div>
       </div>
       {% endfor %}

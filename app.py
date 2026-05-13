@@ -2255,11 +2255,13 @@ def web_settings():
             "morning_summary_enabled", "portfolio_notify_enabled",
             "ai_predict_enabled", "ai_notify_enabled", "ai_notify_early_enabled",
             "jquants_enabled", "jquants_prefer_source", "jquants_fallback_yfinance",
+            "entry_margin_filter_enabled", "entry_margin_require_data",
         }
         int_fields = {
             "watch_days_limit", "jquants_max_retry",
             "max_open_positions", "max_daily_entries",
             "entry_rank_limit", "max_sector_positions",
+            "virtual_exit_holding_days", "virtual_exit_extend_high_update_days",
         }
         def _upsert_settings(payload: dict) -> None:
             remaining = dict(payload)

@@ -1,25 +1,25 @@
 ﻿scenario,mix_name,total_return_pct,max_drawdown_pct,win_rate_days,avg_daily_return_pct,best_day_pct,worst_day_pct,profit_factor,active_days,total_trades,notes
-2020_covid_crash,core_mix,0.9099,-0.5269,48.08,0.0128,0.4182,-0.1288,1.7417,52,179,"zero trades: combo_current__pullback2__margin_le20, combo_current__ma5__margin_le20, combo_current__rsi70__margin_le5"
-2020_covid_crash,pullback2_only,0.0,0.0,,0.0,0.0,0.0,,0,0,zero trades: combo_current__pullback2__margin_le20
-2020_covid_crash,defensive_mix,1.8198,-1.0538,48.08,0.0256,0.8364,-0.2576,1.7417,52,179,"zero trades: combo_current__pullback2__margin_le20, combo_current__rsi70__margin_le5, combo_current__ma5__margin_le20"
-2020_covid_crash,bull_mix,0.9099,-0.5269,48.08,0.0128,0.4182,-0.1288,1.7417,52,179,"zero trades: combo_current__ma5__margin_le20, combo_current__pullback2__margin_le20, combo_current__rsi70__margin_le5"
-2022_rate_hike_bear,core_mix,0.3147,-1.1018,43.95,0.0009,0.4356,-0.3799,1.0451,314,834,"zero trades: combo_current__pullback2__margin_le20, combo_current__ma5__margin_le20, combo_current__rsi70__margin_le5"
-2022_rate_hike_bear,pullback2_only,0.0,0.0,,0.0,0.0,0.0,,0,0,zero trades: combo_current__pullback2__margin_le20
-2022_rate_hike_bear,defensive_mix,0.6295,-2.2035,43.95,0.0017,0.8712,-0.7598,1.0451,314,834,"zero trades: combo_current__pullback2__margin_le20, combo_current__rsi70__margin_le5, combo_current__ma5__margin_le20"
-2022_rate_hike_bear,bull_mix,0.3147,-1.1018,43.95,0.0009,0.4356,-0.3799,1.0451,314,834,"zero trades: combo_current__ma5__margin_le20, combo_current__pullback2__margin_le20, combo_current__rsi70__margin_le5"
-2023_rebound,core_mix,48.5503,-5.1207,65.71,0.133,4.2882,-1.6332,2.7258,347,2467,
-2023_rebound,pullback2_only,49.8557,-5.2646,54.32,0.1366,8.0996,-1.6896,2.5528,278,600,
-2023_rebound,defensive_mix,48.7672,-4.3421,63.11,0.1336,3.4347,-1.4257,2.7702,347,2467,
-2023_rebound,bull_mix,48.1757,-5.4021,64.55,0.132,3.6499,-1.6837,2.6715,347,2467,
-2024_ai_bubble,core_mix,68.7112,-5.1513,69.6,0.1877,4.9892,-2.9177,3.2646,352,2681,
-2024_ai_bubble,pullback2_only,70.2183,-6.5654,58.84,0.1919,9.8101,-3.3089,2.9332,277,640,
-2024_ai_bubble,defensive_mix,70.5024,-3.6001,70.45,0.1926,3.9577,-2.4913,3.4691,352,2681,
-2024_ai_bubble,bull_mix,68.0793,-5.6103,69.03,0.186,4.2404,-3.0749,3.2377,352,2681,
-2025_ai_bubble,core_mix,60.661,-3.6389,71.3,0.1662,4.4339,-1.8579,3.3315,345,2610,
-2025_ai_bubble,pullback2_only,68.3646,-3.8434,61.65,0.1873,6.5888,-2.4225,3.2257,266,636,
-2025_ai_bubble,defensive_mix,62.3929,-2.8288,71.88,0.1709,4.821,-1.8791,3.3241,345,2610,
-2025_ai_bubble,bull_mix,57.5176,-4.1921,70.72,0.1576,4.3196,-1.8382,3.1958,345,2610,
-custom_recent,core_mix,12.3447,-7.8343,63.64,0.1357,5.9749,-2.1787,2.0288,77,684,
-custom_recent,pullback2_only,13.8601,-8.0551,47.46,0.1523,7.1281,-2.1455,2.0449,59,163,
-custom_recent,defensive_mix,12.8608,-7.636,67.53,0.1413,5.1209,-2.2892,2.1176,77,684,
-custom_recent,bull_mix,11.6734,-7.8051,62.34,0.1283,5.9642,-2.1372,1.9739,77,684,
+2020_covid_crash,core_mix,-5.7464,-15.0978,46.88,-0.0809,2.4819,-3.818,0.6973,64,837,
+2020_covid_crash,pullback2_only,-4.9816,-14.3445,35.85,-0.0702,3.0221,-3.6862,0.7423,53,209,
+2020_covid_crash,defensive_mix,-6.5713,-15.1644,51.56,-0.0926,2.4103,-3.7769,0.6555,64,837,
+2020_covid_crash,bull_mix,-5.691,-15.3176,46.88,-0.0802,2.2987,-3.8925,0.7061,64,837,
+2022_rate_hike_bear,core_mix,9.9093,-12.4187,54.39,0.0271,2.4635,-2.1055,1.2066,353,3566,
+2022_rate_hike_bear,pullback2_only,15.3477,-12.3765,46.28,0.042,5.2014,-2.3356,1.2979,296,876,
+2022_rate_hike_bear,defensive_mix,7.4914,-13.08,53.82,0.0205,2.6523,-1.8439,1.1525,353,3566,
+2022_rate_hike_bear,bull_mix,9.5994,-12.3387,55.24,0.0263,2.2669,-2.1257,1.1997,353,3566,
+2023_rebound,core_mix,8.8418,-4.7819,55.06,0.0242,2.8987,-1.5023,1.215,356,3377,
+2023_rebound,pullback2_only,12.7623,-4.381,48.38,0.035,5.5689,-2.0671,1.2829,308,836,
+2023_rebound,defensive_mix,3.5194,-6.0398,52.81,0.0096,2.4561,-1.5225,1.085,356,3377,
+2023_rebound,bull_mix,10.6747,-4.7542,57.02,0.0292,3.6295,-1.5469,1.2563,356,3377,
+2024_ai_bubble,core_mix,3.1115,-10.8076,51.69,0.0085,3.3195,-2.8741,1.0644,356,3171,
+2024_ai_bubble,pullback2_only,0.2253,-14.8672,47.72,0.0006,2.8996,-3.7819,1.0042,285,766,
+2024_ai_bubble,defensive_mix,5.5596,-8.4737,52.25,0.0152,2.3514,-1.9749,1.1236,356,3171,
+2024_ai_bubble,bull_mix,3.0426,-11.1834,52.53,0.0083,5.3219,-3.0514,1.0606,356,3171,
+2025_ai_bubble,core_mix,28.5306,-11.0137,58.59,0.0782,8.0072,-2.0872,1.7577,355,3158,
+2025_ai_bubble,pullback2_only,28.9833,-8.2991,49.82,0.0794,15.8884,-2.3006,1.6681,279,752,
+2025_ai_bubble,defensive_mix,27.9763,-11.2346,57.75,0.0766,6.4185,-2.0405,1.7631,355,3158,
+2025_ai_bubble,bull_mix,28.9391,-11.8184,58.03,0.0793,6.4478,-2.0974,1.7639,355,3158,
+custom_recent,core_mix,7.3773,-7.8044,54.32,0.0811,7.8262,-3.3056,1.6029,81,795,
+custom_recent,pullback2_only,5.7211,-8.396,46.03,0.0629,7.9779,-3.4757,1.4024,63,193,
+custom_recent,defensive_mix,8.3962,-6.9306,58.02,0.0923,6.688,-3.068,1.7487,81,795,
+custom_recent,bull_mix,7.2155,-8.0066,55.56,0.0793,8.1858,-3.3021,1.5852,81,795,
