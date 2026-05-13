@@ -33,6 +33,8 @@ from supabase import create_client
 
 from settings_loader import get_settings
 from services.market_regime import evaluate_market_regime
+from services.entry_credit_filter import attach_entry_margin_data, evaluate_entry_credit_filter
+from services.model_storage import download_model_artifact
 from services.signal_stage import SIGNAL_STAGES, evaluate_signal_stage
 from services.signal_history import record_rebound_signal
 
@@ -246,6 +248,11 @@ def _load_model_bundle(sb, args: argparse.Namespace) -> tuple[dict | None, dict 
         logger.warning("active model not found; fallback rule will be used")
         return None, None
     model_path = ROOT / str(row.get("model_path") or "")
+    if not model_path.exists():
+        storage_path = str(row.get("storage_path") or row.get("model_path") or "")
+        if storage_path:
+            logger.warning("active model missing locally; downloading from storage path=%s", storage_path)
+            download_model_artifact(sb, storage_path, model_path)
     try:
         bundle = joblib.load(model_path)
         logger.info("active model loaded: version=%s path=%s", row.get("model_version"), model_path)
@@ -328,6 +335,13 @@ def _fallback_probability(row: dict) -> float:
     elif bad >= 40:
         p -= 0.10
     return max(0.01, min(0.89, p))
+
+
+def _cap_fallback_probability(probability: float, cfg: dict) -> float:
+    # Fallback is only a rough rule score. Keep it below the confirmed threshold
+    # so model outages cannot create confirmed/strong virtual entries.
+    confirmed = _to_float(cfg.get("ai_probability_confirmed"), 0.50) or 0.50
+    return min(probability, max(0.01, confirmed - 0.001))
 
 
 def _expected_value(probability: float, take_profit_pct: float = 5.0, stop_loss_pct: float = -3.0) -> float:
@@ -742,10 +756,31 @@ def _create_ranked_virtual_trades(sb, candidates: list[tuple[dict, dict, dict]],
         original = rank_limit
         rank_limit = max(1, rank_limit // 2)
         logger.info("[market_regime_limit] regime=panic_rebound entry_rank_limit=%d original=%d", rank_limit, original)
-    ranked_all = sorted(candidates, key=_entry_rank_value, reverse=True)
-    strong = [c for c in ranked_all if c[2].get("signal_stage") == "strong_confirmed"]
-    normal = [c for c in ranked_all if c[2].get("signal_stage") != "strong_confirmed"]
-    ranked = strong + (normal[:rank_limit] if rank_limit > 0 else normal)
+    candidate_rows = [row for row, _watch, _result in candidates]
+    attach_entry_margin_data(sb, candidate_rows)
+    filtered_candidates: list[tuple[dict, dict, dict]] = []
+    for row, watch, result in candidates:
+        credit = evaluate_entry_credit_filter(sb, row, cfg)
+        if not credit.passed:
+            logger.info(
+                "[entry_margin_filter] skip code=%s reason=%s margin_ratio=%s margin_date=%s limit=%s",
+                row.get("code"),
+                credit.reason,
+                credit.margin_ratio,
+                credit.margin_date,
+                cfg.get("entry_max_margin_ratio"),
+            )
+            _mark_watchlist_status(sb, watch, row, "signal_skipped", str(credit.reason or "margin_ratio_filter"), dry_run=dry_run)
+            continue
+        if credit.margin_ratio is not None:
+            row["margin_ratio"] = credit.margin_ratio
+            row["margin_date"] = credit.margin_date
+        filtered_candidates.append((row, watch, result))
+    if not filtered_candidates:
+        return
+
+    ranked_all = sorted(filtered_candidates, key=_entry_rank_value, reverse=True)
+    ranked = ranked_all[:rank_limit] if rank_limit > 0 else ranked_all
     ranked_ids = {(w or {}).get("id") for _r, w, _res in ranked if (w or {}).get("id")}
     for row, watch, result in ranked_all:
         watch_id = (watch or {}).get("id")
@@ -755,17 +790,16 @@ def _create_ranked_virtual_trades(sb, candidates: list[tuple[dict, dict, dict]],
     for row, watch, result in ranked:
         code = row.get("code")
         sector = str(row.get("sector") or "unknown")
-        is_strong = result.get("signal_stage") == "strong_confirmed"
         if max_open and open_count >= max_open:
             logger.info("[position_limit] skip code=%s open_positions=%d limit=%d", code, open_count, max_open)
             _mark_watchlist_status(sb, watch, row, "signal_skipped", "max_open_positions", dry_run=dry_run)
             continue
-        if max_daily and today_entries >= max_daily and not is_strong:
+        if max_daily and today_entries >= max_daily:
             logger.info("[daily_entry_limit] skip code=%s today_entries=%d limit=%d", code, today_entries, max_daily)
             _mark_watchlist_status(sb, watch, row, "signal_skipped", "max_daily_entries", dry_run=dry_run)
             continue
         current_sector = sector_counts.get(sector, 0)
-        if max_sector and current_sector >= max_sector and not is_strong:
+        if max_sector and current_sector >= max_sector:
             logger.info("[sector_limit] skip code=%s sector=%s current=%d limit=%d", code, sector, current_sector, max_sector)
             _mark_watchlist_status(sb, watch, row, "signal_skipped", "max_sector_positions", dry_run=dry_run)
             continue
@@ -940,6 +974,9 @@ def run(args: argparse.Namespace) -> None:
     )
     target = _target_config(args)
     model_row, bundle = _load_model_bundle(sb, args)
+    if args.fallback_rule:
+        logger.warning("--fallback-rule specified; active model predictions are disabled")
+        bundle = None
     using_model = bundle is not None
     if not using_model:
         logger.warning("using fallback rule probabilities")
@@ -954,7 +991,8 @@ def run(args: argparse.Namespace) -> None:
         x = _prepare_model_frame(snapshots, bundle)
         probabilities = [float(v) for v in bundle["model"].predict_proba(x)[:, 1]]
     else:
-        probabilities = [_fallback_probability(r) for r in snapshots]
+        probabilities = [_cap_fallback_probability(_fallback_probability(r), cfg) for r in snapshots]
+        logger.warning("fallback probabilities are capped below confirmed threshold; virtual entries disabled by stage")
 
     signal_count = 0
     notify_items: list[tuple[dict, dict]] = []

@@ -4,5 +4,6 @@ __pycache__/
 *.pyc
 *.log
 venv/
-# Rebound AI model artifacts are runtime assets for GitHub Actions cron.
-# Keep them versioned so predict_rebound.py can load the active ml_models path.
+models/*.pkl
+models/*_features.json
+models/*_importance.csv

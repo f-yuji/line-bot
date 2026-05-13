@@ -32,6 +32,7 @@ except ImportError:
     HAS_LIGHTGBM = False
 
 from supabase import create_client
+from services.model_storage import upload_model_artifacts
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -397,6 +398,9 @@ def run(args: argparse.Namespace) -> None:
         "is_active": bool(args.activate),
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
+    if not args.no_upload_storage:
+        uploaded = upload_model_artifacts(sb, [model_path, feature_path, importance_path], root=ROOT)
+        logger.info("model artifacts uploaded to storage: files=%d", uploaded)
     _register_model(sb, row, bool(args.activate))
     logger.info("model saved: %s active=%s", model_path, bool(args.activate))
 
@@ -413,6 +417,7 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--target-label", choices=["5d", "10d"], default="5d")
     p.add_argument("--model-name")
     p.add_argument("--force", action="store_true")
+    p.add_argument("--no-upload-storage", action="store_true")
     return p.parse_args()
 
 
