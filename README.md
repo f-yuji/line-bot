@@ -1,425 +1,287 @@
-# LINEニュースbot兼 急落リバウンドAI投資補助ツール
+# 急落リバウンドAI投資補助ツール（LINE bot統合）
 
-このリポジトリは、LINE Messaging API を入口にしたニュースbot、補助金検索bot、相場確認Web UI、東証プライム急落リバウンドAIを統合した個人向け運用ツールです。
+東証プライム銘柄の急落リバウンドをAIで予測し、仮想売買で検証する個人向け運用ツール。  
+自動売買はしない。候補抽出・AI確率・仮想売買・検証まで担当し、最終判断と発注は人間が行う。
 
-自動売買はしません。銘柄候補の抽出、除外理由の提示、AI確率、期待値、仮想売買、検証用ラベル作成までを担当し、最終判断と発注は人間が行います。
+LINE Messaging API を入口にしたニュースbot・補助金botも統合している。
+
+---
+
+## システム概要
+
+```text
+急落検知（scan_prime.py）
+  → 特徴量生成（generate_feature_snapshots.py）
+  → AI予測（predict_rebound.py）
+      → シグナル判定（signal_stage）
+      → 仮想売買エントリー（virtual_trades）
+      → LINE通知（任意）
+
+仮想売買チェック（check_virtual_trades.py）
+  → 出口条件判定
+  → 決済記録
+
+バックテスト（backtest_case_mix.py）
+  → ケース定義別シミュレーション
+  → ミックス最適化検証
+```
+
+---
 
 ## 主要機能
 
-- LINEニュースbot
-  - RSS/ニュース取得、要約、深掘り質問、直近ニュース文脈への回答。
-  - 既存ニュースbot機能は投資AI側の「相場材料検知エンジン」としても使う方針。
+### 急落検知・リバウンドAI
 
-- 補助金bot
-  - 都道府県、業種別に補助金・助成金情報を返す。
-  - LINE上でカテゴリ選択、続き表示、条件変更に対応。
+- 東証プライム全銘柄を対象に急落（day_change_pct ≤ -3.5%）を検知
+- LightGBM で「5営業日以内に+5%到達する確率（signal_probability）」を予測
+- 期待値・相場モード・悪材料スコアを組み合わせてシグナルステージを決定
+- AIが使えない場合はルールベースへフォールバック
 
-- 急落検知
-  - 日経225、東証プライム、Dow系の急落をスキャン。
-  - 主対象は東証プライム。Dowは当面ログ保存のみで、日本株AIモデルには混ぜない。
+### 仮想売買
 
-- ルールベースのリバウンド監視
-  - 急落銘柄を監視し、反発率、急落時からの戻り、出来高倍率、RSI回復、5日線上抜けを判定。
-  - `early` / `confirmed` / `strong_confirmed` の `signal_stage` を保存。
-  - 強悪材料は除外し、LINE通知しない。
+- シグナル発生時に `virtual_trades` へ仮想エントリーを記録
+- 毎日 `check_virtual_trades.py` が出口条件をチェックして決済
 
-- AIリバウンド予測
-  - `stock_feature_snapshots` と `stock_rebound_labels` を使って LightGBM を学習。
-  - 5営業日以内に+5%到達する確率を予測。
-  - 期待値、相場モード、悪材料スコアを使ってシグナル段階を決める。
-  - AIが使えない場合はルールベースへフォールバック。
+### ケーステスト / バックテスト
 
-- ニュース・相場モード
-  - `market_news_signals` にニュース由来スコアを保存。
-  - `market_regime` に `normal` / `shock` / `panic` / `recovery` を保存。
-  - ニューススコア単独では `shock` にしない。市場実データの悪化条件を必須にする。
+- `trade_case_definitions` にルールセット（TP/SL・フィルタ・信用残条件など）を登録
+- `trade_case_tester.py` が任意期間の候補銘柄に対してシミュレーション
+- `backtest_case_mix.py` でケースを加重ミックスしたエクイティカーブを研究用に出力
 
-- 仮想売買
-  - シグナル発生時に `virtual_trades` へ仮想エントリーを保存。
-  - 利確+5%、損切-4%、最大5営業日を基本ルールに検証する。
-  - `stock_drop_watchlist` は現在状態、`rebound_signal_history` は累積履歴として扱う。
+### Web UI
 
-- Web UI
-  - LINE設定、ニュース、相場、ウォッチリスト、仮想売買、モデル情報などを確認する管理画面。
+| URL | 機能 |
+|---|---|
+| `/web/dashboard` | ウォッチリストサマリー、オープンポジション |
+| `/web/watchlist` | 急落監視リスト（ステータスフィルタ付き） |
+| `/web/signals` | 全シグナル表示 |
+| `/web/virtual-trades` | 仮想売買ポジション一覧 |
+| `/web/virtual-trades/performance` | 日次/週次/月次パフォーマンス集計 |
+| `/web/virtual-trades/performance/detail` | 期間別決済明細 |
+| `/web/case-tests` | ケース定義・テスト実行履歴 |
+| `/web/case-tests/<run_id>/<case_id>` | ケーステスト詳細結果 |
+| `/web/research-db` | リサーチDBスナップショット管理 |
+| `/web/models` | MLモデル管理 |
+| `/web/settings` | 戦略設定（後述） |
 
-## 全体アーキテクチャ
+### LINE bot
+
+- ニュースbot: RSS取得・要約・深掘り質問・文脈応答
+- 補助金bot: 都道府県×業種別に補助金情報を返す
+
+---
+
+## AIシグナルの流れ
 
 ```text
-LINE Messaging API
-  -> app.py
-      -> ニュース応答 / 補助金応答 / 相場ボタン / Web UI
-
-Supabase PostgreSQL
-  -> users
-  -> news_contexts / sent_articles / last_news_batch
-  -> stock_drop_watchlist
-  -> virtual_trades
-  -> prime_stocks_cache
-  -> stock_feature_snapshots
-  -> stock_rebound_labels
-  -> market_news_signals
-  -> market_regime
-  -> ml_models
-
-Data Sources
-  -> J-Quants Light: listed/info, daily_quotes, statements
-  -> yfinance fallback
-  -> RSS / Yahoo / Google News / Nikkei系RSS
-
-ML Pipeline
-  -> generate_feature_snapshots.py
-  -> generate_rebound_labels.py
-  -> train_rebound_model.py
-  -> predict_rebound.py
+LightGBM予測 → signal_probability（0〜1）
+  ↓
+_expected_value() = probability × TP% − (1−probability) × |SL%|
+  ↓
+signal_stage 判定（services/signal_stage.py）
 ```
 
-## 急落リバウンドAIの流れ
+### signal_stage 閾値（設定画面で変更可能）
+
+| stage | 条件 | 意味 |
+|---|---|---|
+| `strong_confirmed` | probability ≥ 0.65 かつ rule_score ≥ 60 | 強本命 |
+| `confirmed` | probability ≥ 0.50 | 本命 |
+| `early` | probability ≥ 0.35 | 初動 |
+| `none` | 上記未満 | シグナルなし |
+
+- 相場モード（`ai_threshold_adjust`）で閾値を微調整
+- `bad_news_score ≥ 80` はどのステージでも除外
+
+### シグナルライフサイクル
 
 ```text
-東証プライム銘柄一覧取得
-  -> J-Quants優先、prime_stocks_cache保存
-
-過去株価取得
-  -> J-Quants daily_quotes優先、失敗時はyfinance fallback
-
-特徴量生成
-  -> stock_feature_snapshots
-
-急落候補抽出
-  -> is_drop_candidate = true
-
-結果ラベル生成
-  -> stock_rebound_labels
-  -> t日終値から t+1〜t+5営業日を評価
-
-LightGBM学習
-  -> models/*.pkl
-  -> ml_models
-
-AI予測
-  -> signal_probability
-  -> expected_value
-  -> signal_stage
-  -> stock_drop_watchlist更新
-  -> virtual_trades作成
-  -> 必要時LINE通知
+watching                      急落検知、監視開始
+rebound_candidate (early)     候補。virtual_trade は原則作らない
+rebound_signal (confirmed)    有効シグナル。エントリー対象
+rebound_signal (strong)       強シグナル。上限チェックを一部突破可
+entered                       virtual_trade 作成済み
+signal_skipped                上限超過・冷却期間などでエントリー見送り
+expired / closed / excluded   終了
 ```
 
-## シグナルライフサイクル
+---
 
-`signal_stage` はAI/ルール上の強さ、`status` はライフサイクル状態として分離します。
+## 仮想売買の出口ロジック
 
-```text
-watching
-  -> 急落監視中
+`check_virtual_trades.py` が毎日実行し、以下の条件を優先順に確認する。
 
-rebound_candidate + signal_stage=early
-  -> 候補。監視強化段階。通常は virtual_trades を作成しない。
+| 出口 | 条件 |
+|---|---|
+| Pullback利確 | エントリー後+2%以上上昇後、前日比-2%で決済 |
+| RSIリバーサル | RSI75以上後にRSI低下で決済 |
+| MA5割れ | 5日移動平均を割り込んで決済 |
+| 損切 | エントリー価格から-4%で決済 |
+| ボリュームフェード | 出来高比率が0.5未満で決済（プロキシ） |
+| ATRトレーリング | ATR×乗数を下回ったら決済 |
+| タイムアウト | 保有期限（デフォルト5日）で強制決済 |
 
-rebound_signal + signal_stage=confirmed
-  -> 未エントリーの有効シグナル。
+保有期限は「高値更新なら延長」設定（デフォルト2日）で延長可能。
 
-rebound_signal + signal_stage=strong_confirmed
-  -> 強シグナル。entry_rank_limit / max_daily_entries / max_sector_positions は突破可能。
+クリーンアップ決済（`cleanup_duplicate_open` / `cleanup_position_limit`）は別スクリプト（`cleanup_virtual_positions.py`）が担当し、パフォーマンス集計からは除外される。
 
-entered
-  -> この watchlist から virtual_trade が作成済み。signal active から除外。
+---
 
-signal_skipped
-  -> 上限、同一銘柄open、再エントリー冷却などでエントリー見送り。
+## 信用残フィルタ
 
-expired / ai_dropped / closed / excluded
-  -> 現在有効ではない終了状態。
+エントリー候補を `stock_weekly_margin_interest`（週次信用残）でフィルタする。
+
+| 設定項目 | デフォルト | 意味 |
+|---|---|---|
+| 信用倍率フィルタ 有効 | true | フィルタON/OFF |
+| 信用倍率データ必須 | true | データなし銘柄を除外 |
+| 信用倍率上限 | 5.0倍 | この倍率超の銘柄は除外 |
+
+データは `import_jquants_margin.py` でJ-Quantsから取得。  
+欠損チェックは `audit_missing_margin_for_case_mix.py` で実施可能。
+
+---
+
+## ケースミックスバックテスト
+
+研究用。DBへの書き込みは行わない。
+
+```powershell
+# 全シナリオ・全ミックスを実行
+.\venv\Scripts\python.exe scripts\backtest_case_mix.py --scenario all --mix all
+
+# レポート生成（PNG + CSV + Markdown）
+.\venv\Scripts\python.exe scripts\render_case_mix_report.py
 ```
 
-Dashboard の `signal active` は以下のみを数えます。
+出力先: `outputs/case_mix/`
+
+定義済みシナリオ: `2020_covid_crash` / `2022_rate_hike_bear` / `2023_rebound` / `2024_ai_bubble` / `2025_ai_bubble` / `custom_recent`
+
+定義済みミックス: `core_mix` / `pullback2_only` / `defensive_mix` / `bull_mix`
+
+---
+
+## MLパイプライン
 
 ```text
-stock_drop_watchlist.status = 'rebound_signal'
-signal_stage in ('confirmed', 'strong_confirmed')
-is_excluded != true
-virtual_trade_id is null
+generate_feature_snapshots.py   特徴量生成（stock_feature_snapshots）
+generate_rebound_labels.py      結果ラベル生成（stock_rebound_labels）
+train_rebound_model.py          LightGBM学習・保存（ml_models）
+predict_rebound.py              AI予測・シグナル更新・仮想売買作成
 ```
 
-保有中は `virtual_trades.status='open' AND sell_date IS NULL` で判定します。
-
-## 重要な判定ルール
-
-### 急落候補
-
-標準では以下を急落候補とします。
+### 急落候補の条件
 
 ```text
-day_change_pct <= -3.5
-```
-
-取引対象として最低限以下を満たす必要があります。
-
-```text
-close >= 100
-turnover_value >= 100,000,000
+day_change_pct <= -3.5%
+close >= 100円
+turnover_value >= 1億円
 ```
 
 ### ラベル成功条件
 
-対象日 `t` の終値を `entry_price` とします。
+`t` 日終値（entry_price）を起点に：
 
-- 成功:
-  - t+1〜t+5営業日の高値が `entry_price * 1.05` 以上に到達
-  - その利確到達日より前に、終値ベースで `entry_price * 0.96` 以下へ到達していない
+- **成功**: t+1〜t+5営業日の高値が entry_price × 1.05 以上に到達、かつそれより前に終値-4%未到達
+- **失敗**: 先に終値-4%到達 / 5日以内に高値+5%未到達 / 同日に両方発生（保守的に失敗）
 
-- 失敗:
-  - 先に終値-4%へ到達
-  - 5営業日以内に高値+5%へ到達しない
-  - 同じ日に高値+5%と終値-4%が発生した場合も保守的に失敗
+---
 
-### AIシグナル
+## 戦略設定（Web UI）
 
-AI予測時の基本閾値です。
+`/web/settings` から変更可能。DBの `strategy_settings` テーブルに保存。
 
-```text
-none:
-  probability < 0.55
-  または expected_value <= 0
-  または bad_news_score >= 80
+| セクション | 主な設定項目 |
+|---|---|
+| **急落検知** | watchlist登録閾値(-3.5%)、指数乖離閾値(-2.0%pt) |
+| **リバウンド判定** | 反発率、出来高倍率、RSI、MA5上抜け条件 |
+| **エントリー選抜** | 最大保有数(20)、1日上限(5)、上位ランク数(10)、同セクター上限(2) |
+| **仮想売買の出口** | 反落利確%、RSIライン、損切%、保有日数 |
+| **エントリーフィルタ** | 信用倍率フィルタ・上限(5.0倍) |
+| **ルールスコア配点** | テクニカル50/ファンダ30/地合い20、監視閾値 |
+| **AI予測** | AI予測ON/OFF、early/confirmed/strong確率閾値 |
+| **通知設定** | 急落通知、リバ通知、AI通知、早期通知、push通知閾値 |
 
-early:
-  probability >= 0.55
-  expected_value > 0
-  bad_news_score < 80
-
-confirmed:
-  probability >= 0.65
-  expected_value > 0
-  bad_news_score < 80
-
-strong_confirmed:
-  probability >= 0.72
-  expected_value > 0
-  bad_news_score < 60
-  volume_ratio_20d >= 1.3
-```
-
-相場モードによって通知閾値は微調整します。
-
-## ナフサ・エネルギー関連の扱い
-
-ナフサ、原油高、樹脂、塗料、溶剤、防水材、建材などは `energy_naphtha_score` として保存します。
-
-ただし、ナフサ関連だけを理由に銘柄を除外しません。将来AIが特徴量として判断できるように保存するだけです。
-
-## J-Quants Light対応
-
-J-Quantsを優先し、失敗時にyfinanceへフォールバックします。
-
-利用する主なAPI:
-
-- `/listed/info`
-- `/prices/daily_quotes`
-- `/fins/statements`
-
-コードはJ-Quantsで5桁形式になる場合があります。
-
-```text
-72030 -> 7203
-18010 -> 1801
-```
-
-普通株を優先し、ETF、REIT、インフラファンド、外国株などは可能な範囲で除外します。
-
-## 主要スクリプト
-
-### 銘柄一覧
-
-```powershell
-.\venv\Scripts\python.exe prime_stocks.py --refresh-jquants --dry-run
-.\venv\Scripts\python.exe prime_stocks.py --refresh-jquants
-```
-
-### J-Quants接続確認
-
-```powershell
-.\venv\Scripts\python.exe scripts\test_jquants_light.py
-```
-
-### 特徴量生成
-
-J-Quants優先で3年分を作ります。
-
-```powershell
-.\venv\Scripts\python.exe scripts\generate_feature_snapshots.py --years 3 --market prime --source jquants --limit 10 --dry-run
-```
-
-全件バックフィルは429対策のため分割・sleep付きで実行します。
-
-```powershell
-.\venv\Scripts\python.exe scripts\generate_feature_snapshots.py --years 3 --market prime --source jquants --skip-existing --sleep-seconds 3 --cooldown-on-429 600 *> backfill.log
-```
-
-途中再開:
-
-```powershell
-.\venv\Scripts\python.exe scripts\generate_feature_snapshots.py --years 3 --market prime --source jquants --start-after-code 4151 --skip-existing --sleep-seconds 5 --cooldown-on-429 900 *> backfill.log
-```
-
-### ラベル生成
-
-長時間処理なのでログファイルへ出します。1000件ごとにDBへflushします。
-
-```powershell
-.\venv\Scripts\python.exe scripts\generate_rebound_labels.py --years 3 --limit 1000000 --progress-every 1000 --flush-every 1000 *> labels_flush.log
-```
-
-進捗確認:
-
-```powershell
-Select-String -Path labels_flush.log -Pattern "candidate load progress","candidates=","label progress","flush","upsert","summary","Traceback","ERROR" | Select-Object -Last 50
-```
-
-### ニューススコア
-
-```powershell
-.\venv\Scripts\python.exe scripts\generate_news_signals.py --today --dry-run
-.\venv\Scripts\python.exe scripts\generate_news_signals.py --today --apply-to-features
-```
-
-### 相場モード更新
-
-```powershell
-.\venv\Scripts\python.exe scripts\update_market_regime.py --today --dry-run
-.\venv\Scripts\python.exe scripts\update_market_regime.py --today --apply-to-features
-```
-
-### モデル学習
-
-```powershell
-.\venv\Scripts\python.exe scripts\train_rebound_model.py --years 3 --min-samples 300 --activate
-```
-
-### AI予測
-
-```powershell
-.\venv\Scripts\python.exe scripts\predict_rebound.py --latest --dry-run
-.\venv\Scripts\python.exe scripts\predict_rebound.py --latest
-.\venv\Scripts\python.exe scripts\predict_rebound.py --latest --notify
-```
-
-### 既存ルール監視
-
-```powershell
-.\venv\Scripts\python.exe scripts\monitor_rebound.py --dry-run
-```
-
-### 仮想売買チェック
-
-```powershell
-.\venv\Scripts\python.exe scripts\check_virtual_trades.py
-```
+---
 
 ## 主要DBテーブル
 
-### stock_drop_watchlist
+| テーブル | 用途 |
+|---|---|
+| `stock_drop_watchlist` | 急落銘柄と現在の監視状態 |
+| `rebound_signal_history` | シグナル発生履歴（累積ログ） |
+| `virtual_trades` | 仮想売買ログ（buy_date / sell_date / profit_loss） |
+| `stock_feature_snapshots` | LightGBM入力の特徴量（銘柄×日付） |
+| `stock_rebound_labels` | 5日後までの高値・安値・終値ラベル |
+| `stock_weekly_margin_interest` | 週次信用残（code / date / margin_ratio） |
+| `ml_models` | 学習済みモデルのメタ情報・パス・is_active |
+| `market_regime` | 1日1行の相場モード（normal/shock/panic/recovery） |
+| `market_news_signals` | ニュース由来の各種スコア |
+| `strategy_settings` | 戦略設定（user_id='global'の1行） |
+| `trade_case_definitions` | ケーステストのルール定義 |
+| `trade_case_runs` | ケーステスト実行ログ |
+| `trade_case_results` | ケーステスト集計結果 |
+| `trade_case_simulations` | ケーステスト個別トレード記録 |
+| `prime_stocks_cache` | 東証プライム銘柄キャッシュ |
+| `research_datasets` / `research_case_snapshots` | リサーチDB |
 
-急落銘柄と現在の監視状態を保存します。
+---
 
-主なカラム:
+## 主要スクリプト
 
-- `code`
-- `name`
-- `status`
-- `signal_stage`
-- `signal_score`
-- `signal_probability`
-- `expected_value`
-- `mode`
-- `bad_news_score`
-- `market_shock_score`
-- `sector_risk_score`
-- `fx_yen_score`
-- `energy_naphtha_score`
-- `interest_rate_score`
-- `is_excluded`
-- `exclude_reason`
-- `last_signal_at`
-- `signal_count`
+### 日次運用
 
-### stock_feature_snapshots
+```powershell
+# 朝: ニューススコア生成
+.\venv\Scripts\python.exe scripts\generate_news_signals.py --today
 
-1行が「銘柄コード × 日付」の特徴量です。LightGBMの入力になります。
+# 朝/昼: リバウンド監視
+.\venv\Scripts\python.exe scripts\monitor_rebound.py --dry-run
+.\venv\Scripts\python.exe scripts\monitor_rebound.py
 
-主な特徴量:
+# 夕方: 特徴量生成 → AI予測 → 決済チェック
+.\venv\Scripts\python.exe scripts\generate_feature_snapshots.py --today --source jquants
+.\venv\Scripts\python.exe scripts\predict_rebound.py --latest
+.\venv\Scripts\python.exe scripts\check_virtual_trades.py
+```
 
-- 株価、出来高、売買代金
-- 前日比、急落率、5日/20日/52週高値からの下落率
-- 移動平均乖離
-- RSI
-- 出来高倍率
-- ATR、ボラティリティ
-- 日経平均/TOPIX/VIXとの比較
-- 財務指標
-- ニューススコア
-- `is_drop_candidate`
-- `is_tradeable`
+### 週次・不定期
 
-### stock_rebound_labels
+```powershell
+# モデル再学習
+.\venv\Scripts\python.exe scripts\train_rebound_model.py --years 3 --min-samples 300 --activate
 
-急落候補の5営業日後までの成功/失敗ラベルです。
+# 信用残インポート
+.\venv\Scripts\python.exe scripts\import_jquants_margin.py
 
-主なカラム:
+# ケースミックスバックテスト
+.\venv\Scripts\python.exe scripts\backtest_case_mix.py --scenario all --mix all
+```
 
-- `feature_snapshot_id`
-- `code`
-- `trade_date`
-- `entry_price`
-- `future_high_1d` 〜 `future_high_5d`
-- `future_low_1d` 〜 `future_low_5d`
-- `future_close_1d` 〜 `future_close_5d`
-- `max_return_5d_pct`
-- `max_drawdown_5d_pct`
-- `label_success`
-- `label_reason`
+### バックフィル（初回・大量処理）
 
-### market_news_signals
+```powershell
+# 特徴量バックフィル（3年分・429対策つき）
+.\venv\Scripts\python.exe scripts\generate_feature_snapshots.py --years 3 --market prime --source jquants --skip-existing --sleep-seconds 3 --cooldown-on-429 600 *> backfill.log
 
-ニュースをルールベースで分類し、市場・セクター・個別材料のスコアとして保存します。
+# ラベル生成
+.\venv\Scripts\python.exe scripts\generate_rebound_labels.py --years 3 --limit 1000000 --progress-every 1000 --flush-every 1000 *> labels.log
+```
 
-主なスコア:
+---
 
-- `market_shock_score`
-- `sector_risk_score`
-- `bad_news_score`
-- `fx_yen_score`
-- `energy_naphtha_score`
-- `interest_rate_score`
-- `geopolitical_score`
-- `supply_chain_score`
+## データソース
 
-### market_regime
+- **J-Quants Light（優先）**: `/listed/info`, `/prices/daily_quotes`, `/fins/statements`, 週次信用残
+- **yfinance（フォールバック）**: J-Quants失敗時
+- **RSS/Yahoo/Google News/Nikkei系RSS**: ニュースbot用
 
-1日1行で相場モードを保存します。
+J-Quantsのコードは5桁の場合がある（`72030` → `7203`）。普通株を優先し、ETF/REIT/外国株は除外。
 
-モード:
+---
 
-- `normal`
-- `shock`
-- `panic`
-- `recovery`
-
-ニューススコアだけで `shock` にはせず、日経平均、TOPIX、値下がり比率、VIXなど市場実データの悪化を必須にします。
-
-### ml_models
-
-LightGBMモデルのバージョン、特徴量、評価指標、保存先を管理します。
-
-### virtual_trades
-
-AIまたはルールシグナルの仮想売買ログです。
-
-既存DBカラム名に合わせ、エントリー日は `buy_date`、エントリー価格は `buy_price` を使います。
-
-## 環境変数
-
-`.env` に設定します。値はコードに直書きしません。
+## 環境変数（.env）
 
 ```text
 SUPABASE_URL=
@@ -437,58 +299,35 @@ JQUANTS_PASSWORD=
 WEB_URL=
 ```
 
-J-Quantsは原則 `JQUANTS_REFRESH_TOKEN` を使います。V2クライアント利用時はライブラリ側の認証方式に従います。
-
-## 運用例
-
-日次運用の目安です。最初はcronに入れず、手動確認を推奨します。
-
-```text
-08:30 ニューススコア生成
-09:00 monitor-reboundで朝チェック
-12:00 monitor-reboundで昼チェック
-16:30 GitHub Actionsで決済チェック、stock_feature_snapshots生成、AI予測
-週末 LightGBM再学習
-```
-
-## 開発・確認コマンド
-
-構文チェック:
-
-```powershell
-.\venv\Scripts\python.exe -m py_compile app.py settings_loader.py scoring.py bad_news_filter.py scripts\monitor_rebound.py
-.\venv\Scripts\python.exe -m py_compile scripts\generate_feature_snapshots.py scripts\generate_rebound_labels.py scripts\train_rebound_model.py scripts\predict_rebound.py
-```
-
-依存関係:
-
-```powershell
-.\venv\Scripts\pip.exe install -r requirements.txt
-.\venv\Scripts\python.exe -c "import lightgbm, sklearn, joblib, numpy; print('ml imports ok')"
-```
+---
 
 ## デプロイ
 
-Fly.ioを使います。
+Fly.io を使用。
 
 ```powershell
 fly deploy --remote-only
 ```
 
+---
+
 ## 注意事項
 
-- 自動売買は実装しない。
-- Dowは日本株AIモデルに混ぜない。
-- ナフサ関連だけで除外しない。
-- 未来データリーク禁止。特徴量は対象日までの情報だけを使う。
-- ラベル生成では未来データを使うが、目的変数としてのみ扱い、特徴量には混ぜない。
-- 長時間処理はログファイルへ出力する。
+- **自動売買は実装しない。** 最終判断と発注は人間が行う。
+- **未来データリーク禁止。** 特徴量は対象日までの情報だけを使う。ラベル生成では未来データを目的変数としてのみ使用。
+- **Dowは日本株AIモデルに混ぜない。** ログ保存のみ。
+- **ナフサ関連だけで銘柄除外しない。** 特徴量として保存するだけ。
 - `--dry-run` ではDB保存しない。
 - Supabaseの既存データは削除しない。
-- J-Quants失敗時は可能な範囲でyfinance fallbackする。
+- 長時間処理はログファイルへ出力する。
+
+### 期待値（expected_value）について
+
+現在の `expected_value` は固定TP/SL前提の簡易計算値。UI表示・ランキング補助・ログ用途のみで使用し、エントリーフィルタとしては使っていない。実運用出口（pullback / RSI / MA5 など）とは前提が異なるため、実績データが蓄積されてから再検討する。
+
+---
 
 ## 旧機能メモ
 
-- 「朝サマリー通知」と「ポートフォリオ通知」は、現在の急落リバウンドAI運用では使わないためWeb UIでは非表示にしています。
-- 互換性のため、既存の設定カラムや `/web/portfolio` ルート自体は残しています。
-- LINE pushは原則停止し、確認はWeb UI中心です。cronのリバウンド監視も `--no-notify` で実行します。
+- 「朝サマリー通知」「ポートフォリオ通知」は現在の運用では使わないためWeb UIで非表示。互換性のため設定カラムと `/web/portfolio` ルートは残存。
+- LINE pushは原則停止し、確認はWeb UI中心。cronのリバウンド監視も `--no-notify` 推奨。
