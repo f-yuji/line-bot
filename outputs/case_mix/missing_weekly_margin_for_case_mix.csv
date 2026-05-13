@@ -1,0 +1,9 @@
+﻿scenario,code,candidate_trade_dates,missing_trade_dates,first_missing_trade_date,last_missing_trade_date,fetch_start,fetch_end,reason
+2020_covid_crash,7085,18,2,2020-03-04,2020-03-05,2020-01-19,2020-03-05,no weekly margin row within lookback window
+2020_covid_crash,7088,11,2,2020-03-11,2020-03-12,2020-01-26,2020-03-12,no weekly margin row within lookback window
+2020_covid_crash,7095,7,1,2020-04-01,2020-04-01,2020-02-16,2020-04-01,no weekly margin row within lookback window
+2022_rate_hike_bear,5461,1,1,2022-12-29,2022-12-29,2022-11-14,2022-12-29,no weekly margin row within lookback window
+2022_rate_hike_bear,5830,8,1,2022-10-05,2022-10-05,2022-08-21,2022-10-05,no weekly margin row within lookback window
+2022_rate_hike_bear,5831,7,1,2022-10-05,2022-10-05,2022-08-21,2022-10-05,no weekly margin row within lookback window
+2022_rate_hike_bear,9147,27,1,2022-01-06,2022-01-06,2021-11-22,2022-01-06,no weekly margin row within lookback window
+2022_rate_hike_bear,9229,39,1,2022-06-30,2022-06-30,2022-05-16,2022-06-30,no weekly margin row within lookback window

@@ -146,6 +146,78 @@ def _repair_from_virtual_trades(sb, args: argparse.Namespace) -> int:
     return changed
 
 
+def _repair_open_code_overlaps(sb, args: argparse.Namespace) -> int:
+    """Repair active signal rows that still overlap with an open virtual trade.
+
+    Exact watchlist/snapshot matches are the entered row. Other same-code active
+    rows are skipped so the dashboard never shows a buy signal for a held code.
+    """
+    q = (
+        sb.table("virtual_trades")
+        .select("id,code,status,sell_date,watchlist_id,feature_snapshot_id,created_at")
+        .eq("status", "open")
+        .is_("sell_date", "null")
+        .order("created_at", desc=True)
+    )
+    if args.code:
+        q = q.eq("code", args.code)
+    open_trades = _fetch_all(q)
+    if not open_trades:
+        return 0
+
+    trade_by_code: dict[str, list[dict]] = {}
+    for trade in open_trades:
+        code = str(trade.get("code") or "")
+        if code:
+            trade_by_code.setdefault(code, []).append(trade)
+
+    q_rows = (
+        sb.table("stock_drop_watchlist")
+        .select("id,code,status,signal_stage,is_excluded,feature_snapshot_id,virtual_trade_id,updated_at")
+        .in_("status", ["rebound_signal", "rebound_candidate", "watching"])
+        .order("updated_at", desc=True)
+    )
+    if args.code:
+        q_rows = q_rows.eq("code", args.code)
+    if args.limit:
+        q_rows = q_rows.limit(args.limit)
+    rows = _fetch_all(q_rows)
+
+    changed = 0
+    now = _now()
+    for row in rows:
+        code = str(row.get("code") or "")
+        trades = trade_by_code.get(code) or []
+        if not trades:
+            continue
+        matched = next(
+            (
+                trade for trade in trades
+                if str(trade.get("watchlist_id") or "") == str(row.get("id") or "")
+                or (
+                    trade.get("feature_snapshot_id")
+                    and str(trade.get("feature_snapshot_id")) == str(row.get("feature_snapshot_id"))
+                )
+            ),
+            None,
+        )
+        if matched:
+            changed += _update(sb, row, {
+                "status": "entered",
+                "entered_at": now,
+                "virtual_trade_id": str(matched.get("id")) if matched.get("id") else row.get("virtual_trade_id"),
+                "signal_status_reason": "virtual_trade_open_repair",
+                "updated_at": now,
+            }, apply=args.apply, reason="virtual_trade_open_repair")
+            continue
+        changed += _update(sb, row, {
+            "status": "signal_skipped",
+            "signal_status_reason": "already_open_virtual_trade",
+            "updated_at": now,
+        }, apply=args.apply, reason="already_open_virtual_trade")
+    return changed
+
+
 def _repair_watchlist_rows(sb, args: argparse.Namespace) -> int:
     q = (
         sb.table("stock_drop_watchlist")
@@ -227,6 +299,7 @@ def main() -> None:
 
     sb = _build_supabase()
     changed = _repair_from_virtual_trades(sb, args)
+    changed += _repair_open_code_overlaps(sb, args)
     changed += _repair_watchlist_rows(sb, args)
     logger.info("complete: mode=%s changes=%d", "apply" if args.apply else "dry-run", changed)
 

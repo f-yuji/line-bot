@@ -47,7 +47,9 @@
       "Bash(Get-ChildItem -Path \"c:\\\\Users\\\\f-yuj\\\\dev\\\\line_bot\" -Recurse -Name -Filter \"*.py\")",
       "Bash(Select-String \"app\")",
       "Bash(grep -E \"\\\\.html$|\\\\.css$\")",
-      "Bash(venv/Scripts/python.exe -c ' *)"
+      "Bash(venv/Scripts/python.exe -c ' *)",
+      "PowerShell($f = \"C:\\\\Users\\\\f-yuj\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\c--Users-f-yuj-dev-line-bot\\\\367b3246-17ce-4bc6-8b52-95715d931064\\\\tasks\\\\bkqvg4uc6.output\"; if \\(Test-Path $f\\) { \\(Get-Item $f\\).Length; Get-Content $f | Select-Object -Last 15 } else { \"file not found\" })",
+      "Bash(python scripts/backtest_case_mix.py --scenario all --mix all)"
     ]
   }
 }

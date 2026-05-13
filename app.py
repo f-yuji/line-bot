@@ -1796,9 +1796,27 @@ def get_signal_badge_label(row: dict) -> str:
     return "シグナルなし"
 
 
-def get_watchlist_counts(rows: list[dict]) -> dict:
+def _open_virtual_trade_codes() -> set[str]:
+    try:
+        rows = (
+            supabase.table("virtual_trades")
+            .select("code")
+            .eq("status", "open")
+            .is_("sell_date", "null")
+            .limit(1000)
+            .execute()
+            .data or []
+        )
+        return {str(r.get("code")) for r in rows if r.get("code")}
+    except Exception as e:
+        logger.warning("open virtual trade codes failed: %s", e)
+        return set()
+
+
+def get_watchlist_counts(rows: list[dict], open_trade_codes: set[str] | None = None) -> dict:
     """ダッシュボード集計。各一覧ページの表示条件と一致させる。"""
     now_utc = datetime.now(timezone.utc)
+    open_trade_codes = open_trade_codes or set()
 
     def _not_expired(row: dict) -> bool:
         value = row.get("signal_expires_at")
@@ -1826,6 +1844,7 @@ def get_watchlist_counts(rows: list[dict]) -> dict:
         and r.get("signal_stage") in {"confirmed", "strong_confirmed"}
         and not r.get("is_excluded")
         and not r.get("virtual_trade_id")
+        and str(r.get("code") or "") not in open_trade_codes
         and _not_expired(r)
     ]
 
@@ -1890,16 +1909,18 @@ def web_dashboard():
         logger.error("dashboard error: %s", e)
         rows = []
     holding_count = 0
+    open_trade_codes: set[str] = set()
     try:
-        holding_count = int(
+        open_trade_rows = (
             supabase.table("virtual_trades")
-            .select("id", count="exact")
+            .select("id,code", count="exact")
             .eq("status", "open")
             .is_("sell_date", "null")
-            .limit(1)
+            .limit(1000)
             .execute()
-            .count or 0
         )
+        holding_count = int(open_trade_rows.count or 0)
+        open_trade_codes = {str(r.get("code")) for r in (open_trade_rows.data or []) if r.get("code")}
     except Exception as e:
         logger.warning("holding count failed: %s", e)
     signal_rows = [
@@ -1908,6 +1929,7 @@ def web_dashboard():
         and r.get("signal_stage") in {"confirmed", "strong_confirmed"}
         and not r.get("is_excluded")
         and not r.get("virtual_trade_id")
+        and str(r.get("code") or "") not in open_trade_codes
         and _not_expired(r)
     ]
     signal_rows.sort(
@@ -1926,7 +1948,7 @@ def web_dashboard():
         and not r.get("is_excluded")
     ]
     watching_rows = [r for r in rows if r.get("status") == "watching"]
-    stats = get_watchlist_counts(rows)
+    stats = get_watchlist_counts(rows, open_trade_codes)
     stats["holding"] = holding_count
     return render_template("web/dashboard.html",
         rows=rows,
@@ -2064,6 +2086,8 @@ def web_refresh_prices():
 def web_watchlist():
     status_filter = request.args.get("status", "all")
     market_adjustment = _current_market_adjustment()
+    terminal_statuses = {"closed", "expired", "ai_dropped", "signal_skipped", "excluded"}
+
     def _num(row: dict, *keys: str) -> float:
         for key in keys:
             try:
@@ -2074,33 +2098,84 @@ def web_watchlist():
                 continue
         return 0.0
 
+    def _row_dt(row: dict) -> datetime:
+        for key in ("closed_at", "updated_at", "last_signal_at", "drop_detected_at"):
+            value = row.get(key)
+            if not value:
+                continue
+            try:
+                dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                return dt
+            except Exception:
+                continue
+        return datetime.min.replace(tzinfo=timezone.utc)
+
+    def _status_rank(row: dict) -> int:
+        status = row.get("status") or ""
+        stage = row.get("signal_stage") or ""
+        if status == "entered":
+            return 0
+        if status == "rebound_signal" and stage == "strong_confirmed":
+            return 1
+        if status == "rebound_signal":
+            return 2
+        if status == "rebound_candidate":
+            return 3
+        if status == "watching":
+            return 4
+        if status == "closed":
+            return 9
+        if status in terminal_statuses:
+            return 8
+        return 7
+
     try:
-        q = supabase.table("stock_drop_watchlist").select("*").order("drop_pct", desc=False)
+        q = supabase.table("stock_drop_watchlist").select("*").order("updated_at", desc=True)
         if status_filter != "all":
             q = q.eq("status", status_filter)
-        rows = q.limit(200).execute().data or []
+        rows = q.limit(1000).execute().data or []
         rows = [_with_ai_priority_stage(r, market_adjustment) for r in rows]
+        if status_filter == "all":
+            cutoff = datetime.now(timezone.utc) - timedelta(days=30)
+            rows = [
+                r for r in rows
+                if r.get("status") not in terminal_statuses or _row_dt(r) >= cutoff
+            ]
         rows.sort(
             key=lambda r: (
-                STAGE_RANK.get(r.get("signal_stage"), 0),
-                _num(r, "signal_probability", "ai_probability"),
-                _num(r, "expected_value"),
-                _num(r, "signal_score", "rebound_score", "score"),
+                _status_rank(r),
+                -_num(r, "signal_probability", "ai_probability"),
+                -_num(r, "expected_value"),
+                -_num(r, "signal_score", "rebound_score", "score"),
+                -_row_dt(r).timestamp(),
             ),
-            reverse=True,
         )
+        rows = rows[:200]
     except Exception as e:
         logger.error("watchlist error: %s", e)
         rows = []
-    return render_template("web/watchlist.html", rows=rows, status_filter=status_filter, market_adjustment=market_adjustment)
+    closable_watchlist_statuses = {"watching", "rebound_candidate", "rebound_signal"}
+    return render_template(
+        "web/watchlist.html",
+        rows=rows,
+        status_filter=status_filter,
+        market_adjustment=market_adjustment,
+        closable_watchlist_statuses=closable_watchlist_statuses,
+    )
 
 
 @app.route("/web/watchlist/<item_id>/close", methods=["POST"])
 def web_watchlist_close(item_id):
     try:
+        now = datetime.now(timezone.utc).isoformat()
         supabase.table("stock_drop_watchlist").update({
             "status": "closed",
-            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "closed_at": now,
+            "close_reason": "manual_watchlist_close",
+            "signal_status_reason": "manual_watchlist_close",
+            "updated_at": now,
         }).eq("id", item_id).execute()
         flash("クローズした", "success")
     except Exception as e:
@@ -2134,6 +2209,7 @@ def web_signals():
         except Exception:
             return True
 
+    open_trade_codes = _open_virtual_trade_codes()
     try:
         rows = (
             supabase.table("stock_drop_watchlist")
@@ -2155,6 +2231,7 @@ def web_signals():
         and r.get("signal_stage") in {"confirmed", "strong_confirmed"}
         and not r.get("is_excluded")
         and not r.get("virtual_trade_id")
+        and str(r.get("code") or "") not in open_trade_codes
         and _not_expired(r)
     ]
     rows.sort(

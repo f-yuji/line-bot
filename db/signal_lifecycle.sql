@@ -9,9 +9,30 @@ ALTER TABLE stock_drop_watchlist
     ADD COLUMN IF NOT EXISTS signal_expires_at timestamptz,
     ADD COLUMN IF NOT EXISTS signal_status_reason text;
 
+-- The previous lifecycle used a narrower CHECK constraint. Recreate it so the
+-- application can move rows out of active signal states without deleting them.
+ALTER TABLE stock_drop_watchlist
+    DROP CONSTRAINT IF EXISTS stock_drop_watchlist_status_check;
+
+ALTER TABLE stock_drop_watchlist
+    ADD CONSTRAINT stock_drop_watchlist_status_check
+    CHECK (
+        status IN (
+            'watching',
+            'notified',
+            'rebound_candidate',
+            'rebound_signal',
+            'entered',
+            'signal_skipped',
+            'expired',
+            'ai_dropped',
+            'closed',
+            'excluded'
+        )
+    );
+
 CREATE INDEX IF NOT EXISTS idx_stock_drop_watchlist_signal_lifecycle
     ON stock_drop_watchlist (status, signal_stage, updated_at DESC);
 
 CREATE INDEX IF NOT EXISTS idx_stock_drop_watchlist_virtual_trade_id
     ON stock_drop_watchlist (virtual_trade_id);
-

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Write a compact rebound AI cron summary to research_import_logs."""
+"""Write a rebound AI cron summary to research_import_logs."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ import argparse
 import json
 import os
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
@@ -16,6 +16,7 @@ from dotenv import load_dotenv
 from supabase import create_client
 
 load_dotenv()
+JST = timezone(timedelta(hours=9))
 
 try:
     from openai import OpenAI
@@ -80,15 +81,154 @@ def _latest_market_regime(sb, latest_date: str | None) -> dict[str, Any] | None:
     return rows[0] if rows else None
 
 
+def _fmt_yen(value: Any) -> str:
+    try:
+        amount = float(value or 0)
+    except Exception:
+        amount = 0.0
+    sign = "+" if amount > 0 else ""
+    return f"{sign}{amount:,.0f}円"
+
+
+def _fmt_pct(value: Any) -> str:
+    if value is None:
+        return "-"
+    try:
+        amount = float(value)
+    except Exception:
+        return "-"
+    sign = "+" if amount > 0 else ""
+    return f"{sign}{amount:.2f}%"
+
+
+def _trade_label(trade: dict[str, Any]) -> str:
+    code = trade.get("code") or "-"
+    name = trade.get("name") or ""
+    return f"{name}（{code}）" if name else str(code)
+
+
+def _day_bounds_utc() -> tuple[str, str, str]:
+    target = datetime.now(JST).date()
+    start = datetime(target.year, target.month, target.day, tzinfo=JST)
+    end = start + timedelta(days=1)
+    return target.isoformat(), start.astimezone(timezone.utc).isoformat(), end.astimezone(timezone.utc).isoformat()
+
+
+def _sum_number(rows: list[dict[str, Any]], key: str) -> float:
+    total = 0.0
+    for row in rows:
+        try:
+            total += float(row.get(key) or 0)
+        except Exception:
+            continue
+    return total
+
+
+def _trade_activity(sb) -> dict[str, Any]:
+    activity_date, start_utc, end_utc = _day_bounds_utc()
+    cols = (
+        "id,code,name,buy_price,buy_date,sell_price,sell_date,quantity,status,"
+        "profit_loss,profit_loss_pct,unrealized_pnl,unrealized_pnl_pct,"
+        "current_price,exit_reason,sell_reason,signal_stage,created_at,updated_at"
+    )
+    entries = (
+        sb.table("virtual_trades")
+        .select(cols)
+        .gte("buy_date", start_utc)
+        .lt("buy_date", end_utc)
+        .order("buy_date", desc=True)
+        .limit(30)
+        .execute()
+        .data
+        or []
+    )
+    exits = (
+        sb.table("virtual_trades")
+        .select(cols)
+        .gte("sell_date", start_utc)
+        .lt("sell_date", end_utc)
+        .order("sell_date", desc=True)
+        .limit(30)
+        .execute()
+        .data
+        or []
+    )
+    open_positions = (
+        sb.table("virtual_trades")
+        .select(cols)
+        .eq("status", "open")
+        .is_("sell_date", "null")
+        .order("buy_date", desc=True)
+        .limit(100)
+        .execute()
+        .data
+        or []
+    )
+    return {
+        "activity_date": activity_date,
+        "entries": entries,
+        "exits": exits,
+        "open_positions": open_positions,
+        "entry_count": len(entries),
+        "exit_count": len(exits),
+        "realized_pnl": _sum_number(exits, "profit_loss"),
+        "unrealized_pnl": _sum_number(open_positions, "unrealized_pnl"),
+    }
+
+
+def _compact_trade(trade: dict[str, Any], *, side: str) -> dict[str, Any]:
+    item = {
+        "code": trade.get("code"),
+        "name": trade.get("name"),
+        "quantity": trade.get("quantity"),
+        "status": trade.get("status"),
+    }
+    if side == "entry":
+        item.update({
+            "buy_price": trade.get("buy_price"),
+            "buy_date": trade.get("buy_date"),
+            "signal_stage": trade.get("signal_stage"),
+        })
+    elif side == "exit":
+        item.update({
+            "buy_price": trade.get("buy_price"),
+            "sell_price": trade.get("sell_price"),
+            "sell_date": trade.get("sell_date"),
+            "profit_loss": trade.get("profit_loss"),
+            "profit_loss_pct": trade.get("profit_loss_pct"),
+            "exit_reason": trade.get("exit_reason") or trade.get("sell_reason"),
+        })
+    else:
+        item.update({
+            "buy_price": trade.get("buy_price"),
+            "current_price": trade.get("current_price"),
+            "unrealized_pnl": trade.get("unrealized_pnl"),
+            "unrealized_pnl_pct": trade.get("unrealized_pnl_pct"),
+        })
+    return item
+
+
 def _fallback_ai_summary(summary: dict[str, Any]) -> str:
     market = summary.get("market_regime") or {}
-    trades = summary.get("recent_virtual_trades") or []
-    trade_text = "、".join(str(t.get("code")) for t in trades[:5] if t.get("code")) or "なし"
+    activity = summary.get("trade_activity") or {}
+    entries = activity.get("entries") or []
+    exits = activity.get("exits") or []
+    open_positions = activity.get("open_positions") or []
+    entry_text = "、".join(_trade_label(t) for t in entries[:8]) or "なし"
+    if exits:
+        exit_text = "、".join(
+            f"{_trade_label(t)} {_fmt_yen(t.get('profit_loss'))}（{_fmt_pct(t.get('profit_loss_pct'))}）"
+            for t in exits[:8]
+        )
+    else:
+        exit_text = "なし"
     return (
-        f"{summary.get('latest_feature_date')}は"
-        f"特徴量{summary.get('feature_snapshots')}件、急落候補{summary.get('drop_tradeable_candidates')}件。"
-        f"地合いは{market.get('mode') or '不明'}（{market.get('reason') or '詳細なし'}）。"
-        f"直近の仮想売買候補は{trade_text}。"
+        f"{summary.get('latest_feature_date')}の市場は"
+        f"地合い{market.get('mode') or '不明'}（{market.get('reason') or '詳細なし'}）。"
+        f"{activity.get('activity_date')}の仮想売買は、買い{len(entries)}件: {entry_text}。"
+        f"売り{len(exits)}件: {exit_text}。"
+        f"本日の確定損益は{_fmt_yen(activity.get('realized_pnl'))}、"
+        f"保有中{len(open_positions)}件の含み損益は{_fmt_yen(activity.get('unrealized_pnl'))}。"
     )
 
 
@@ -99,6 +239,7 @@ def _build_ai_summary(summary: dict[str, Any]) -> str:
 
     market = summary.get("market_regime") or {}
     trades = summary.get("recent_virtual_trades") or []
+    activity = summary.get("trade_activity") or {}
     trade_lines = [
         {
             "code": t.get("code"),
@@ -111,17 +252,23 @@ def _build_ai_summary(summary: dict[str, Any]) -> str:
     ]
     payload = {
         "latest_feature_date": summary.get("latest_feature_date"),
+        "trade_activity_date": activity.get("activity_date"),
         "feature_snapshots": summary.get("feature_snapshots"),
         "drop_tradeable_candidates": summary.get("drop_tradeable_candidates"),
         "open_virtual_trades": summary.get("open_virtual_trades"),
         "market_regime": market,
+        "today_entries": [_compact_trade(t, side="entry") for t in (activity.get("entries") or [])[:12]],
+        "today_exits": [_compact_trade(t, side="exit") for t in (activity.get("exits") or [])[:12]],
+        "today_realized_pnl": activity.get("realized_pnl"),
+        "open_positions_unrealized_pnl": activity.get("unrealized_pnl"),
+        "open_positions": [_compact_trade(t, side="open") for t in (activity.get("open_positions") or [])[:12]],
         "recent_virtual_trades": trade_lines,
     }
     prompt = (
         "急落リバウンドAIの1日運用ログを日本語で短くまとめてください。"
         "投資助言ではなく、研究・フォワード検証ログとして書くこと。"
-        "市場で何があったか、仮想売買で何をしたか、明日見るべき点を3文以内で。"
-        "銘柄コードは必要に応じて列挙してください。"
+        "必ず、買った銘柄、売った銘柄、確定損益、保有中の含み損益を含めること。"
+        "売買がない項目は「なし」と書くこと。明日見るべき点を最後に1文だけ添え、全体は5文以内。"
     )
     try:
         client = OpenAI(api_key=api_key)
@@ -132,7 +279,7 @@ def _build_ai_summary(summary: dict[str, Any]) -> str:
                 {"role": "user", "content": json.dumps(payload, ensure_ascii=False, default=str)},
             ],
             temperature=0.2,
-            max_tokens=260,
+            max_tokens=360,
         )
         text = (res.choices[0].message.content or "").strip()
         return text or _fallback_ai_summary(summary)
@@ -183,6 +330,7 @@ def build_summary(sb) -> dict[str, Any]:
         "drop_tradeable_candidates": int(drop_tradeable),
         "open_virtual_trades": int(open_trades),
         "recent_virtual_trades": recent_trades,
+        "trade_activity": _trade_activity(sb),
         "market_regime": _latest_market_regime(sb, latest_date),
     }
     summary["ai_summary"] = _build_ai_summary(summary)

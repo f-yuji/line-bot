@@ -7,6 +7,7 @@
   {%- set status = r.status or "" -%}
   {%- if status == "excluded" -%}<span class="badge closed">除外</span>
   {%- elif status == "entered" -%}<span class="badge notified">保有中</span>
+  {%- elif status == "closed" -%}<span class="badge closed">クローズ</span>
   {%- elif status == "signal_skipped" -%}<span class="badge closed">見送り</span>
   {%- elif status == "expired" -%}<span class="badge closed">期限切れ</span>
   {%- elif status == "ai_dropped" -%}<span class="badge closed">AI低下</span>
@@ -68,7 +69,7 @@
 
 <div class="filter-bar">
   <div class="segmented">
-    {% for val, label in [("all","全て"), ("watching","監視中"), ("rebound_candidate","候補"), ("rebound_signal","シグナル"), ("entered","保有中"), ("signal_skipped","見送り"), ("expired","期限切れ"), ("ai_dropped","AI低下"), ("excluded","除外"), ("closed","クローズ")] %}
+    {% for val, label in [("all","全て"), ("entered","保有中"), ("rebound_signal","シグナル"), ("rebound_candidate","候補"), ("signal_skipped","見送り"), ("expired","期限切れ"), ("ai_dropped","AI低下"), ("excluded","除外"), ("closed","クローズ")] %}
     <a href="/web/watchlist?status={{ val }}" class="{{ 'active' if status_filter == val else '' }}" style="text-decoration:none">{{ label }}</a>
     {% endfor %}
   </div>
@@ -106,10 +107,14 @@
           <td class="muted num">{{ r.last_checked_at | jst("%Y-%m-%d") }}</td>
           <td class="muted num">{{ r.drop_detected_at | jst("%Y-%m-%d") }}</td>
           <td>
-            {% if r.status != "closed" %}
+            {% if r.status in closable_watchlist_statuses %}
             <form method="post" action="/web/watchlist/{{ r.id }}/close?status={{ status_filter }}" style="display:inline">
               <button type="submit" class="btn sm danger" onclick="return confirm('クローズしますか？')">×</button>
             </form>
+            {% elif r.status == "entered" %}
+            <span class="muted">holding</span>
+            {% else %}
+            <span class="muted">closed</span>
             {% endif %}
           </td>
         </tr>
