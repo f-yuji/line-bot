@@ -134,6 +134,48 @@ def fetch_price_rows_since_entry(trade: dict, *, pre_days: int = 35) -> list[dic
     return rows
 
 
+def fetch_snapshot_price_rows_since_entry(sb, trade: dict, *, pre_days: int = 35) -> list[dict]:
+    """Fetch daily close rows from stock_feature_snapshots.
+
+    This is the preferred source for Japan-market virtual exits because the
+    rebound pipeline already imports the official close into this table. It
+    also avoids yfinance occasionally returning today's row with Close=null.
+    """
+    buy_dt = _parse_dt(trade.get("buy_date"))
+    code = str(trade.get("code") or "").replace(".T", "").strip()
+    if not buy_dt or not code:
+        return []
+    start = (buy_dt.date() - timedelta(days=pre_days)).isoformat()
+    try:
+        rows = (
+            sb.table("stock_feature_snapshots")
+            .select("trade_date,open,high,low,close,volume")
+            .eq("code", code)
+            .gte("trade_date", start)
+            .order("trade_date")
+            .execute()
+            .data
+            or []
+        )
+    except Exception as e:
+        logger.warning("snapshot price rows fetch failed code=%s: %s", code, e)
+        return []
+    out: list[dict] = []
+    for row in rows:
+        close = _to_float(row.get("close"))
+        if close is None or close <= 0:
+            continue
+        out.append({
+            "date": str(row.get("trade_date")),
+            "open": _to_float(row.get("open")),
+            "high": _to_float(row.get("high")),
+            "low": _to_float(row.get("low")),
+            "close": close,
+            "volume": _to_float(row.get("volume")),
+        })
+    return out
+
+
 def _rsi(closes: list[float], period: int = 14) -> float | None:
     if len(closes) < period + 1:
         return None

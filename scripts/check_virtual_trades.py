@@ -19,6 +19,7 @@ from services.virtual_trade_exit import (
     HAS_PRICE_DEPS,
     close_related_watchlist,
     evaluate_virtual_trade_exit,
+    fetch_snapshot_price_rows_since_entry,
     is_non_japanese_trade,
 )
 
@@ -102,8 +103,10 @@ def run(args: argparse.Namespace) -> None:
             skipped += 1
             continue
         try:
+            price_rows = fetch_snapshot_price_rows_since_entry(sb, trade)
             result = evaluate_virtual_trade_exit(
                 trade,
+                price_rows=price_rows or None,
                 holding_days=holding_days,
                 settings=cfg,
                 now=now_utc,

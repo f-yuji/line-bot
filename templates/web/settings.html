@@ -178,10 +178,9 @@
         <input type="checkbox" name="ai_predict_enabled" {% if cfg.ai_predict_enabled %}checked{% endif %} style="accent-color:var(--accent);width:16px;height:16px">
       </div>
       {% for key, label in [
-        ("ai_probability_early", "早期確率"),
-        ("ai_probability_confirmed", "確定確率"),
-        ("ai_probability_strong", "強シグナル確率"),
-        ("ai_expected_value_min", "期待値 最小"),
+        ("ai_probability_early", "監視開始ライン（early）"),
+        ("ai_probability_confirmed", "エントリー対象ライン（confirmed）"),
+        ("ai_probability_strong", "強シグナルライン（strong）"),
       ] %}
       <div class="form-row">
         <label>{{ label }}</label>

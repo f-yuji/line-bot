@@ -33,7 +33,7 @@ from services.market_regime import evaluate_market_regime
 from services.entry_credit_filter import attach_entry_margin_data, evaluate_entry_credit_filter
 from services.signal_stage import SIGNAL_STAGES, evaluate_signal_stage
 from services.signal_history import record_rebound_signal
-from services.virtual_trade_exit import close_related_watchlist, evaluate_virtual_trade_exit
+from services.virtual_trade_exit import close_related_watchlist, evaluate_virtual_trade_exit, fetch_snapshot_price_rows_since_entry
 from settings_loader import get_settings
 
 load_dotenv()
@@ -885,7 +885,8 @@ def _manage_virtual_trades(cfg: dict, now_utc: datetime, *, dry_run: bool = Fals
             continue
         code = trade.get("code", "")
         try:
-            result = evaluate_virtual_trade_exit(trade, settings=cfg, now=now_utc)
+            price_rows = fetch_snapshot_price_rows_since_entry(supabase, trade)
+            result = evaluate_virtual_trade_exit(trade, price_rows=price_rows or None, settings=cfg, now=now_utc)
             if not result:
                 continue
             update_data = result.update
