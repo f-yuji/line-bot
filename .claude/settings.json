@@ -53,7 +53,8 @@
       "Bash(Get-ChildItem -Path \"c:\\\\Users\\\\f-yuj\\\\dev\\\\line_bot\" -Recurse -Directory)",
       "Bash(Select-Object -ExpandProperty Name)",
       "Bash(Sort-Object)",
-      "Bash(Get-Unique)"
+      "Bash(Get-Unique)",
+      "Bash(git rm *)"
     ]
   }
 }
