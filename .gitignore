@@ -7,3 +7,6 @@ venv/
 models/*.pkl
 models/*_features.json
 models/*_importance.csv
+.yfinance_cache/
+backups/
+outputs/
