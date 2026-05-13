@@ -6,9 +6,13 @@
   {%- set stage = r.signal_stage or "none" -%}
   {%- set status = r.status or "" -%}
   {%- if status == "excluded" -%}<span class="badge closed">除外</span>
+  {%- elif status == "entered" -%}<span class="badge notified">保有中</span>
+  {%- elif status == "signal_skipped" -%}<span class="badge closed">見送り</span>
+  {%- elif status == "expired" -%}<span class="badge closed">期限切れ</span>
+  {%- elif status == "ai_dropped" -%}<span class="badge closed">AI低下</span>
   {%- elif stage == "strong_confirmed" -%}<span class="badge notified">強本命</span>
   {%- elif stage == "confirmed" -%}<span class="badge signal">本命</span>
-  {%- elif stage == "early" -%}<span class="badge signal-early">初動</span>
+  {%- elif stage == "early" or status == "rebound_candidate" -%}<span class="badge signal-early">候補</span>
   {%- elif status == "notified" or r.rebound_notified_at -%}<span class="badge notified">通知済み</span>
   {%- elif status == "watching" -%}<span class="badge watching">監視中</span>
   {%- else -%}<span class="badge watching">シグナルなし</span>

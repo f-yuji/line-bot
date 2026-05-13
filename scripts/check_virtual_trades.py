@@ -145,6 +145,65 @@ def evaluate_trade(trade: dict, *, take_profit: float, stop_loss: float, holding
     return update
 
 
+def _close_related_watchlist(sb, trade: dict, exit_reason: str, *, dry_run: bool) -> None:
+    now = datetime.now(timezone.utc).isoformat()
+    update = {
+        "status": "closed",
+        "closed_at": now,
+        "close_reason": exit_reason,
+        "signal_status_reason": f"virtual_trade_closed:{exit_reason}",
+        "updated_at": now,
+    }
+
+    def _fetch_by_query(q):
+        try:
+            rows = q.limit(1).execute().data or []
+            return rows[0] if rows else None
+        except Exception as e:
+            logger.warning("watchlist lookup failed trade=%s: %s", trade.get("id"), e)
+            return None
+
+    row = None
+    if trade.get("watchlist_id"):
+        row = _fetch_by_query(
+            sb.table("stock_drop_watchlist")
+            .select("id,code,status")
+            .eq("id", trade.get("watchlist_id"))
+        )
+    if not row and trade.get("feature_snapshot_id"):
+        row = _fetch_by_query(
+            sb.table("stock_drop_watchlist")
+            .select("id,code,status")
+            .eq("feature_snapshot_id", trade.get("feature_snapshot_id"))
+            .in_("status", ["rebound_signal", "entered", "watching", "rebound_candidate", "signal_skipped"])
+            .order("updated_at", desc=True)
+        )
+    if not row and trade.get("code"):
+        row = _fetch_by_query(
+            sb.table("stock_drop_watchlist")
+            .select("id,code,status")
+            .eq("code", trade.get("code"))
+            .in_("status", ["rebound_signal", "entered", "watching", "rebound_candidate", "signal_skipped"])
+            .order("updated_at", desc=True)
+        )
+
+    if not row:
+        logger.info("watchlist close skipped: no related row trade_id=%s code=%s", trade.get("id"), trade.get("code"))
+        return
+    if dry_run:
+        logger.info("DRYRUN watchlist close: id=%s update=%s", row.get("id"), update)
+        return
+    sb.table("stock_drop_watchlist").update(update).eq("id", row["id"]).execute()
+    logger.info(
+        "[signal_lifecycle] code=%s watchlist_id=%s status %s -> closed reason=%s trade_id=%s",
+        row.get("code") or trade.get("code"),
+        row.get("id"),
+        row.get("status"),
+        exit_reason,
+        trade.get("id"),
+    )
+
+
 def run(args: argparse.Namespace) -> None:
     if not HAS_DEPS:
         raise RuntimeError("pandas and yfinance are required")
@@ -188,6 +247,10 @@ def run(args: argparse.Namespace) -> None:
             )
             if not args.dry_run:
                 sb.table("virtual_trades").update(update).eq("id", trade["id"]).execute()
+                if update.get("status") == "closed":
+                    _close_related_watchlist(sb, trade, str(update.get("exit_reason") or "closed"), dry_run=False)
+            elif update.get("status") == "closed":
+                _close_related_watchlist(sb, trade, str(update.get("exit_reason") or "closed"), dry_run=True)
         except Exception as e:
             errors += 1
             logger.exception("virtual trade check failed id=%s code=%s: %s", trade.get("id"), trade.get("code"), e)

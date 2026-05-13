@@ -51,6 +51,8 @@ TARGET_CONFIG = {
     "10d": {"model_name": "rebound_lgbm_10d", "legacy_model_name": None, "take_profit_pct": 7.0, "stop_loss_pct": -4.0, "holding_days": 10},
 }
 VIRTUAL_REENTRY_COOLDOWN_DAYS = 10
+ENTRY_SIGNAL_STAGES = {"confirmed", "strong_confirmed"}
+ACTIVE_SIGNAL_STAGES = {"confirmed", "strong_confirmed"}
 
 
 def _target_config(args: argparse.Namespace) -> dict:
@@ -156,7 +158,7 @@ def _close_stale_watchlist_rows(sb, target_date: str, *, dry_run: bool) -> None:
     rows = (
         sb.table("stock_drop_watchlist")
         .select("id,code,status,feature_snapshot_id,drop_detected_at")
-        .in_("status", ["watching", "rebound_signal"])
+        .in_("status", ["watching", "rebound_signal", "rebound_candidate", "signal_skipped"])
         .execute()
         .data or []
     )
@@ -164,7 +166,7 @@ def _close_stale_watchlist_rows(sb, target_date: str, *, dry_run: bool) -> None:
         return
 
     snapshot_dates = _snapshot_trade_dates(sb, [r.get("feature_snapshot_id") for r in rows])
-    stale_ids: list[Any] = []
+    stale_rows: list[dict] = []
     stale_by_status: dict[str, int] = {}
     for row in rows:
         snapshot_id = row.get("feature_snapshot_id")
@@ -173,11 +175,11 @@ def _close_stale_watchlist_rows(sb, target_date: str, *, dry_run: bool) -> None:
             trade_date = _parse_trade_date_jst(row.get("drop_detected_at"))
         if trade_date and trade_date >= target_date:
             continue
-        stale_ids.append(row.get("id"))
+        stale_rows.append(row)
         status = str(row.get("status") or "unknown")
         stale_by_status[status] = stale_by_status.get(status, 0) + 1
 
-    stale_ids = [sid for sid in stale_ids if sid]
+    stale_ids = [r.get("id") for r in stale_rows if r.get("id")]
     if not stale_ids:
         logger.info("stale watchlist cleanup: none target_date=%s active_rows=%d", target_date, len(rows))
         return
@@ -195,9 +197,19 @@ def _close_stale_watchlist_rows(sb, target_date: str, *, dry_run: bool) -> None:
     now = datetime.now(timezone.utc).isoformat()
     for i in range(0, len(stale_ids), 100):
         sb.table("stock_drop_watchlist").update({
-            "status": "closed",
+            "status": "expired",
+            "closed_at": now,
+            "close_reason": "stale_signal",
+            "signal_status_reason": "stale_signal_cleanup",
             "updated_at": now,
         }).in_("id", stale_ids[i:i + 100]).execute()
+    for row in stale_rows:
+        logger.info(
+            "[signal_lifecycle] code=%s watchlist_id=%s status %s -> expired reason=stale_signal_cleanup",
+            row.get("code"),
+            row.get("id"),
+            row.get("status"),
+        )
 
 
 def _load_active_model_row(sb, model_name: str = "rebound_lgbm") -> dict | None:
@@ -355,7 +367,7 @@ def _recent_closed_trade(sb, code: str, cooldown_days: int = VIRTUAL_REENTRY_COO
     return None
 
 
-def _same_signal_trade_exists(sb, snapshot: dict, watch: dict) -> bool:
+def _same_signal_trade_exists(sb, snapshot: dict, watch: dict) -> str | None:
     watchlist_id = watch.get("id") or snapshot.get("watchlist_id")
     feature_snapshot_id = snapshot.get("id") or snapshot.get("feature_snapshot_id")
     try:
@@ -375,7 +387,7 @@ def _same_signal_trade_exists(sb, snapshot: dict, watch: dict) -> bool:
                     watchlist_id,
                     rows[0].get("status"),
                 )
-                return True
+                return "duplicate_signal"
         if feature_snapshot_id:
             rows = (
                 sb.table("virtual_trades")
@@ -392,10 +404,33 @@ def _same_signal_trade_exists(sb, snapshot: dict, watch: dict) -> bool:
                     feature_snapshot_id,
                     rows[0].get("status"),
                 )
-                return True
+                return "duplicate_signal"
     except Exception as e:
         logger.warning("same signal trade lookup failed code=%s: %s", snapshot.get("code"), e)
-    return False
+    return None
+
+
+def _mark_watchlist_status(sb, watch: dict, snapshot: dict, status: str, reason: str, *, dry_run: bool, trade_id: Any = None) -> None:
+    watchlist_id = (watch or {}).get("id")
+    if not watchlist_id:
+        return
+    now = datetime.now(timezone.utc).isoformat()
+    update = {
+        "status": status,
+        "signal_status_reason": reason,
+        "updated_at": now,
+    }
+    if status == "entered":
+        update["entered_at"] = now
+        update["virtual_trade_id"] = str(trade_id) if trade_id is not None else None
+    if status in {"closed", "expired", "ai_dropped", "excluded"}:
+        update["closed_at"] = now
+        update["close_reason"] = reason
+    if dry_run:
+        logger.info("DRYRUN watchlist status update: id=%s %s", watchlist_id, update)
+        return
+    sb.table("stock_drop_watchlist").update(update).eq("id", watchlist_id).execute()
+    _signal_lifecycle_log(snapshot.get("code"), watchlist_id, watch.get("status"), status, reason, trade_id=trade_id)
 
 
 def _current_mode(sb, target_date: str) -> dict:
@@ -435,7 +470,7 @@ def _find_watchlist(sb, code: str) -> dict | None:
         sb.table("stock_drop_watchlist")
         .select("id,code,status,signal_stage,signal_count")
         .eq("code", code)
-        .in_("status", ["watching", "rebound_signal", "notified"])
+        .in_("status", ["watching", "rebound_candidate", "rebound_signal", "notified"])
         .order("updated_at", desc=True)
         .limit(1)
         .execute()
@@ -444,12 +479,38 @@ def _find_watchlist(sb, code: str) -> dict | None:
     return rows[0] if rows else None
 
 
+def _status_for_stage(stage: str, is_excluded: bool) -> str:
+    if is_excluded:
+        return "excluded"
+    if stage == "early":
+        return "rebound_candidate"
+    if stage in ACTIVE_SIGNAL_STAGES:
+        return "rebound_signal"
+    return "ai_dropped"
+
+
+def _signal_lifecycle_log(code: Any, watchlist_id: Any, old_status: Any, new_status: str, reason: str, **extra: Any) -> None:
+    suffix = " ".join(f"{k}={v}" for k, v in extra.items() if v is not None)
+    logger.info(
+        "[signal_lifecycle] code=%s watchlist_id=%s status %s -> %s reason=%s%s%s",
+        code,
+        watchlist_id,
+        old_status,
+        new_status,
+        reason,
+        " " if suffix else "",
+        suffix,
+    )
+
+
 def _persist_watchlist(sb, row: dict, result: dict, *, dry_run: bool, force: bool) -> dict | None:
     now = datetime.now(timezone.utc).isoformat()
     existing = _find_watchlist(sb, str(row["code"]))
     prev_count = int((existing or {}).get("signal_count") or 0)
+    prev_stage = (existing or {}).get("signal_stage")
+    prev_status = (existing or {}).get("status")
     stage = result["signal_stage"]
-    status = "rebound_signal" if stage in SIGNAL_STAGES else "watching"
+    status = _status_for_stage(stage, bool(result["is_excluded"]))
     signal_count = prev_count + 1 if stage in SIGNAL_STAGES and (existing or {}).get("signal_stage") == stage else (1 if stage in SIGNAL_STAGES else prev_count)
     update = {
         "code": str(row["code"]),
@@ -476,6 +537,20 @@ def _persist_watchlist(sb, row: dict, result: dict, *, dry_run: bool, force: boo
         "signal_count": signal_count,
         "is_excluded": result["is_excluded"],
         "exclude_reason": result["exclude_reason"],
+        "entered_at": None,
+        "closed_at": now if status == "ai_dropped" else None,
+        "close_reason": "ai_score_below_threshold" if status == "ai_dropped" else None,
+        "virtual_trade_id": None,
+        "signal_expires_at": None,
+        "signal_status_reason": (
+            "early_candidate"
+            if status == "rebound_candidate"
+            else "confirmed_signal"
+            if status == "rebound_signal"
+            else "ai_score_below_threshold"
+            if status == "ai_dropped"
+            else result["exclude_reason"]
+        ),
         "market_regime": result.get("market_regime"),
         "market_regime_label": result.get("market_regime_label"),
         "market_threshold_adjust": result.get("market_threshold_adjust", 0),
@@ -488,6 +563,9 @@ def _persist_watchlist(sb, row: dict, result: dict, *, dry_run: bool, force: boo
     if result["is_excluded"]:
         update["status"] = "excluded"
         update["excluded_at"] = now
+        update["closed_at"] = now
+        update["close_reason"] = "excluded"
+        update["signal_status_reason"] = result["exclude_reason"] or "excluded"
     if dry_run:
         logger.info("DRYRUN watchlist %s: %s", "update" if existing else "insert", update)
         saved = {**(existing or {}), **update}
@@ -496,15 +574,24 @@ def _persist_watchlist(sb, row: dict, result: dict, *, dry_run: bool, force: boo
     if existing and not force:
         sb.table("stock_drop_watchlist").update(update).eq("id", existing["id"]).execute()
         saved = {**existing, **update}
+        if prev_stage and prev_stage != stage:
+            logger.info("[signal_stage_transition] code=%s stage %s -> %s", row.get("code"), prev_stage, stage)
+        if prev_status != status:
+            _signal_lifecycle_log(row.get("code"), existing["id"], prev_status, status, update["signal_status_reason"])
         record_rebound_signal(sb, source="predict_rebound", snapshot=row, watchlist=saved, result=result, dry_run=dry_run)
         return saved
     if existing and force:
         sb.table("stock_drop_watchlist").update(update).eq("id", existing["id"]).execute()
         saved = {**existing, **update}
+        if prev_stage and prev_stage != stage:
+            logger.info("[signal_stage_transition] code=%s stage %s -> %s", row.get("code"), prev_stage, stage)
+        if prev_status != status:
+            _signal_lifecycle_log(row.get("code"), existing["id"], prev_status, status, update["signal_status_reason"])
         record_rebound_signal(sb, source="predict_rebound", snapshot=row, watchlist=saved, result=result, dry_run=dry_run)
         return saved
     inserted = sb.table("stock_drop_watchlist").insert(update).execute().data or []
     saved = inserted[0] if inserted else update
+    _signal_lifecycle_log(row.get("code"), saved.get("id"), None, status, update["signal_status_reason"])
     record_rebound_signal(sb, source="predict_rebound", snapshot=row, watchlist=saved, result=result, dry_run=dry_run)
     return saved
 
@@ -553,10 +640,11 @@ def _entry_limit_state(sb) -> tuple[int, int, dict[str, int]]:
 
 
 def _create_virtual_trade(sb, snapshot: dict, watch: dict, result: dict, *, dry_run: bool) -> bool:
-    if result["signal_stage"] not in SIGNAL_STAGES:
+    if result["signal_stage"] not in ENTRY_SIGNAL_STAGES:
         return False
     if result.get("market_regime") == "panic_selloff":
         logger.info("virtual_trade skipped by market regime: code=%s regime=panic_selloff", snapshot.get("code"))
+        _mark_watchlist_status(sb, watch, snapshot, "signal_skipped", "panic_selloff", dry_run=dry_run)
         return False
     try:
         existing = (
@@ -570,8 +658,11 @@ def _create_virtual_trade(sb, snapshot: dict, watch: dict, result: dict, *, dry_
             .data or []
         )
         if existing:
+            _mark_watchlist_status(sb, watch, snapshot, "signal_skipped", "already_open_virtual_trade", dry_run=dry_run)
             return False
-        if _same_signal_trade_exists(sb, snapshot, watch):
+        duplicate_reason = _same_signal_trade_exists(sb, snapshot, watch)
+        if duplicate_reason:
+            _mark_watchlist_status(sb, watch, snapshot, "signal_skipped", duplicate_reason, dry_run=dry_run)
             return False
         recent = _recent_closed_trade(sb, str(snapshot["code"]))
         if recent:
@@ -581,6 +672,7 @@ def _create_virtual_trade(sb, snapshot: dict, watch: dict, result: dict, *, dry_
                 recent.get("exit_reason") or recent.get("sell_reason"),
                 recent.get("days_since_exit"),
             )
+            _mark_watchlist_status(sb, watch, snapshot, "signal_skipped", "reentry_cooldown", dry_run=dry_run)
             return False
         now = datetime.now(timezone.utc).isoformat()
         reason = (
@@ -616,7 +708,17 @@ def _create_virtual_trade(sb, snapshot: dict, watch: dict, result: dict, *, dry_
         if dry_run:
             logger.info("DRYRUN virtual_trade insert: %s", row)
             return True
-        sb.table("virtual_trades").insert(row).execute()
+        inserted = sb.table("virtual_trades").insert(row).execute().data or []
+        trade = inserted[0] if inserted else {}
+        _mark_watchlist_status(
+            sb,
+            watch,
+            snapshot,
+            "entered",
+            "virtual_trade_created",
+            dry_run=False,
+            trade_id=trade.get("id"),
+        )
         return True
     except Exception as e:
         logger.error("virtual_trade create failed code=%s: %s", snapshot.get("code"), e)
@@ -625,7 +727,8 @@ def _create_virtual_trade(sb, snapshot: dict, watch: dict, result: dict, *, dry_
 
 def _entry_rank_value(candidate: tuple[dict, dict, dict]) -> tuple[float, float]:
     _row, _watch, result = candidate
-    return float(result.get("expected_value") or -999.0), float(result.get("probability") or 0.0)
+    stage_rank = 1 if result.get("signal_stage") == "strong_confirmed" else 0
+    return stage_rank, float(result.get("expected_value") or -999.0), float(result.get("probability") or 0.0)
 
 
 def _create_ranked_virtual_trades(sb, candidates: list[tuple[dict, dict, dict]], cfg: dict, market_adjustment: dict, *, dry_run: bool) -> None:
@@ -639,22 +742,32 @@ def _create_ranked_virtual_trades(sb, candidates: list[tuple[dict, dict, dict]],
         original = rank_limit
         rank_limit = max(1, rank_limit // 2)
         logger.info("[market_regime_limit] regime=panic_rebound entry_rank_limit=%d original=%d", rank_limit, original)
-    ranked = sorted(candidates, key=_entry_rank_value, reverse=True)
-    if rank_limit > 0:
-        ranked = ranked[:rank_limit]
+    ranked_all = sorted(candidates, key=_entry_rank_value, reverse=True)
+    strong = [c for c in ranked_all if c[2].get("signal_stage") == "strong_confirmed"]
+    normal = [c for c in ranked_all if c[2].get("signal_stage") != "strong_confirmed"]
+    ranked = strong + (normal[:rank_limit] if rank_limit > 0 else normal)
+    ranked_ids = {(w or {}).get("id") for _r, w, _res in ranked if (w or {}).get("id")}
+    for row, watch, result in ranked_all:
+        watch_id = (watch or {}).get("id")
+        if watch_id and watch_id not in ranked_ids:
+            _mark_watchlist_status(sb, watch, row, "signal_skipped", "entry_rank_limit", dry_run=dry_run)
     open_count, today_entries, sector_counts = _entry_limit_state(sb)
     for row, watch, result in ranked:
         code = row.get("code")
         sector = str(row.get("sector") or "unknown")
+        is_strong = result.get("signal_stage") == "strong_confirmed"
         if max_open and open_count >= max_open:
             logger.info("[position_limit] skip code=%s open_positions=%d limit=%d", code, open_count, max_open)
+            _mark_watchlist_status(sb, watch, row, "signal_skipped", "max_open_positions", dry_run=dry_run)
             continue
-        if max_daily and today_entries >= max_daily:
+        if max_daily and today_entries >= max_daily and not is_strong:
             logger.info("[daily_entry_limit] skip code=%s today_entries=%d limit=%d", code, today_entries, max_daily)
+            _mark_watchlist_status(sb, watch, row, "signal_skipped", "max_daily_entries", dry_run=dry_run)
             continue
         current_sector = sector_counts.get(sector, 0)
-        if max_sector and current_sector >= max_sector:
+        if max_sector and current_sector >= max_sector and not is_strong:
             logger.info("[sector_limit] skip code=%s sector=%s current=%d limit=%d", code, sector, current_sector, max_sector)
+            _mark_watchlist_status(sb, watch, row, "signal_skipped", "max_sector_positions", dry_run=dry_run)
             continue
         if _create_virtual_trade(sb, row, watch, result, dry_run=dry_run):
             open_count += 1
@@ -890,7 +1003,7 @@ def run(args: argparse.Namespace) -> None:
             result.get("market_nikkei_pct"),
             result.get("market_topix_pct"),
         )
-        if result["signal_stage"] in SIGNAL_STAGES:
+        if result["signal_stage"] in ENTRY_SIGNAL_STAGES:
             entry_candidates.append((row, watch or {}, result))
         if args.notify and not args.dry_run and _notification_allowed(row, result, cfg):
             notify_items.append((row, result))

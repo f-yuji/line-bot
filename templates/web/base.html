@@ -182,7 +182,12 @@
 <script>
 const _BADGE_MAP = {
   watching: ['watching','監視中'],
+  rebound_candidate: ['signal-early','候補'],
   rebound_signal: ['signal','シグナル'],
+  entered: ['notified','保有中'],
+  signal_skipped: ['closed','見送り'],
+  expired: ['closed','期限切れ'],
+  ai_dropped: ['closed','AI低下'],
   notified: ['notified','通知済み'],
   closed: ['closed','CLOSED'],
   excluded: ['closed','除外']
@@ -190,7 +195,7 @@ const _BADGE_MAP = {
 
 const _STAGE_MAP = {
   none: 'シグナルなし',
-  early: '初動',
+  early: '候補',
   confirmed: '本命',
   strong_confirmed: '強本命'
 };
@@ -199,9 +204,13 @@ function _getSignalBadge(r) {
   const stage = r.signal_stage || 'none';
   const status = r.status || '';
   if (status === 'excluded') return ['closed', '除外'];
+  if (status === 'entered') return ['notified', '保有中'];
+  if (status === 'signal_skipped') return ['closed', '見送り'];
+  if (status === 'expired') return ['closed', '期限切れ'];
+  if (status === 'ai_dropped') return ['closed', 'AI低下'];
   if (stage === 'strong_confirmed') return ['notified', '強本命'];
   if (stage === 'confirmed') return ['signal', '本命'];
-  if (stage === 'early') return ['signal-early', '初動'];
+  if (stage === 'early' || status === 'rebound_candidate') return ['signal-early', '候補'];
   if (status === 'notified' || r.rebound_notified_at) return ['notified', '通知済み'];
   if (status === 'watching') return ['watching', '監視中'];
   return ['watching', 'シグナルなし'];

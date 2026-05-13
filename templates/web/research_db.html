@@ -153,6 +153,89 @@
   </div>
 </div>
 
+<div class="section-h">AI運用ログ</div>
+<div class="panel" style="margin-bottom:16px">
+  <div class="table-wrap">
+    <table class="tbl">
+      <thead>
+        <tr>
+          <th>日付</th>
+          <th>状態</th>
+          <th class="right">特徴量</th>
+          <th class="right">候補</th>
+          <th class="right">保有</th>
+          <th>要約</th>
+          <th>記録</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for l in daily_logs %}
+          {% set p = l.params or {} %}
+          <tr>
+            <td class="num">{{ p.latest_feature_date or (l.dataset_key or '')|replace('rebound_ai_daily:', '') }}</td>
+            <td><span class="badge">{{ l.status }}</span></td>
+            <td class="right num">{{ num(p.feature_snapshots or l.rows_updated) }}</td>
+            <td class="right num">{{ num(p.drop_tradeable_candidates or l.rows_skipped) }}</td>
+            <td class="right num">{{ num(p.open_virtual_trades or l.rows_inserted) }}</td>
+            <td style="white-space:normal;max-width:620px">
+              {% if l.error_message %}
+                <span class="down-text">{{ l.error_message }}</span>
+              {% else %}
+                {{ p.ai_summary or '-' }}
+              {% endif %}
+            </td>
+            <td class="muted num">{{ l.finished_at | jst }}</td>
+          </tr>
+        {% else %}
+          <tr><td colspan="7" class="empty">AI運用ログはまだありません。</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="section-h">Cron実行ログ</div>
+<div class="panel" style="margin-bottom:16px">
+  <div class="table-wrap">
+    <table class="tbl">
+      <thead>
+        <tr>
+          <th>ジョブ</th>
+          <th>状態</th>
+          <th>予定</th>
+          <th>実行元</th>
+          <th>記録</th>
+          <th>メモ</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for l in cron_logs %}
+          {% set p = l.params or {} %}
+          <tr>
+            <td>
+              {{ p.job or (l.job_type or '')|replace('cron:', '') }}
+              <div class="muted" style="font-size:10px">{{ p.github_run_id or '-' }}</div>
+            </td>
+            <td><span class="badge">{{ l.status }}</span></td>
+            <td class="muted">{{ p.schedule or '-' }}</td>
+            <td class="muted">{{ p.github_event_name or '-' }}</td>
+            <td class="muted num">{{ l.finished_at | jst }}</td>
+            <td class="muted">
+              {% if l.error_message %}
+                <span class="down-text">{{ l.error_message }}</span>
+              {% else %}
+                {{ p.notes or '-' }}
+              {% endif %}
+            </td>
+          </tr>
+        {% else %}
+          <tr><td colspan="6" class="empty">Cron実行ログはまだありません。</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
 <div class="section-h">データ取得・登録ログ</div>
 <div class="panel">
   <div class="table-wrap">

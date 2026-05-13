@@ -37,6 +37,7 @@
 - 仮想売買
   - シグナル発生時に `virtual_trades` へ仮想エントリーを保存。
   - 利確+5%、損切-4%、最大5営業日を基本ルールに検証する。
+  - `stock_drop_watchlist` は現在状態、`rebound_signal_history` は累積履歴として扱う。
 
 - Web UI
   - LINE設定、ニュース、相場、ウォッチリスト、仮想売買、モデル情報などを確認する管理画面。
@@ -103,6 +104,44 @@ AI予測
   -> virtual_trades作成
   -> 必要時LINE通知
 ```
+
+## シグナルライフサイクル
+
+`signal_stage` はAI/ルール上の強さ、`status` はライフサイクル状態として分離します。
+
+```text
+watching
+  -> 急落監視中
+
+rebound_candidate + signal_stage=early
+  -> 候補。監視強化段階。通常は virtual_trades を作成しない。
+
+rebound_signal + signal_stage=confirmed
+  -> 未エントリーの有効シグナル。
+
+rebound_signal + signal_stage=strong_confirmed
+  -> 強シグナル。entry_rank_limit / max_daily_entries / max_sector_positions は突破可能。
+
+entered
+  -> この watchlist から virtual_trade が作成済み。signal active から除外。
+
+signal_skipped
+  -> 上限、同一銘柄open、再エントリー冷却などでエントリー見送り。
+
+expired / ai_dropped / closed / excluded
+  -> 現在有効ではない終了状態。
+```
+
+Dashboard の `signal active` は以下のみを数えます。
+
+```text
+stock_drop_watchlist.status = 'rebound_signal'
+signal_stage in ('confirmed', 'strong_confirmed')
+is_excluded != true
+virtual_trade_id is null
+```
+
+保有中は `virtual_trades.status='open' AND sell_date IS NULL` で判定します。
 
 ## 重要な判定ルール
 

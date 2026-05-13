@@ -26,9 +26,13 @@
   {%- set stage = r.signal_stage or "none" -%}
   {%- set status = r.status or "" -%}
   {%- if status == "excluded" -%}<span class="badge closed">除外</span>
+  {%- elif status == "entered" -%}<span class="badge notified">保有中</span>
+  {%- elif status == "signal_skipped" -%}<span class="badge closed">見送り</span>
+  {%- elif status == "expired" -%}<span class="badge closed">期限切れ</span>
+  {%- elif status == "ai_dropped" -%}<span class="badge closed">AI低下</span>
   {%- elif stage == "strong_confirmed" -%}<span class="badge notified">強本命</span>
   {%- elif stage == "confirmed" -%}<span class="badge signal">本命</span>
-  {%- elif stage == "early" -%}<span class="badge signal-early">初動</span>
+  {%- elif stage == "early" or status == "rebound_candidate" -%}<span class="badge signal-early">候補</span>
   {%- elif status == "notified" or r.rebound_notified_at -%}<span class="badge notified">通知済み</span>
   {%- elif status == "watching" -%}<span class="badge watching">監視中</span>
   {%- else -%}<span class="badge watching">シグナルなし</span>
@@ -100,6 +104,8 @@
 {# ── 行の市場分類 ── #}
 {% set jp_signal   = signal_rows   | selectattr("market", "ne", "dow") | list %}
 {% set dow_signal  = signal_rows   | selectattr("market", "equalto", "dow") | list %}
+{% set jp_candidate = candidate_rows | selectattr("market", "ne", "dow") | list %}
+{% set dow_candidate = candidate_rows | selectattr("market", "equalto", "dow") | list %}
 {% set jp_watching = watching_rows | selectattr("market", "ne", "dow") | list %}
 {% set dow_watching= watching_rows | selectattr("market", "equalto", "dow") | list %}
 
@@ -143,14 +149,19 @@
     <div class="sub muted">WATCHING</div>
   </div>
   <div class="stat-tile accent">
-    <div class="label">シグナル発生中</div>
+    <div class="label">未エントリー有効シグナル</div>
     <div class="value">{{ stats.active_signal if stats else 0 }}</div>
     <div class="sub muted">SIGNAL ACTIVE</div>
   </div>
+  <div class="stat-tile info">
+    <div class="label">候補</div>
+    <div class="value">{{ stats.candidate if stats else 0 }}</div>
+    <div class="sub muted">CANDIDATE</div>
+  </div>
   <div class="stat-tile up">
-    <div class="label">通知済み</div>
-    <div class="value">{{ stats.notified if stats else 0 }}</div>
-    <div class="sub muted">NOTIFIED</div>
+    <div class="label">保有中</div>
+    <div class="value">{{ stats.holding if stats else 0 }}</div>
+    <div class="sub muted">HOLDING</div>
   </div>
   <div class="stat-tile">
     <div class="label">合計</div>
@@ -181,8 +192,29 @@
 </div>
 {% endif %}
 
+{# ── 候補：国内 ── #}
+{% if jp_candidate %}
+<div class="section-h" style="color:var(--accent);margin-top:{% if signal_rows %}12px{% else %}20px{% endif %}">
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:12px;height:12px"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+  候補 — 国内
+</div>
+<div class="panel" style="border-color:var(--accent-dim)">
+  {{ row_table(jp_candidate, is_signal=true) }}
+</div>
+{% endif %}
+
+{% if dow_candidate %}
+<div class="section-h" style="color:var(--accent);margin-top:12px">
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:12px;height:12px"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+  候補 — ダウ
+</div>
+<div class="panel" style="border-color:var(--accent-dim)">
+  {{ row_table(dow_candidate, is_signal=true) }}
+</div>
+{% endif %}
+
 {# ── 監視中：国内 ── #}
-<div class="section-h" style="margin-top:{% if signal_rows %}16px{% else %}0{% endif %}">
+<div class="section-h" style="margin-top:{% if signal_rows or candidate_rows %}16px{% else %}0{% endif %}">
   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:12px;height:12px"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>
   監視中 — 国内
 </div>
@@ -203,7 +235,7 @@
 
 <script>
 const _ALL_ROWS = {};
-{{ (signal_rows + watching_rows) | tojson }}.forEach(function(r) { _ALL_ROWS[r.id] = r; });
+{{ (signal_rows + candidate_rows + watching_rows) | tojson }}.forEach(function(r) { _ALL_ROWS[r.id] = r; });
 
 document.querySelectorAll('.clickable-row[data-id]').forEach(function(tr) {
   tr.addEventListener('click', function() {

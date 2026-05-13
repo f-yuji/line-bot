@@ -44,6 +44,7 @@ LINE_API_BASE = "https://api.line.me"
 JAPAN_MARKETS = {"nikkei225", "nikkei", "prime", "tse_prime", "japan"}
 NON_JAPAN_MARKETS = {"dow", "dow30", "us", "usa", "nyse", "nasdaq", "djia"}
 VIRTUAL_REENTRY_COOLDOWN_DAYS = 10
+ENTRY_SIGNAL_STAGES = {"confirmed", "strong_confirmed"}
 SMOKE_RELAXED_OVERRIDES = {
     "daily_rebound_threshold": 2.0,
     "drop_rebound_threshold": 3.0,
@@ -382,6 +383,43 @@ def determine_signal_stage(
     return evaluate_signal_stage(ai_probability, score, None, cfg, market_regime)["stage"]
 
 
+def _status_for_stage(stage: str, is_excluded: bool) -> str:
+    if is_excluded:
+        return "excluded"
+    if stage == "early":
+        return "rebound_candidate"
+    if stage in ENTRY_SIGNAL_STAGES:
+        return "rebound_signal"
+    return "ai_dropped"
+
+
+def _mark_watchlist_status(item: dict, status: str, reason: str, now_utc: datetime, *, trade_id=None) -> None:
+    item_id = item.get("id")
+    if not item_id:
+        return
+    update = {
+        "status": status,
+        "signal_status_reason": reason,
+        "updated_at": now_utc.isoformat(),
+    }
+    if status == "entered":
+        update["entered_at"] = now_utc.isoformat()
+        update["virtual_trade_id"] = str(trade_id) if trade_id is not None else None
+    if status in {"closed", "expired", "ai_dropped", "excluded"}:
+        update["closed_at"] = now_utc.isoformat()
+        update["close_reason"] = reason
+    supabase.table("stock_drop_watchlist").update(update).eq("id", item_id).execute()
+    logger.info(
+        "[signal_lifecycle] code=%s watchlist_id=%s status %s -> %s reason=%s trade_id=%s",
+        item.get("code"),
+        item_id,
+        item.get("status"),
+        status,
+        reason,
+        trade_id,
+    )
+
+
 def _stage_label(stage: str) -> str:
     return {
         "early": "初動",
@@ -609,10 +647,11 @@ def _create_virtual_trade(
 ) -> bool:
     code = item.get("code", "")
     stage = item.get("signal_stage")
-    if stage not in SIGNAL_STAGES:
+    if stage not in ENTRY_SIGNAL_STAGES:
         return False
     if item.get("market_regime") == "panic_selloff":
         logger.info("virtual buy skipped by market regime: %s panic_selloff", code)
+        _mark_watchlist_status(item, "signal_skipped", "panic_selloff", now_utc)
         return False
     rebound = rebound or {}
     bad_analysis = bad_analysis or {}
@@ -626,8 +665,10 @@ def _create_virtual_trade(
             .execute()
         )
         if existing.data:
+            _mark_watchlist_status(item, "signal_skipped", "already_open_virtual_trade", now_utc)
             return False
         if _same_signal_trade_exists(item):
+            _mark_watchlist_status(item, "signal_skipped", "duplicate_signal", now_utc)
             return False
         recent = _recent_closed_trade(code, now_utc)
         if recent:
@@ -637,8 +678,9 @@ def _create_virtual_trade(
                 recent.get("exit_reason") or recent.get("sell_reason"),
                 recent.get("days_since_exit"),
             )
+            _mark_watchlist_status(item, "signal_skipped", "reentry_cooldown", now_utc)
             return False
-        supabase.table("virtual_trades").insert({
+        inserted = supabase.table("virtual_trades").insert({
             "watchlist_id": item.get("id"),
             "code": code,
             "name": item.get("name", ""),
@@ -667,7 +709,9 @@ def _create_virtual_trade(
             "status": "open",
             "created_at": now_utc.isoformat(),
             "updated_at": now_utc.isoformat(),
-        }).execute()
+        }).execute().data or []
+        trade = inserted[0] if inserted else {}
+        _mark_watchlist_status(item, "entered", "virtual_trade_created", now_utc, trade_id=trade.get("id"))
         logger.info("virtual buy: %s price=%.0f score=%.1f stage=%s", code, price, score, stage)
         return True
     except Exception as e:
@@ -727,7 +771,8 @@ def _entry_rank_value(candidate: dict) -> tuple[float, float]:
     item = candidate["item"]
     ev = _to_float(item.get("expected_value"), -999.0)
     prob = _to_float(item.get("signal_probability"), 0.0)
-    return float(ev if ev is not None else -999.0), float(prob if prob is not None else 0.0)
+    stage_rank = 1 if item.get("signal_stage") == "strong_confirmed" else 0
+    return stage_rank, float(ev if ev is not None else -999.0), float(prob if prob is not None else 0.0)
 
 
 def _create_ranked_virtual_trades(
@@ -748,24 +793,34 @@ def _create_ranked_virtual_trades(
         rank_limit = max(1, rank_limit // 2)
         logger.info("[market_regime_limit] regime=panic_rebound entry_rank_limit=%d original=%d", rank_limit, original)
 
-    ranked = sorted(candidates, key=_entry_rank_value, reverse=True)
-    if rank_limit > 0:
-        ranked = ranked[:rank_limit]
+    ranked_all = sorted(candidates, key=_entry_rank_value, reverse=True)
+    strong = [c for c in ranked_all if c["item"].get("signal_stage") == "strong_confirmed"]
+    normal = [c for c in ranked_all if c["item"].get("signal_stage") != "strong_confirmed"]
+    ranked = strong + (normal[:rank_limit] if rank_limit > 0 else normal)
+    ranked_ids = {c["item"].get("id") for c in ranked if c["item"].get("id")}
+    for candidate in ranked_all:
+        item = candidate["item"]
+        if item.get("id") and item.get("id") not in ranked_ids:
+            _mark_watchlist_status(item, "signal_skipped", "entry_rank_limit", now_utc)
 
     open_count, today_entries, sector_counts = _entry_limit_state(now_utc)
     for candidate in ranked:
         item = candidate["item"]
         code = item.get("code", "")
         sector = str(item.get("sector") or "unknown")
+        is_strong = item.get("signal_stage") == "strong_confirmed"
         if max_open and open_count >= max_open:
             logger.info("[position_limit] skip code=%s open_positions=%d limit=%d", code, open_count, max_open)
+            _mark_watchlist_status(item, "signal_skipped", "max_open_positions", now_utc)
             continue
-        if max_daily and today_entries >= max_daily:
+        if max_daily and today_entries >= max_daily and not is_strong:
             logger.info("[daily_entry_limit] skip code=%s today_entries=%d limit=%d", code, today_entries, max_daily)
+            _mark_watchlist_status(item, "signal_skipped", "max_daily_entries", now_utc)
             continue
         current_sector = sector_counts.get(sector, 0)
-        if max_sector and current_sector >= max_sector:
+        if max_sector and current_sector >= max_sector and not is_strong:
             logger.info("[sector_limit] skip code=%s sector=%s current=%d limit=%d", code, sector, current_sector, max_sector)
+            _mark_watchlist_status(item, "signal_skipped", "max_sector_positions", now_utc)
             continue
         created = _create_virtual_trade(
             item,
@@ -864,6 +919,13 @@ def _manage_virtual_trades(cfg: dict, now_utc: datetime, *, dry_run: bool = Fals
         try:
             supabase.table("virtual_trades").update(update_data).eq("id", trade["id"]).execute()
             if exit_reason:
+                item = {
+                    "id": trade.get("watchlist_id"),
+                    "code": code,
+                    "status": "entered",
+                }
+                if item["id"]:
+                    _mark_watchlist_status(item, "closed", f"virtual_trade_closed:{exit_reason}", now_utc, trade_id=trade.get("id"))
                 logger.info("virtual exit: %s %s pnl=%.1f%%", code, exit_reason, pnl_pct)
         except Exception as e:
             logger.error("virtual_trade update error: %s %s", code, e)
@@ -952,7 +1014,10 @@ def run_monitor(*, smoke_relaxed: bool = False, dry_run: bool = False, force_no_
                             logger.info("DRYRUN watch/signal expired: %s status=%s biz=%d", code, prev_status, biz)
                         else:
                             supabase.table("stock_drop_watchlist").update({
-                                "status": "closed",
+                                "status": "expired",
+                                "closed_at": now_utc.isoformat(),
+                                "close_reason": "stale_signal",
+                                "signal_status_reason": "stale_signal_cleanup",
                                 "updated_at": now_utc.isoformat(),
                             }).eq("id", item_id).execute()
                         logger.info("watch/signal expired: %s status=%s biz=%d", code, prev_status, biz)
@@ -996,14 +1061,10 @@ def run_monitor(*, smoke_relaxed: bool = False, dry_run: bool = False, force_no_
         )
 
         if is_excluded:
-            new_status = "excluded"
             exclude_reason = "強悪材料検出: " + (bad_analysis.get("reason") or "keyword matched")
-        elif stage in SIGNAL_STAGES:
-            new_status = "rebound_signal"
-            exclude_reason = None
         else:
-            new_status = "watching"
             exclude_reason = None
+        new_status = _status_for_stage(stage, bool(is_excluded))
 
         closes_list = [round(float(v), 2) for v in closes.tail(10).tolist()]
         update_data: dict = {
@@ -1029,6 +1090,17 @@ def run_monitor(*, smoke_relaxed: bool = False, dry_run: bool = False, force_no_
             "excluded_at": now_utc.isoformat() if is_excluded else None,
             "last_signal_at": now_utc.isoformat() if stage in SIGNAL_STAGES else item.get("last_signal_at"),
             "signal_count": int(rebound["signal_count"]),
+            "closed_at": now_utc.isoformat() if new_status == "ai_dropped" or is_excluded else None,
+            "close_reason": "ai_score_below_threshold" if new_status == "ai_dropped" else ("excluded" if is_excluded else None),
+            "signal_status_reason": (
+                "early_candidate"
+                if new_status == "rebound_candidate"
+                else "confirmed_signal"
+                if new_status == "rebound_signal"
+                else "ai_score_below_threshold"
+                if new_status == "ai_dropped"
+                else exclude_reason
+            ),
             "mode": item.get("mode") or "normal",
             "market_regime": market_adjustment["regime"],
             "market_regime_label": market_adjustment["label"],
@@ -1120,13 +1192,14 @@ def run_monitor(*, smoke_relaxed: bool = False, dry_run: bool = False, force_no_
                     "rebound": rebound,
                 },
             )
-            entry_candidates.append({
-                "item": trade_item,
-                "current": current,
-                "score": score,
-                "rebound": rebound,
-                "bad_analysis": bad_analysis,
-            })
+            if stage in ENTRY_SIGNAL_STAGES:
+                entry_candidates.append({
+                    "item": trade_item,
+                    "current": current,
+                    "score": score,
+                    "rebound": rebound,
+                    "bad_analysis": bad_analysis,
+                })
 
     _create_ranked_virtual_trades(entry_candidates, cfg, now_utc, market_adjustment)
     _manage_virtual_trades(cfg, now_utc, dry_run=dry_run)

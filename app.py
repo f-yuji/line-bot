@@ -1773,12 +1773,22 @@ def get_signal_badge_label(row: dict) -> str:
     stage = row.get("signal_stage") or "none"
     if status == "excluded":
         return "除外"
+    if status == "entered":
+        return "保有中"
+    if status == "signal_skipped":
+        return "見送り"
+    if status == "expired":
+        return "期限切れ"
+    if status == "ai_dropped":
+        return "AI低下"
+    if status == "closed":
+        return "終了"
     if stage == "strong_confirmed":
         return "強本命"
     if stage == "confirmed":
         return "本命"
-    if stage == "early":
-        return "初動"
+    if stage == "early" or status == "rebound_candidate":
+        return "候補"
     if status == "notified" or row.get("rebound_notified_at"):
         return "通知済み"
     if status == "watching":
@@ -1788,14 +1798,35 @@ def get_signal_badge_label(row: dict) -> str:
 
 def get_watchlist_counts(rows: list[dict]) -> dict:
     """ダッシュボード集計。各一覧ページの表示条件と一致させる。"""
-    valid_stages = SIGNAL_STAGES  # {"early", "confirmed", "strong_confirmed"}
+    now_utc = datetime.now(timezone.utc)
+
+    def _not_expired(row: dict) -> bool:
+        value = row.get("signal_expires_at")
+        if not value:
+            return True
+        try:
+            dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt > now_utc
+        except Exception:
+            return True
 
     watching = [r for r in rows if r.get("status") == "watching"]
+    candidates = [
+        r for r in rows
+        if r.get("status") == "rebound_candidate"
+        and r.get("signal_stage") == "early"
+        and not r.get("is_excluded")
+    ]
 
     active_signal = [
         r for r in rows
         if r.get("status") == "rebound_signal"
-        and r.get("signal_stage") in valid_stages
+        and r.get("signal_stage") in {"confirmed", "strong_confirmed"}
+        and not r.get("is_excluded")
+        and not r.get("virtual_trade_id")
+        and _not_expired(r)
     ]
 
     notified = [
@@ -1804,11 +1835,13 @@ def get_watchlist_counts(rows: list[dict]) -> dict:
     ]
 
     unique_ids = {
-        r.get("id") for r in watching + active_signal + notified if r.get("id")
+        r.get("id") for r in watching + candidates + active_signal + notified if r.get("id")
     }
 
     return {
         "watching": len(watching),
+        "candidate": len(candidates),
+        "candidate_count": len(candidates),
         "active_signal": len(active_signal),
         "notified": len(notified),
         "total": len(unique_ids),
@@ -1828,6 +1861,19 @@ def web_dashboard():
             except Exception:
                 continue
         return 0.0
+    now_utc = datetime.now(timezone.utc)
+
+    def _not_expired(row: dict) -> bool:
+        value = row.get("signal_expires_at")
+        if not value:
+            return True
+        try:
+            dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt > now_utc
+        except Exception:
+            return True
 
     try:
         rows = (
@@ -1843,10 +1889,26 @@ def web_dashboard():
     except Exception as e:
         logger.error("dashboard error: %s", e)
         rows = []
+    holding_count = 0
+    try:
+        holding_count = int(
+            supabase.table("virtual_trades")
+            .select("id", count="exact")
+            .eq("status", "open")
+            .is_("sell_date", "null")
+            .limit(1)
+            .execute()
+            .count or 0
+        )
+    except Exception as e:
+        logger.warning("holding count failed: %s", e)
     signal_rows = [
         r for r in rows
         if r.get("status") == "rebound_signal"
-        and r.get("signal_stage") in SIGNAL_STAGES
+        and r.get("signal_stage") in {"confirmed", "strong_confirmed"}
+        and not r.get("is_excluded")
+        and not r.get("virtual_trade_id")
+        and _not_expired(r)
     ]
     signal_rows.sort(
         key=lambda r: (
@@ -1857,11 +1919,19 @@ def web_dashboard():
         ),
         reverse=True,
     )
+    candidate_rows = [
+        r for r in rows
+        if r.get("status") == "rebound_candidate"
+        and r.get("signal_stage") == "early"
+        and not r.get("is_excluded")
+    ]
     watching_rows = [r for r in rows if r.get("status") == "watching"]
     stats = get_watchlist_counts(rows)
+    stats["holding"] = holding_count
     return render_template("web/dashboard.html",
         rows=rows,
         signal_rows=signal_rows,
+        candidate_rows=candidate_rows,
         watching_rows=watching_rows,
         stats=stats,
         market_adjustment=market_adjustment,
@@ -2050,6 +2120,19 @@ def web_signals():
             except Exception:
                 continue
         return 0.0
+    now_utc = datetime.now(timezone.utc)
+
+    def _not_expired(row: dict) -> bool:
+        value = row.get("signal_expires_at")
+        if not value:
+            return True
+        try:
+            dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt > now_utc
+        except Exception:
+            return True
 
     try:
         rows = (
@@ -2069,7 +2152,10 @@ def web_signals():
     rows = [
         r for r in rows
         if r.get("status") == "rebound_signal"
-        and r.get("signal_stage") in SIGNAL_STAGES
+        and r.get("signal_stage") in {"confirmed", "strong_confirmed"}
+        and not r.get("is_excluded")
+        and not r.get("virtual_trade_id")
+        and _not_expired(r)
     ]
     rows.sort(
         key=lambda r: (
@@ -2672,6 +2758,8 @@ def web_research_db():
     snapshots: list[dict] = []
     periods: list[dict] = []
     logs: list[dict] = []
+    daily_logs: list[dict] = []
+    cron_logs: list[dict] = []
     try:
         datasets = (
             supabase.table("research_datasets")
@@ -2704,6 +2792,8 @@ def web_research_db():
             .execute()
             .data or []
         )
+        daily_logs = [r for r in logs if r.get("job_type") == "rebound_ai_daily"][:10]
+        cron_logs = [r for r in logs if str(r.get("job_type") or "").startswith("cron:")][:20]
     except Exception as e:
         logger.exception("research db page failed")
         flash(f"検証データベースの取得に失敗しました: {e}", "warning")
@@ -2713,6 +2803,8 @@ def web_research_db():
         snapshots=snapshots,
         periods=periods,
         logs=logs,
+        daily_logs=daily_logs,
+        cron_logs=cron_logs,
         market_adjustment=_current_market_adjustment(),
     )
 
