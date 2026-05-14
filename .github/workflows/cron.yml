@@ -4,16 +4,16 @@ on:
   workflow_dispatch:
   schedule:
     
-    - cron: "0 23 * * 0-4"
+    - cron: "7 23 * * 0-4"
     # scan_prime is disabled: the AI rebound pipeline supersedes the raw TSE Prime drop ranking.
-    - cron: "0 0 * * 1-5"   # 09:00 JST
-    - cron: "0 3 * * 1-5"   # 12:00 JST
-    - cron: "30 7 * * 1-5"  # 16:30 JST (AI rebound daily pipeline)
-    - cron: "0 12 * * 6"    # 21:00 JST Sat (weekly model training)
+    - cron: "17 0 * * 1-5"  # 09:17 JST
+    - cron: "23 3 * * 1-5"  # 12:23 JST
+    - cron: "47 7 * * 1-5"  # 16:47 JST (AI rebound daily pipeline)
+    - cron: "11 12 * * 6"   # 21:11 JST Sat (weekly model training)
 
 jobs:
   run-financials:
-    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '0 23 * * 0-4'
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '7 23 * * 0-4'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -28,7 +28,7 @@ jobs:
           LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
       - name: Save cron UI log
         if: success()
-        run: python scripts/log_cron_run.py --job run-financials --status completed --schedule "08:00 JST Mon-Fri"
+        run: python scripts/log_cron_run.py --job run-financials --status completed --schedule "08:07 JST Mon-Fri"
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
@@ -36,7 +36,7 @@ jobs:
           SUPABASE_MODE: prod
       - name: Save failed cron UI log
         if: failure()
-        run: python scripts/log_cron_run.py --job run-financials --status failed --schedule "08:00 JST Mon-Fri" --error-message "run-financials failed; check GitHub Actions logs"
+        run: python scripts/log_cron_run.py --job run-financials --status failed --schedule "08:07 JST Mon-Fri" --error-message "run-financials failed; check GitHub Actions logs"
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
@@ -62,7 +62,7 @@ jobs:
           SUPABASE_MODE: prod
 
   monitor-rebound:
-    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '0 0 * * 1-5' || github.event.schedule == '0 3 * * 1-5'
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '17 0 * * 1-5' || github.event.schedule == '23 3 * * 1-5'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -80,7 +80,7 @@ jobs:
           SUPABASE_MODE: prod
       - name: Save cron UI log
         if: success()
-        run: python scripts/log_cron_run.py --job monitor-rebound --status completed --schedule "09:00/12:00 JST Mon-Fri"
+        run: python scripts/log_cron_run.py --job monitor-rebound --status completed --schedule "09:17/12:23 JST Mon-Fri"
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
@@ -88,7 +88,7 @@ jobs:
           SUPABASE_MODE: prod
       - name: Save failed cron UI log
         if: failure()
-        run: python scripts/log_cron_run.py --job monitor-rebound --status failed --schedule "09:00/12:00 JST Mon-Fri" --error-message "monitor-rebound failed; check GitHub Actions logs"
+        run: python scripts/log_cron_run.py --job monitor-rebound --status failed --schedule "09:17/12:23 JST Mon-Fri" --error-message "monitor-rebound failed; check GitHub Actions logs"
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
@@ -96,7 +96,7 @@ jobs:
           SUPABASE_MODE: prod
 
   rebound-ai-daily:
-    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '30 7 * * 1-5'
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '47 7 * * 1-5'
     runs-on: ubuntu-latest
     env:
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
@@ -140,10 +140,10 @@ jobs:
         run: python scripts/log_rebound_ai_daily.py --status failed --error-message "rebound-ai-daily failed; check GitHub Actions logs"
       - name: Save cron UI log
         if: success()
-        run: python scripts/log_cron_run.py --job rebound-ai-daily --status completed --schedule "16:30 JST Mon-Fri"
+        run: python scripts/log_cron_run.py --job rebound-ai-daily --status completed --schedule "16:47 JST Mon-Fri"
       - name: Save failed cron UI log
         if: failure()
-        run: python scripts/log_cron_run.py --job rebound-ai-daily --status failed --schedule "16:30 JST Mon-Fri" --error-message "rebound-ai-daily failed; check GitHub Actions logs"
+        run: python scripts/log_cron_run.py --job rebound-ai-daily --status failed --schedule "16:47 JST Mon-Fri" --error-message "rebound-ai-daily failed; check GitHub Actions logs"
       - name: Summarize rebound AI run
         run: |
           python - <<'PY'
@@ -223,7 +223,7 @@ jobs:
           PY
 
   train-rebound-models:
-    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '0 12 * * 6'
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '11 12 * * 6'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -255,7 +255,7 @@ jobs:
             models/*_importance.csv
       - name: Save cron UI log
         if: success()
-        run: python scripts/log_cron_run.py --job train-rebound-models --status completed --schedule "21:00 JST Sat"
+        run: python scripts/log_cron_run.py --job train-rebound-models --status completed --schedule "21:11 JST Sat"
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
@@ -263,7 +263,7 @@ jobs:
           SUPABASE_MODE: prod
       - name: Save failed cron UI log
         if: failure()
-        run: python scripts/log_cron_run.py --job train-rebound-models --status failed --schedule "21:00 JST Sat" --error-message "train-rebound-models failed; check GitHub Actions logs"
+        run: python scripts/log_cron_run.py --job train-rebound-models --status failed --schedule "21:11 JST Sat" --error-message "train-rebound-models failed; check GitHub Actions logs"
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}

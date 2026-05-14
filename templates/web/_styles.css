@@ -1505,6 +1505,68 @@ details[open].score-legend summary::before {
   .table-wrap,
   .table-responsive { overflow-x: auto; -webkit-overflow-scrolling: touch; }
 
+  .ai-log-wrap {
+    overflow: visible;
+  }
+  .ai-log-table,
+  .ai-log-table tbody,
+  .ai-log-table tr,
+  .ai-log-table td {
+    display: block;
+    width: 100%;
+  }
+  .ai-log-table thead {
+    display: none;
+  }
+  .ai-log-table tbody {
+    display: grid;
+    gap: 10px;
+    padding: 10px;
+  }
+  .ai-log-table tbody tr {
+    cursor: default;
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 8px;
+    padding: 10px;
+    border: 1px solid var(--line);
+    background: var(--bg-2);
+  }
+  .ai-log-table tbody td {
+    height: auto;
+    min-height: 0;
+    padding: 0;
+    border-bottom: 0;
+    white-space: normal;
+    text-align: left;
+  }
+  .ai-log-table tbody td::before {
+    content: attr(data-label);
+    display: block;
+    margin-bottom: 3px;
+    color: var(--text-3);
+    font-size: 9px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+  .ai-log-table .ai-log-date,
+  .ai-log-table .ai-log-status,
+  .ai-log-table .ai-log-finished {
+    grid-column: span 1;
+  }
+  .ai-log-table .ai-log-summary {
+    grid-column: 1 / -1;
+    max-width: none;
+    font-size: 12px;
+    line-height: 1.65;
+    word-break: normal;
+    overflow-wrap: anywhere;
+  }
+  .ai-log-table .ai-log-summary::before {
+    margin-bottom: 5px;
+  }
+
   /* Bootstrap Bootstrap row/col compat */
   .row { display: flex; flex-wrap: wrap; margin: 0 -6px; }
   .col-md-4 { width: 50%; padding: 0 6px; box-sizing: border-box; }

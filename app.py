@@ -2487,6 +2487,7 @@ def web_virtual_trade_performance_detail():
 
 
 CASE_TEST_LABELS = {
+    "current_settings": "現状設定",
     "current_rule": "現行ルール",
     "ai_top10": "AI上位10件",
     "ev_top10": "期待値上位10件",

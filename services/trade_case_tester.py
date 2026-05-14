@@ -241,6 +241,55 @@ def _load_weekly_margin_rows(sb, period_start: date, period_end: date) -> list[d
         return []
 
 
+def _load_strategy_settings(sb) -> dict:
+    from settings_loader import DEFAULTS
+    try:
+        rows = sb.table("strategy_settings").select("*").eq("user_id", "global").limit(1).execute().data or []
+        if rows:
+            row = rows[0]
+            return {k: (row[k] if row.get(k) is not None else v) for k, v in DEFAULTS.items()}
+    except Exception as e:
+        logger.warning("[case_test] strategy_settings load failed: %s", e)
+    return dict(DEFAULTS)
+
+
+def _build_current_settings_rules(cfg: dict) -> dict:
+    rules: dict = {
+        "exit_type": "pullback_exit",
+        "pullback_day_pct": -float(cfg.get("virtual_exit_pullback_pct", 2.0)) / 100,
+        "initial_sl_pct": -float(cfg.get("virtual_exit_stop_loss_pct", 4.0)) / 100,
+        "max_holding_days": int(cfg.get("virtual_exit_holding_days", 5)),
+        "entry_sort": "expected_value_desc",
+        "entry_rank_limit": int(cfg.get("entry_rank_limit", 10)),
+        "max_open_positions": int(cfg.get("max_open_positions", 20)),
+        "max_daily_entries": int(cfg.get("max_daily_entries", 5)),
+        "max_sector_positions": int(cfg.get("max_sector_positions", 2)),
+        "min_ai_score": float(cfg.get("ai_probability_confirmed", 0.50)),
+        "allowed_stages": ["confirmed", "strong_confirmed"],
+    }
+    if cfg.get("entry_margin_filter_enabled", True):
+        rules["use_margin_filter"] = True
+        rules["require_margin_data"] = bool(cfg.get("entry_margin_require_data", True))
+        rules["max_margin_ratio"] = float(cfg.get("entry_max_margin_ratio", 5.0))
+    return rules
+
+
+def _upsert_current_settings_case(sb) -> None:
+    cfg = _load_strategy_settings(sb)
+    rules = _build_current_settings_rules(cfg)
+    sb.table("trade_case_definitions").upsert(
+        {
+            "case_key": "current_settings",
+            "case_name": "現状設定",
+            "description": "比較テスト実行時点の strategy_settings を反映したケース。",
+            "is_enabled": True,
+            "rules": rules,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        },
+        on_conflict="case_key",
+    ).execute()
+
+
 def _attach_weekly_margin(candidates: list[dict], margin_rows: list[dict]) -> None:
     by_code: dict[str, list[tuple[date, dict]]] = defaultdict(list)
     for row in margin_rows:
@@ -1099,6 +1148,12 @@ def run_trade_case_test(
     run_id = run_row["id"]
 
     try:
+        try:
+            _upsert_current_settings_case(sb)
+            logger.info("[case_test] current_settings case upserted")
+        except Exception as _e:
+            logger.warning("[case_test] current_settings upsert failed: %s", _e)
+
         q = sb.table("trade_case_definitions").select("*").eq("is_enabled", True).order("case_key")
         if case_keys:
             q = q.in_("case_key", case_keys)
