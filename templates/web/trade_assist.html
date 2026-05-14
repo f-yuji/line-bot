@@ -202,13 +202,14 @@
   .ta-reason span {
     color: var(--ta-dim-2);
     font-size: 11px;
+    font-weight: 700;
     letter-spacing: 0.3px;
   }
   .ta-company p,
   .ta-reason p {
     margin: 0;
-    color: var(--ta-fg);
-    font-size: 12.5px;
+    color: var(--ta-dim-2);
+    font-size: 12px;
     line-height: 1.55;
     overflow-wrap: anywhere;
   }
@@ -405,29 +406,6 @@
           </div>
         </div>
 
-        <div class="ta-company">
-          <span>会社概要</span>
-          {% if r.company_summary %}
-            <p>{{ r.company_summary }}</p>
-          {% elif r.sector %}
-            <p>{{ r.sector }}。事業概要データは未登録です。</p>
-          {% else %}
-            <p>事業概要データは未登録です。</p>
-          {% endif %}
-        </div>
-
-        <div class="ta-reason">
-          <span>急落理由{% if r.drop_reason_source %} / {{ r.drop_reason_source }}{% endif %}</span>
-          <p>{{ r.drop_reason_comment or '急落理由コメントは未生成です。' }}</p>
-        </div>
-
-          <form method="post" action="/web/trade-assist/generate-reason" class="ta-reason-action js-disable-on-submit">
-            <input type="hidden" name="code" value="{{ r.code }}">
-            <input type="hidden" name="name" value="{{ r.name or '' }}">
-            <input type="hidden" name="drop_pct" value="{{ r.drop_pct if r.drop_pct is not none else '' }}">
-            <input type="hidden" name="nikkei_pct" value="{{ r.market_nikkei_pct if r.market_nikkei_pct is not none else '' }}">
-            <button class="btn sm" type="submit">AIで急落理由を生成</button>
-          </form>
         <div class="ta-section-label">寄付き判断レンジ</div>
         <div class="ta-bands">
           <div class="ta-band is-up">
@@ -471,6 +449,30 @@
           <b>MA5回復後 -{{ num(exit_display.ma5_failure_pct, 1, '%') }}</b>
           <b>{{ exit_display.holding_days }}日{% if exit_display.extend_high_update_days %} / 高値{{ exit_display.extend_high_update_days }}日延長{% endif %}</b>
         </div>
+
+        <div class="ta-company">
+          <span>会社概要</span>
+          {% if r.company_summary %}
+            <p>{{ r.company_summary }}</p>
+          {% elif r.sector %}
+            <p>{{ r.sector }}。事業概要データは未登録です。</p>
+          {% else %}
+            <p>事業概要データは未登録です。</p>
+          {% endif %}
+        </div>
+
+        <div class="ta-reason">
+          <span>急落理由{% if r.drop_reason_source %} / {{ r.drop_reason_source }}{% endif %}</span>
+          <p>{{ r.drop_reason_comment or '急落理由コメントは未生成です。' }}</p>
+        </div>
+
+        <form method="post" action="/web/trade-assist/generate-reason" class="ta-reason-action js-disable-on-submit">
+          <input type="hidden" name="code" value="{{ r.code }}">
+          <input type="hidden" name="name" value="{{ r.name or '' }}">
+          <input type="hidden" name="drop_pct" value="{{ r.drop_pct if r.drop_pct is not none else '' }}">
+          <input type="hidden" name="nikkei_pct" value="{{ r.market_nikkei_pct if r.market_nikkei_pct is not none else '' }}">
+          <button class="btn sm" type="submit">AIで急落理由を生成</button>
+        </form>
       </article>
     {% else %}
       <div class="ta-empty">翌日購入候補はありません。</div>
