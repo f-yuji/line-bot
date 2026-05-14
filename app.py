@@ -1432,7 +1432,7 @@ def handle_message(event):
         return
 
     if _user_subsidy_state.get(user_id) == "await_prefecture":
-        _KNOWN_CMDS = {"急落株", "急落", "急落録柄", "相場", "補助金", "助成金", "ニュース", "都道府県変更", "業種変更"}
+        _KNOWN_CMDS = {"急落株", "急落", "急落銘柄", "急落録柄", "相場", "補助金", "助成金", "ニュース", "都道府県変更", "業種変更"}
         if text not in _KNOWN_CMDS:
             pref = normalize_prefecture(text)
             if pref:
@@ -1483,7 +1483,7 @@ def handle_message(event):
             pass
         return
 
-    if text in {"急落株", "急落", "急落録柄"}:
+    if text in {"急落株", "急落", "急落銘柄", "急落録柄"}:
         try:
             drops, nikkei_pct, fetched_at, stale_fallback = get_drop_list_for_reply()
             if fetched_at is None:
@@ -2253,6 +2253,15 @@ def web_trade_assist():
     now_utc = datetime.now(timezone.utc)
     settings = _settings_loader.get_settings()
     stop_loss_pct = float(settings.get("virtual_exit_stop_loss_pct") or 4.0)
+    exit_display = {
+        "pullback_pct": float(settings.get("virtual_exit_pullback_pct") or 2.0),
+        "rsi_level": float(settings.get("virtual_exit_rsi_level") or 75.0),
+        "rsi_pullback_pct": float(settings.get("virtual_exit_rsi_pullback_pct") or 1.0),
+        "stop_loss_pct": stop_loss_pct,
+        "ma5_failure_pct": float(settings.get("virtual_exit_ma5_failure_pct") or 2.0),
+        "holding_days": int(settings.get("virtual_exit_holding_days") or 5),
+        "extend_high_update_days": int(settings.get("virtual_exit_extend_high_update_days") or 2),
+    }
 
     def _num(row: dict, *keys: str, default: float = 0.0) -> float:
         for key in keys:
@@ -2452,6 +2461,7 @@ def web_trade_assist():
         "web/trade_assist.html",
         rows=cards,
         summary=summary,
+        exit_display=exit_display,
         market_adjustment=market_adjustment,
     )
 

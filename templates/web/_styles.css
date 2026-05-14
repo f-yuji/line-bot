@@ -1743,8 +1743,15 @@ details[open].score-legend summary::before {
     word-break: break-word;
     overflow-wrap: anywhere;
   }
+  .ai-log-table .ai-log-summary-body {
+    display: block;
+    color: var(--text);
+    font-size: 12px;
+    line-height: 1.65;
+  }
   .ai-log-table .ai-log-summary,
-  .ai-log-table .ai-log-summary * {
+  .ai-log-table .ai-log-summary *,
+  .ai-log-table .ai-log-summary-body {
     max-width: 100%;
     min-width: 0;
     white-space: normal !important;

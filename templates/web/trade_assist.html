@@ -412,10 +412,11 @@
 
         <div class="ta-exits">
           <span class="ta-exits-label">出口</span>
-          <b>pullback2</b>
-          <b>RSI75後pullback1</b>
-          <b>MA再崩れ</b>
-          <b>期限切れ</b>
+          <b>反落{{ num(exit_display.pullback_pct, 1, '%') }}</b>
+          <b>RSI{{ num(exit_display.rsi_level, 0) }}後 反落{{ num(exit_display.rsi_pullback_pct, 1, '%') }}</b>
+          <b>終値損切り{{ num(exit_display.stop_loss_pct, 1, '%') }}</b>
+          <b>MA5回復後 -{{ num(exit_display.ma5_failure_pct, 1, '%') }}</b>
+          <b>{{ exit_display.holding_days }}日{% if exit_display.extend_high_update_days %} / 高値{{ exit_display.extend_high_update_days }}日延長{% endif %}</b>
         </div>
       </article>
     {% else %}

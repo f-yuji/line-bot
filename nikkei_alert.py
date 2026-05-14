@@ -663,6 +663,11 @@ def get_drop_list_for_reply() -> tuple[list[dict], float | None, str | None, boo
     if _is_drop_cache_fresh(updated_at):
         return cached_drops, cached_nikkei, cached_fetched_at, False
 
+    # LINE reply tokens expire quickly. Avoid running the expensive live market
+    # scan in the reply path when any cached list is available.
+    if cached_fetched_at is not None:
+        return cached_drops, cached_nikkei, cached_fetched_at, True
+
     nikkei_pct = get_nikkei_change_pct()
     fresh_drops = _enrich_drop_valuations(get_drop_list())
     if fresh_drops or nikkei_pct is not None:
@@ -691,8 +696,7 @@ def format_drop_list_text(
     lines = [f"日経225 急落銘柄\n{nikkei_line}{fetched_line}"]
     for i, s in enumerate(drops[:10]):
         num = CIRCLE_NUMS[i] if i < len(CIRCLE_NUMS) else f"{i+1}."
-        company_profile = format_company_profile_text(s["code"])
-        company_block = f"   {company_profile.replace(chr(10), chr(10) + '   ')}\n" if company_profile else ""
+        company_block = ""
         valuation = s.get("valuation") or {}
         valuation_score = _valuation_score(
             valuation.get("per"),

@@ -178,11 +178,13 @@
             <td class="right num" data-label="候補">{{ num(p.drop_tradeable_candidates or l.rows_skipped) }}</td>
             <td class="right num" data-label="保有">{{ num(p.open_virtual_trades or l.rows_inserted) }}</td>
             <td class="ai-log-summary" data-label="要約">
-              {% if l.error_message %}
-                <span class="down-text">{{ l.error_message }}</span>
-              {% else %}
-                {{ p.ai_summary or '-' }}
-              {% endif %}
+              <div class="ai-log-summary-body">
+                {% if l.error_message %}
+                  <span class="down-text">{{ l.error_message }}</span>
+                {% else %}
+                  {{ p.ai_summary or '-' }}
+                {% endif %}
+              </div>
             </td>
             <td class="muted num ai-log-finished" data-label="記録">{{ l.finished_at | jst }}</td>
           </tr>
