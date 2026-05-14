@@ -64,6 +64,11 @@
     </a>
 
     <div class="side-section">Trading</div>
+    <a class="side-link {% if request.path == '/web/trade-assist' %}active{% endif %}" href="/web/trade-assist">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+      <span>トレード補助</span>
+      {% if counts and counts.signals is defined %}<span class="count alert">{{ counts.signals }}</span>{% endif %}
+    </a>
     <a class="side-link {% if request.path == '/web/virtual-trades' %}active{% endif %}" href="/web/virtual-trades">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 1l4 4-4 4"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><path d="M7 23l-4-4 4-4"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>
       <span>仮想売買</span>

@@ -637,6 +637,162 @@ td.down, .down-text { color: var(--down); }
 td.muted, .muted { color: var(--text-3); }
 td.num { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
 
+/* === Trade Assist === */
+.assist-summary {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(120px, 1fr));
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.assist-kpi {
+  border: 1px solid var(--line);
+  background: var(--bg-2);
+  padding: 10px 12px;
+  min-height: 64px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+}
+.assist-kpi span {
+  color: var(--text-3);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.assist-kpi b { font-size: 15px; color: var(--text); }
+.assist-kpi.accent { border-color: var(--accent-dim); }
+.assist-kpi.accent b { color: var(--accent); }
+.assist-note {
+  padding: 12px 14px;
+  margin-bottom: 12px;
+  display: grid;
+  gap: 4px;
+  font-size: 12px;
+  line-height: 1.6;
+}
+.assist-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 12px;
+}
+.assist-card {
+  border: 1px solid var(--line);
+  background: var(--bg-2);
+  padding: 14px;
+  display: grid;
+  gap: 12px;
+}
+.assist-card.strong { border-color: var(--accent-dim); }
+.assist-card-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+}
+.assist-code {
+  font-family: var(--font-mono);
+  color: var(--accent);
+  font-size: 13px;
+  font-weight: 700;
+}
+.assist-card h2 {
+  margin: 2px 0 0;
+  font-size: 16px;
+  line-height: 1.35;
+  letter-spacing: 0;
+}
+.assist-status {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+}
+.assist-status > span {
+  color: var(--text-3);
+  font-size: 10px;
+  white-space: nowrap;
+}
+.assist-badge {
+  border: 1px solid var(--line);
+  color: var(--text-2);
+  background: var(--bg-1);
+  padding: 4px 8px;
+  font-size: 10px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.assist-badge.strong { color: var(--accent); border-color: var(--accent-dim); }
+.assist-main,
+.assist-risk {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+.assist-main > div,
+.assist-risk > div,
+.assist-metrics > div {
+  background: var(--bg-1);
+  border: 1px solid var(--line-dim);
+  padding: 8px;
+  min-width: 0;
+}
+.assist-main span,
+.assist-risk span,
+.assist-metrics span,
+.assist-exits span {
+  display: block;
+  color: var(--text-3);
+  font-size: 10px;
+  margin-bottom: 4px;
+}
+.assist-main b,
+.assist-risk b,
+.assist-metrics b {
+  font-family: var(--font-mono);
+  font-size: 14px;
+  color: var(--text);
+}
+.assist-line-block {
+  display: grid;
+  gap: 3px;
+}
+.assist-line-block b {
+  display: block;
+  line-height: 1.35;
+}
+.assist-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+.assist-metrics b {
+  font-family: var(--font-sans);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.assist-exits {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.assist-exits span { margin: 0 4px 0 0; }
+.assist-exits b {
+  border: 1px solid var(--line);
+  background: var(--bg-1);
+  padding: 4px 7px;
+  font-size: 10px;
+  color: var(--text-2);
+  font-weight: 600;
+}
+.assist-empty {
+  padding: 28px;
+  color: var(--text-3);
+  text-align: center;
+  grid-column: 1 / -1;
+}
+
 /* Status badge */
 .badge {
   display: inline-flex;
@@ -1500,6 +1656,13 @@ details[open].score-legend summary::before {
   .stat-grid { grid-template-columns: repeat(2, 1fr); }
   .form-grid { grid-template-columns: 1fr; }
   .dash-grid { grid-template-columns: 1fr; }
+  .assist-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .assist-grid { grid-template-columns: 1fr; }
+  .assist-card { padding: 12px; }
+  .assist-main,
+  .assist-risk { grid-template-columns: 1fr; }
+  .assist-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .assist-card h2 { font-size: 15px; }
 
   /* Tables scroll horizontally */
   .table-wrap,

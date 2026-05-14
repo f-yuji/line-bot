@@ -2247,6 +2247,215 @@ def web_signals():
     return render_template("web/signals.html", rows=rows, market_adjustment=market_adjustment)
 
 
+@app.route("/web/trade-assist")
+def web_trade_assist():
+    market_adjustment = _current_market_adjustment()
+    now_utc = datetime.now(timezone.utc)
+    settings = _settings_loader.get_settings()
+    stop_loss_pct = float(settings.get("virtual_exit_stop_loss_pct") or 4.0)
+
+    def _num(row: dict, *keys: str, default: float = 0.0) -> float:
+        for key in keys:
+            try:
+                value = row.get(key)
+                if value is not None:
+                    return float(value)
+            except Exception:
+                continue
+        return default
+
+    def _not_expired(row: dict) -> bool:
+        value = row.get("signal_expires_at")
+        if not value:
+            return True
+        try:
+            dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt > now_utc
+        except Exception:
+            return True
+
+    latest_log = None
+    latest_feature_date = None
+    snapshot_count = None
+    update_status = "不明"
+    latest_trade_entries = []
+    try:
+        logs = (
+            supabase.table("research_import_logs")
+            .select("*")
+            .eq("job_type", "rebound_ai_daily")
+            .order("started_at", desc=True)
+            .limit(1)
+            .execute()
+            .data or []
+        )
+        latest_log = logs[0] if logs else None
+        params = (latest_log or {}).get("params") or {}
+        latest_feature_date = params.get("latest_feature_date")
+        snapshot_count = params.get("feature_snapshots") or (latest_log or {}).get("rows_updated")
+        latest_trade_entries = ((params.get("trade_activity") or {}).get("entries") or [])
+        update_status = "正常" if (latest_log or {}).get("status") == "completed" else ((latest_log or {}).get("status") or "不明")
+    except Exception as e:
+        logger.warning("trade assist log load failed: %s", e)
+
+    try:
+        if not latest_feature_date:
+            latest = (
+                supabase.table("stock_feature_snapshots")
+                .select("trade_date")
+                .order("trade_date", desc=True)
+                .limit(1)
+                .execute()
+                .data or []
+            )
+            latest_feature_date = latest[0]["trade_date"] if latest else None
+        if latest_feature_date and snapshot_count is None:
+            snapshot_count = (
+                supabase.table("stock_feature_snapshots")
+                .select("id", count="exact")
+                .eq("trade_date", latest_feature_date)
+                .limit(1)
+                .execute()
+                .count
+            )
+    except Exception as e:
+        logger.warning("trade assist snapshot summary failed: %s", e)
+
+    def _fetch_by_ids(table: str, ids: list[str], select: str = "*") -> dict[str, dict]:
+        clean_ids = [str(x) for x in ids if x]
+        if not clean_ids:
+            return {}
+        try:
+            data = supabase.table(table).select(select).in_("id", clean_ids).execute().data or []
+            return {str(r.get("id")): r for r in data if r.get("id")}
+        except Exception as e:
+            logger.warning("trade assist %s lookup failed: %s", table, e)
+            return {}
+
+    trade_ids = [str(e.get("id")) for e in latest_trade_entries if e.get("id")]
+    latest_trades = _fetch_by_ids("virtual_trades", trade_ids)
+    snapshot_ids = [str(t.get("feature_snapshot_id")) for t in latest_trades.values() if t.get("feature_snapshot_id")]
+    watchlist_ids = [str(t.get("watchlist_id")) for t in latest_trades.values() if t.get("watchlist_id")]
+    snapshots = _fetch_by_ids("stock_feature_snapshots", snapshot_ids)
+    watchlists = _fetch_by_ids("stock_drop_watchlist", watchlist_ids)
+
+    try:
+        rows = (
+            supabase.table("stock_drop_watchlist")
+            .select("*")
+            .in_("status", ["rebound_signal"])
+            .order("last_signal_at", desc=True)
+            .limit(300)
+            .execute()
+            .data or []
+        )
+        rows = [_with_ai_priority_stage(r, market_adjustment) for r in rows]
+    except Exception as e:
+        logger.exception("trade assist load failed")
+        flash(f"トレード補助の取得に失敗しました: {e}", "warning")
+        rows = []
+
+    def _merge_card_sources(*sources: dict | None) -> dict:
+        merged = {}
+        for source in sources:
+            if not source:
+                continue
+            for key, value in source.items():
+                if value is not None and merged.get(key) is None:
+                    merged[key] = value
+        return merged
+
+    def _build_card(base: dict, *, trade: dict | None = None, source_label: str = "") -> dict:
+        row = _with_ai_priority_stage(dict(base), market_adjustment)
+        entry_price = _num(trade or {}, "buy_price", default=0.0) or _num(row, "price_at_drop", "close", default=0.0)
+        stop_price = entry_price * (1.0 - stop_loss_pct / 100.0) if entry_price > 0 else None
+        ma5 = _num(row, "ma5", default=0.0)
+        risk_100 = (entry_price - stop_price) * 100 if stop_price is not None else None
+        row["display_status"] = "強本命" if row.get("signal_stage") == "strong_confirmed" else "翌日購入候補"
+        row["entry_price"] = entry_price if entry_price > 0 else None
+        row["gu_3_price"] = entry_price * 1.03 if entry_price > 0 else None
+        row["gu_5_price"] = entry_price * 1.05 if entry_price > 0 else None
+        row["gd_3_price"] = entry_price * 0.97 if entry_price > 0 else None
+        row["ma5_gd_price"] = ma5 * 0.98 if ma5 > 0 else None
+        row["stop_loss_price"] = stop_price
+        row["risk_100"] = risk_100
+        row["stop_loss_pct"] = stop_loss_pct
+        row["source_label"] = source_label
+        if trade:
+            row["virtual_trade_id"] = trade.get("id") or row.get("virtual_trade_id")
+            row["trade_created_at"] = trade.get("created_at")
+        return row
+
+    cards = []
+    seen_codes = set()
+    for entry in latest_trade_entries:
+        trade = latest_trades.get(str(entry.get("id"))) or entry
+        snapshot = snapshots.get(str(trade.get("feature_snapshot_id")))
+        watchlist = watchlists.get(str(trade.get("watchlist_id")))
+        base = _merge_card_sources(
+            watchlist,
+            snapshot,
+            trade,
+            entry,
+            {
+                "code": entry.get("code") or trade.get("code"),
+                "name": entry.get("name") or trade.get("name"),
+                "signal_probability": trade.get("entry_probability") or entry.get("entry_probability"),
+                "expected_value": trade.get("expected_value") or entry.get("expected_value"),
+                "signal_stage": trade.get("signal_stage") or entry.get("signal_stage"),
+            },
+        )
+        if base.get("signal_stage") not in {"confirmed", "strong_confirmed"}:
+            continue
+        code = str(base.get("code") or "")
+        if not code:
+            continue
+        cards.append(_build_card(base, trade=trade, source_label="今日のAI判定"))
+        seen_codes.add(code)
+
+    for row in rows:
+        if row.get("status") != "rebound_signal":
+            continue
+        if row.get("signal_stage") not in {"confirmed", "strong_confirmed"}:
+            continue
+        if row.get("is_excluded") or row.get("virtual_trade_id"):
+            continue
+        if str(row.get("code") or "") in seen_codes:
+            continue
+        if not _not_expired(row):
+            continue
+        cards.append(_build_card(row, source_label="未エントリー"))
+        seen_codes.add(str(row.get("code") or ""))
+
+    cards.sort(
+        key=lambda r: (
+            STAGE_RANK.get(r.get("signal_stage"), 0),
+            _num(r, "signal_probability", "ai_probability"),
+            _num(r, "expected_value"),
+            _num(r, "signal_score", "rebound_score", "score"),
+        ),
+        reverse=True,
+    )
+    cards = cards[:30]
+
+    summary = {
+        "latest_feature_date": latest_feature_date,
+        "snapshot_count": snapshot_count,
+        "ai_status": "完了" if update_status == "正常" else update_status,
+        "buy_candidates": len(cards),
+        "update_status": update_status,
+        "last_updated": (latest_log or {}).get("finished_at") or (latest_log or {}).get("started_at"),
+    }
+    return render_template(
+        "web/trade_assist.html",
+        rows=cards,
+        summary=summary,
+        market_adjustment=market_adjustment,
+    )
+
+
 @app.route("/web/settings", methods=["GET", "POST"])
 def web_settings():
     if request.method == "POST":

@@ -1,0 +1,140 @@
+{% extends "web/base.html" %}
+{% block title %}トレード補助{% endblock %}
+{% block page_label %}トレード補助{% endblock %}
+
+{% macro pct(v, digits=1) -%}
+  {%- if v is undefined or v is none -%}<span class="muted">-</span>
+  {%- else -%}
+    {%- set cls = 'up-text' if v > 0 else ('down-text' if v < 0 else 'muted') -%}
+    {%- set sign = '+' if v > 0 else '' -%}
+    <span class="{{ cls }}">{{ sign }}{{ ("%." ~ digits ~ "f")|format(v) }}%</span>
+  {%- endif -%}
+{%- endmacro %}
+
+{% macro yen(v) -%}
+  {%- if v is undefined or v is none -%}<span class="muted">-</span>
+  {%- else -%}{{ "{:,.0f}".format(v) }}円{%- endif -%}
+{%- endmacro %}
+
+{% macro num(v, digits=1, suffix='') -%}
+  {%- if v is undefined or v is none -%}<span class="muted">-</span>
+  {%- else -%}{{ ("%." ~ digits ~ "f")|format(v) }}{{ suffix }}{%- endif -%}
+{%- endmacro %}
+
+{% block content %}
+<div class="page-head">
+  <h1 class="page-title">トレード補助<small>NEXT SESSION CANDIDATES</small></h1>
+  <div class="page-actions">
+    <form method="post" action="/web/actions/refresh" class="js-disable-on-submit" style="display:inline">
+      <button class="btn primary sm" type="submit">更新</button>
+    </form>
+  </div>
+</div>
+
+<div class="assist-summary">
+  <div class="assist-kpi">
+    <span>最終更新</span>
+    <b>{{ summary.last_updated | jst if summary.last_updated else '-' }}</b>
+  </div>
+  <div class="assist-kpi">
+    <span>snapshot</span>
+    <b>{{ "{:,}".format(summary.snapshot_count) if summary.snapshot_count is not none else '-' }}件</b>
+  </div>
+  <div class="assist-kpi">
+    <span>AI判定</span>
+    <b>{{ summary.ai_status }}</b>
+  </div>
+  <div class="assist-kpi accent">
+    <span>翌日購入候補</span>
+    <b>{{ summary.buy_candidates }}件</b>
+  </div>
+  <div class="assist-kpi">
+    <span>更新状態</span>
+    <b>{{ summary.update_status }}</b>
+  </div>
+</div>
+
+<div class="assist-note panel">
+  <div>
+    <b>{{ summary.latest_feature_date or '-' }}</b> 引け後AI判定の翌営業日購入候補です。
+    実弾買いは寄付き、板、ニュース、許容損失を確認してから判断してください。
+  </div>
+  {% if market_adjustment %}
+    <div class="muted">地合い: {{ market_adjustment.label }}{% if market_adjustment.reason %} / {{ market_adjustment.reason }}{% endif %}</div>
+  {% endif %}
+</div>
+
+<div class="assist-grid">
+  {% for r in rows %}
+  <article class="assist-card {{ 'strong' if r.signal_stage == 'strong_confirmed' else '' }}">
+    <div class="assist-card-head">
+      <div>
+        <div class="assist-code">{{ r.code }}</div>
+        <h2>{{ r.name or '-' }}</h2>
+      </div>
+      <div class="assist-status">
+        {% if r.source_label %}<span>{{ r.source_label }}</span>{% endif %}
+        <b class="assist-badge {{ 'strong' if r.signal_stage == 'strong_confirmed' else '' }}">{{ r.display_status }}</b>
+      </div>
+    </div>
+
+    <div class="assist-main">
+      <div>
+        <span>AIスコア</span>
+        <b>{{ "%.0f"|format((r.signal_probability or r.entry_probability or 0) * 100) }}%</b>
+      </div>
+      <div>
+        <span>期待値</span>
+        <b>{{ pct(r.expected_value) }}</b>
+      </div>
+      <div>
+        <span>急落率</span>
+        <b>{{ pct(r.drop_pct) }}</b>
+      </div>
+    </div>
+
+    <div class="assist-metrics">
+      <div><span>出来高倍率</span><b>{{ num(r.volume_ratio_20d, 1, '倍') }}</b></div>
+      <div><span>RSI</span><b>{{ num(r.rsi14, 0) }}</b></div>
+      <div><span>セクター</span><b>{{ r.sector or '-' }}</b></div>
+      <div><span>信用倍率</span><b>{{ num(r.margin_ratio, 1, '倍') }}</b></div>
+    </div>
+
+    <div class="assist-risk">
+      <div>
+        <span>購入想定価格</span>
+        <b>{{ yen(r.entry_price) }}</b>
+      </div>
+      <div class="assist-line-block">
+        <span>GU見送り目安</span>
+        <b class="up-text">+3% {{ yen(r.gu_3_price) }}以上</b>
+        <b class="up-text">+5% {{ yen(r.gu_5_price) }}以上</b>
+      </div>
+      <div class="assist-line-block">
+        <span>GD見送り目安</span>
+        <b class="down-text">-3% {{ yen(r.gd_3_price) }}以下</b>
+        <b class="down-text">MA5-2% {{ yen(r.ma5_gd_price) }}以下</b>
+      </div>
+      <div>
+        <span>{{ "%.0f"|format(r.stop_loss_pct) }}%損切り目安</span>
+        <b>{{ yen(r.stop_loss_price) }}</b>
+      </div>
+      <div>
+        <span>100株想定損失</span>
+        <b class="down-text">{{ yen(r.risk_100) }}</b>
+      </div>
+    </div>
+
+    <div class="assist-exits">
+      <span>出口</span>
+      <b>pullback2</b>
+      <b>RSI75後pullback1</b>
+      <b>MA再崩れ</b>
+      <b>期限切れ</b>
+    </div>
+  </article>
+  {% else %}
+  <div class="panel assist-empty">翌日購入候補はありません。</div>
+  {% endfor %}
+</div>
+{% endblock %}
