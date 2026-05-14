@@ -1,4 +1,4 @@
-{% extends "web/base.html" %}
+﻿{% extends "web/base.html" %}
 {% block title %}トレード補助{% endblock %}
 {% block page_label %}トレード補助{% endblock %}
 
@@ -189,6 +189,36 @@
   .ta-ai.is-high { color: var(--ta-up); }
   .ta-ai.is-mid { color: var(--ta-warn); }
   .ta-ai.is-low { color: var(--ta-dim); }
+  .ta-company,
+  .ta-reason {
+    background: var(--ta-panel-2);
+    border: 1px solid var(--ta-border);
+    border-radius: 10px;
+    padding: 10px 12px;
+    display: grid;
+    gap: 4px;
+  }
+  .ta-company span,
+  .ta-reason span {
+    color: var(--ta-dim-2);
+    font-size: 11px;
+    letter-spacing: 0.3px;
+  }
+  .ta-company p,
+  .ta-reason p {
+    margin: 0;
+    color: var(--ta-fg);
+    font-size: 12.5px;
+    line-height: 1.55;
+    overflow-wrap: anywhere;
+  }
+  .ta-reason { border-color: rgba(230, 200, 96, 0.22); }
+  .ta-reason-action {
+    margin-top: 2px;
+  }
+  .ta-reason-action .btn {
+    width: fit-content;
+  }
   .ta-section-label {
     margin: -2px 0 -8px;
     color: var(--ta-dim-2);
@@ -375,6 +405,29 @@
           </div>
         </div>
 
+        <div class="ta-company">
+          <span>会社概要</span>
+          {% if r.company_summary %}
+            <p>{{ r.company_summary }}</p>
+          {% elif r.sector %}
+            <p>{{ r.sector }}。事業概要データは未登録です。</p>
+          {% else %}
+            <p>事業概要データは未登録です。</p>
+          {% endif %}
+        </div>
+
+        <div class="ta-reason">
+          <span>急落理由{% if r.drop_reason_source %} / {{ r.drop_reason_source }}{% endif %}</span>
+          <p>{{ r.drop_reason_comment or '急落理由コメントは未生成です。' }}</p>
+        </div>
+
+          <form method="post" action="/web/trade-assist/generate-reason" class="ta-reason-action js-disable-on-submit">
+            <input type="hidden" name="code" value="{{ r.code }}">
+            <input type="hidden" name="name" value="{{ r.name or '' }}">
+            <input type="hidden" name="drop_pct" value="{{ r.drop_pct if r.drop_pct is not none else '' }}">
+            <input type="hidden" name="nikkei_pct" value="{{ r.market_nikkei_pct if r.market_nikkei_pct is not none else '' }}">
+            <button class="btn sm" type="submit">AIで急落理由を生成</button>
+          </form>
         <div class="ta-section-label">寄付き判断レンジ</div>
         <div class="ta-bands">
           <div class="ta-band is-up">
@@ -425,3 +478,4 @@
   </div>
 </div>
 {% endblock %}
+

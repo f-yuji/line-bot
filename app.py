@@ -2366,6 +2366,48 @@ def web_trade_assist():
         flash(f"トレード補助の取得に失敗しました: {e}", "warning")
         rows = []
 
+    candidate_codes = {
+        str(e.get("code") or "")
+        for e in latest_trade_entries
+        if e.get("code")
+    } | {
+        str(r.get("code") or "")
+        for r in rows
+        if r.get("code")
+    }
+    try:
+        profile_rows = (
+            supabase.table("nikkei_company_profiles")
+            .select("code,name,sector,business_summary")
+            .in_("code", list(candidate_codes))
+            .execute()
+            .data or []
+        ) if candidate_codes else []
+        company_profiles = {str(p.get("code")): p for p in profile_rows if p.get("code")}
+    except Exception as e:
+        logger.warning("trade assist company profile lookup failed: %s", e)
+        company_profiles = {}
+
+    try:
+        comment_rows = (
+            supabase.table("nikkei_ai_comment_cache")
+            .select("code,comment,updated_at,expires_at")
+            .in_("code", list(candidate_codes))
+            .gte("expires_at", now_utc.isoformat())
+            .order("updated_at", desc=True)
+            .limit(200)
+            .execute()
+            .data or []
+        ) if candidate_codes else []
+        drop_comments = {}
+        for comment_row in comment_rows:
+            code = str(comment_row.get("code") or "")
+            if code and code not in drop_comments:
+                drop_comments[code] = str(comment_row.get("comment") or "").strip()
+    except Exception as e:
+        logger.warning("trade assist drop comment lookup failed: %s", e)
+        drop_comments = {}
+
     def _merge_card_sources(*sources: dict | None) -> dict:
         merged = {}
         for source in sources:
@@ -2378,11 +2420,36 @@ def web_trade_assist():
 
     def _build_card(base: dict, *, trade: dict | None = None, source_label: str = "") -> dict:
         row = _with_ai_priority_stage(dict(base), market_adjustment)
+        code = str(row.get("code") or "")
+        profile = company_profiles.get(str(row.get("code") or "")) or {}
         entry_price = _num(trade or {}, "buy_price", default=0.0) or _num(row, "price_at_drop", "close", default=0.0)
         stop_price = entry_price * (1.0 - stop_loss_pct / 100.0) if entry_price > 0 else None
         ma5 = _num(row, "ma5", default=0.0)
         risk_100 = (entry_price - stop_price) * 100 if stop_price is not None else None
+        profile_sector = str(profile.get("sector") or "").strip()
+        business_summary = str(profile.get("business_summary") or "").strip()
+        drop_comment = drop_comments.get(code) or ""
+        if not drop_comment:
+            reason_bits = []
+            drop_pct = _num(row, "drop_pct", default=0.0)
+            if drop_pct:
+                reason_bits.append(f"急落率 {drop_pct:.1f}%")
+            regime_reason = str(row.get("market_regime_reason") or "").strip()
+            if regime_reason:
+                reason_bits.append(f"地合い: {regime_reason}")
+            bad_news_score = _num(row, "bad_news_score", default=0.0)
+            if bad_news_score > 0:
+                reason_bits.append(f"悪材料スコア {bad_news_score:.0f}")
+            sector_risk_score = _num(row, "sector_risk_score", default=0.0)
+            if sector_risk_score > 0:
+                reason_bits.append(f"セクターリスク {sector_risk_score:.0f}")
+            drop_comment = " / ".join(reason_bits) if reason_bits else "急落理由コメントは未生成です。"
         row["display_status"] = "強本命" if row.get("signal_stage") == "strong_confirmed" else "翌日購入候補"
+        row["sector"] = row.get("sector") or profile_sector
+        row["company_summary"] = business_summary
+        row["company_profile_status"] = "registered" if business_summary else ("sector_only" if row.get("sector") else "missing")
+        row["drop_reason_comment"] = drop_comment
+        row["drop_reason_source"] = "AIキャッシュ" if code in drop_comments else "指標メモ"
         row["entry_price"] = entry_price if entry_price > 0 else None
         row["gu_3_price"] = entry_price * 1.03 if entry_price > 0 else None
         row["gu_5_price"] = entry_price * 1.05 if entry_price > 0 else None
@@ -2464,6 +2531,53 @@ def web_trade_assist():
         exit_display=exit_display,
         market_adjustment=market_adjustment,
     )
+
+
+@app.route("/web/trade-assist/generate-reason", methods=["POST"])
+def web_trade_assist_generate_reason():
+    def _to_float(value, default=None):
+        try:
+            if value in (None, ""):
+                return default
+            return float(value)
+        except Exception:
+            return default
+
+    code = str(request.form.get("code") or "").strip()
+    name = str(request.form.get("name") or "").strip()
+    drop_pct = _to_float(request.form.get("drop_pct"))
+    nikkei_pct = _to_float(request.form.get("nikkei_pct"))
+
+    if not code:
+        flash("急落理由を生成する銘柄が見つかりません。", "warning")
+        return redirect(url_for("web_trade_assist"))
+
+    try:
+        if not name or drop_pct is None or nikkei_pct is None:
+            rows = (
+                supabase.table("stock_drop_watchlist")
+                .select("code,name,drop_pct,market_nikkei_pct,nikkei_pct")
+                .eq("code", code)
+                .order("updated_at", desc=True)
+                .limit(1)
+                .execute()
+                .data or []
+            )
+            row = rows[0] if rows else {}
+            name = name or str(row.get("name") or code)
+            drop_pct = drop_pct if drop_pct is not None else _to_float(row.get("drop_pct"))
+            nikkei_pct = nikkei_pct if nikkei_pct is not None else _to_float(row.get("market_nikkei_pct"), _to_float(row.get("nikkei_pct")))
+
+        comment = get_stock_ai_comment(code, name or code, drop_pct, nikkei_pct)
+        if comment:
+            flash(f"{code} の急落理由AIコメントを生成しました。", "success")
+        else:
+            flash(f"{code} の急落理由AIコメントを生成できませんでした。", "warning")
+    except Exception as e:
+        logger.exception("trade assist reason generation failed code=%s", code)
+        flash(f"{code} の急落理由生成に失敗しました: {e}", "warning")
+
+    return redirect(url_for("web_trade_assist"))
 
 
 @app.route("/web/settings", methods=["GET", "POST"])
