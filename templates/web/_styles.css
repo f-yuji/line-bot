@@ -1670,6 +1670,7 @@ details[open].score-legend summary::before {
 
   .ai-log-wrap {
     overflow: visible;
+    max-width: 100%;
   }
   .ai-log-table,
   .ai-log-table tbody,
@@ -1677,6 +1678,9 @@ details[open].score-legend summary::before {
   .ai-log-table td {
     display: block;
     width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
   }
   .ai-log-table thead {
     display: none;
@@ -1685,6 +1689,8 @@ details[open].score-legend summary::before {
     display: grid;
     gap: 10px;
     padding: 10px;
+    max-width: 100%;
+    box-sizing: border-box;
   }
   .ai-log-table tbody tr {
     cursor: default;
@@ -1694,14 +1700,18 @@ details[open].score-legend summary::before {
     padding: 10px;
     border: 1px solid var(--line);
     background: var(--bg-2);
+    overflow: hidden;
   }
   .ai-log-table tbody td {
     height: auto;
     min-height: 0;
     padding: 0;
     border-bottom: 0;
-    white-space: normal;
+    white-space: normal !important;
     text-align: left;
+    overflow: hidden;
+    overflow-wrap: anywhere;
+    word-break: break-word;
   }
   .ai-log-table tbody td::before {
     content: attr(data-label);
@@ -1723,8 +1733,17 @@ details[open].score-legend summary::before {
     max-width: none;
     font-size: 12px;
     line-height: 1.65;
-    word-break: normal;
+    white-space: normal !important;
+    word-break: break-word;
     overflow-wrap: anywhere;
+  }
+  .ai-log-table .ai-log-summary,
+  .ai-log-table .ai-log-summary * {
+    max-width: 100%;
+    min-width: 0;
+    white-space: normal !important;
+    overflow-wrap: anywhere;
+    word-break: break-word;
   }
   .ai-log-table .ai-log-summary::before {
     margin-bottom: 5px;
