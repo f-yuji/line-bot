@@ -1669,7 +1669,8 @@ details[open].score-legend summary::before {
   .table-responsive { overflow-x: auto; -webkit-overflow-scrolling: touch; }
 
   .ai-log-wrap {
-    overflow: visible;
+    overflow-x: hidden;
+    overflow-y: visible;
     max-width: 100%;
   }
   .ai-log-table,
@@ -1694,18 +1695,20 @@ details[open].score-legend summary::before {
   }
   .ai-log-table tbody tr {
     cursor: default;
-    display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 8px;
-    padding: 10px;
+    display: block;
+    padding: 12px;
     border: 1px solid var(--line);
     background: var(--bg-2);
     overflow: hidden;
   }
   .ai-log-table tbody td {
+    display: grid;
+    grid-template-columns: 86px minmax(0, 1fr);
+    gap: 6px 10px;
+    align-items: center;
     height: auto;
     min-height: 0;
-    padding: 0;
+    padding: 6px 0;
     border-bottom: 0;
     white-space: normal !important;
     text-align: left;
@@ -1716,21 +1719,24 @@ details[open].score-legend summary::before {
   .ai-log-table tbody td::before {
     content: attr(data-label);
     display: block;
-    margin-bottom: 3px;
+    margin-bottom: 0;
     color: var(--text-3);
     font-size: 9px;
     font-weight: 600;
     letter-spacing: 0.06em;
     text-transform: uppercase;
   }
-  .ai-log-table .ai-log-date,
-  .ai-log-table .ai-log-status,
-  .ai-log-table .ai-log-finished {
-    grid-column: span 1;
+  .ai-log-table .badge,
+  .ai-log-table .status-badge,
+  .ai-log-table .completed-badge {
+    width: fit-content;
+    max-width: 100%;
+    white-space: nowrap;
   }
   .ai-log-table .ai-log-summary {
-    grid-column: 1 / -1;
+    display: block;
     max-width: none;
+    padding-top: 8px;
     font-size: 12px;
     line-height: 1.65;
     white-space: normal !important;
@@ -1747,6 +1753,9 @@ details[open].score-legend summary::before {
   }
   .ai-log-table .ai-log-summary::before {
     margin-bottom: 5px;
+  }
+  .ai-log-table .ai-log-finished {
+    padding-bottom: 0;
   }
 
   /* Bootstrap Bootstrap row/col compat */
