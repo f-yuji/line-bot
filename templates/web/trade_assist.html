@@ -376,6 +376,13 @@
     {% if market_adjustment %}
       <div class="muted">地合い: {{ market_adjustment.label }}{% if market_adjustment.reason %} / {{ market_adjustment.reason }}{% endif %}</div>
     {% endif %}
+    {% if long_term_market %}
+      <div class="muted">
+        長期地合い: {{ long_term_market.label or '中立' }}{% if long_term_market.regime %} / {{ long_term_market.regime }}{% endif %}
+        {% if long_term_market.score is not none %}（スコア {{ long_term_market.score }}）{% endif %}
+      </div>
+      <div class="muted">長期地合いは参考情報です。短期需給とは異なる場合があります。</div>
+    {% endif %}
   </div>
 
   <div class="ta-grid">
@@ -436,9 +443,16 @@
           <span>急落 <b>{{ pct(r.drop_pct) }}</b></span>
           <span>出来高 <b>{{ num(r.volume_ratio_20d, 1, '倍') }}</b></span>
           <span>RSI <b class="{% if r.rsi14 and r.rsi14 > 70 %}warn-text{% endif %}">{{ num(r.rsi14, 0) }}</b></span>
-          {% if r.margin_ratio is defined and r.margin_ratio is not none %}
-            <span>信用 <b>{{ num(r.margin_ratio, 1, '倍') }}</b></span>
-          {% endif %}
+          <span>信用倍率 <b>{{ num(r.margin_ratio, 1, '倍') }}</b>{% if r.margin_date %}<small class="muted"> {{ r.margin_date }}</small>{% endif %}</span>
+        </div>
+
+        <div class="ta-stats">
+          <span>入口タイプ <b>{{ r.entry_case or '-' }}</b></span>
+          <span>MA5乖離 <b>{{ pct(r.entry_ma5_gap_pct) }}</b></span>
+          <span>MA25乖離 <b>{{ pct(r.entry_ma25_gap_pct) }}</b></span>
+          <span>MA75乖離 <b>{{ pct(r.entry_ma75_gap_pct) }}</b></span>
+          <span>入口モード <b>{{ r.entry_mode_label or '-' }}</b></span>
+          <span>推奨 <b>{{ r.recommended_entry_mode_label or '-' }}</b></span>
         </div>
 
         <div class="ta-exits">
@@ -480,4 +494,3 @@
   </div>
 </div>
 {% endblock %}
-

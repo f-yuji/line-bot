@@ -7,6 +7,14 @@
   <h1 class="page-title">戦略設定<small>STRATEGY</small></h1>
 </div>
 
+{% if entry_mode_migration_ok is defined and not entry_mode_migration_ok %}
+<div class="panel" style="border-color:var(--warn);margin-bottom:12px">
+  <div style="padding:14px 16px;color:var(--warn);line-height:1.6">
+    entry_mode用DB列が未適用です。<code>db/entry_mode_settings.sql</code> をSupabase SQL Editorで実行してください。
+  </div>
+</div>
+{% endif %}
+
 <form method="post">
   <div class="form-grid">
 
@@ -72,7 +80,7 @@
     <div class="form-card">
       <h3>入口モード</h3>
       {% for value, label, desc in [
-        ("auto", "自動判定（実験的）", "現在の地合い目安から推奨入口モードを自動反映します。"),
+        ("auto", "自動判定（実験的）", "自動判定は実験機能です。market_regimeの誤判定で入口条件が変わる可能性があります。"),
         ("normal", "normal標準型", "現行ロジックを使用します。"),
         ("risk_on_pullback", "risk_on押し目型", "MA5上側の浅押しを重視します。"),
         ("panic_deep_rebound", "panic深リバ型", "MA5下側の深い急落リバを重視します。"),

@@ -467,6 +467,44 @@ def _insert_virtual_trade_with_optional_columns(sb, row: dict) -> list[dict]:
     return sb.table("virtual_trades").insert(remaining).execute().data or []
 
 
+def _missing_column_from_error(error: Exception) -> str | None:
+    msg = str(error)
+    marker = "Could not find the '"
+    if marker in msg:
+        return msg.split(marker, 1)[1].split("'", 1)[0]
+    return None
+
+
+def _update_watchlist_with_optional_columns(sb, watchlist_id: Any, update: dict) -> list[dict]:
+    remaining = dict(update)
+    for _ in range(12):
+        try:
+            return sb.table("stock_drop_watchlist").update(remaining).eq("id", watchlist_id).execute().data or []
+        except Exception as e:
+            missing = _missing_column_from_error(e)
+            if missing and missing in remaining:
+                logger.warning("stock_drop_watchlist column missing; skip optional field for update: %s", missing)
+                remaining.pop(missing, None)
+                continue
+            raise
+    return sb.table("stock_drop_watchlist").update(remaining).eq("id", watchlist_id).execute().data or []
+
+
+def _insert_watchlist_with_optional_columns(sb, update: dict) -> list[dict]:
+    remaining = dict(update)
+    for _ in range(12):
+        try:
+            return sb.table("stock_drop_watchlist").insert(remaining).execute().data or []
+        except Exception as e:
+            missing = _missing_column_from_error(e)
+            if missing and missing in remaining:
+                logger.warning("stock_drop_watchlist column missing; skip optional field for insert: %s", missing)
+                remaining.pop(missing, None)
+                continue
+            raise
+    return sb.table("stock_drop_watchlist").insert(remaining).execute().data or []
+
+
 def _current_mode(sb, target_date: str) -> dict:
     try:
         rows = (
@@ -592,6 +630,13 @@ def _persist_watchlist(sb, row: dict, result: dict, *, dry_run: bool, force: boo
         "market_nikkei_pct": result.get("market_nikkei_pct"),
         "market_topix_pct": result.get("market_topix_pct"),
         "market_nikkei_change_yen": result.get("market_nikkei_change_yen"),
+        "entry_mode_used": result.get("entry_mode_used"),
+        "entry_mode_reason": result.get("entry_mode_reason"),
+        "recommended_entry_mode": result.get("recommended_entry_mode"),
+        "entry_ma5_gap_pct": result.get("entry_ma5_gap_pct"),
+        "entry_ma25_gap_pct": result.get("entry_ma25_gap_pct"),
+        "entry_ma75_gap_pct": result.get("entry_ma75_gap_pct"),
+        "entry_case": result.get("entry_case"),
         "updated_at": now,
     }
     if result["is_excluded"]:
@@ -606,7 +651,7 @@ def _persist_watchlist(sb, row: dict, result: dict, *, dry_run: bool, force: boo
         record_rebound_signal(sb, source="predict_rebound", snapshot=row, watchlist=saved, result=result, dry_run=True)
         return saved
     if existing and not force:
-        sb.table("stock_drop_watchlist").update(update).eq("id", existing["id"]).execute()
+        _update_watchlist_with_optional_columns(sb, existing["id"], update)
         saved = {**existing, **update}
         if prev_stage and prev_stage != stage:
             logger.info("[signal_stage_transition] code=%s stage %s -> %s", row.get("code"), prev_stage, stage)
@@ -615,7 +660,7 @@ def _persist_watchlist(sb, row: dict, result: dict, *, dry_run: bool, force: boo
         record_rebound_signal(sb, source="predict_rebound", snapshot=row, watchlist=saved, result=result, dry_run=dry_run)
         return saved
     if existing and force:
-        sb.table("stock_drop_watchlist").update(update).eq("id", existing["id"]).execute()
+        _update_watchlist_with_optional_columns(sb, existing["id"], update)
         saved = {**existing, **update}
         if prev_stage and prev_stage != stage:
             logger.info("[signal_stage_transition] code=%s stage %s -> %s", row.get("code"), prev_stage, stage)
@@ -623,7 +668,7 @@ def _persist_watchlist(sb, row: dict, result: dict, *, dry_run: bool, force: boo
             _signal_lifecycle_log(row.get("code"), existing["id"], prev_status, status, update["signal_status_reason"])
         record_rebound_signal(sb, source="predict_rebound", snapshot=row, watchlist=saved, result=result, dry_run=dry_run)
         return saved
-    inserted = sb.table("stock_drop_watchlist").insert(update).execute().data or []
+    inserted = _insert_watchlist_with_optional_columns(sb, update)
     saved = inserted[0] if inserted else update
     _signal_lifecycle_log(row.get("code"), saved.get("id"), None, status, update["signal_status_reason"])
     record_rebound_signal(sb, source="predict_rebound", snapshot=row, watchlist=saved, result=result, dry_run=dry_run)
@@ -1025,6 +1070,15 @@ def run(args: argparse.Namespace) -> None:
         market_adjustment["entry_size_multiplier"],
         market_adjustment["reason"],
     )
+    entry_mode_ctx = resolve_entry_mode(cfg, market_adjustment)
+    effective_entry_mode = str(entry_mode_ctx["effective"])
+    logger.info(
+        "[entry_mode] configured=%s recommended=%s effective=%s regime=%s",
+        entry_mode_ctx["configured"],
+        entry_mode_ctx["recommended"],
+        effective_entry_mode,
+        entry_mode_ctx["regime"],
+    )
     target = _target_config(args)
     model_row, bundle = _load_model_bundle(sb, args)
     if args.fallback_rule:
@@ -1077,6 +1131,11 @@ def run(args: argparse.Namespace) -> None:
             "market_topix_pct": market_adjustment.get("topix_pct_used"),
             "market_nikkei_change_yen": market_adjustment.get("nikkei_change_yen_used"),
         }
+        _passed_mode, mode_reason, mode_meta = entry_mode_filter(row, effective_entry_mode)
+        result.update(mode_meta)
+        result["entry_mode_used"] = effective_entry_mode
+        result["entry_mode_reason"] = mode_reason or "entry_mode_candidate"
+        result["recommended_entry_mode"] = entry_mode_ctx["recommended"]
         if stage in SIGNAL_STAGES:
             signal_count += 1
         logger.info(

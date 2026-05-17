@@ -128,6 +128,8 @@ jobs:
           --max-retries 2
           --retry-wait-seconds 30
           --cooldown-on-429 120
+      - name: Update long-term market regime
+        run: python scripts/update_long_term_market_regime.py
       - name: Check open virtual trades
         run: python scripts/check_virtual_trades.py
       - name: Predict rebound entries

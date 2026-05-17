@@ -13,7 +13,7 @@ from flask import Flask, request, abort, render_template, redirect, url_for, ses
 from openai import OpenAI
 from supabase import create_client
 from services.signal_stage import SIGNAL_STAGES, STAGE_RANK, evaluate_signal_stage
-from services.entry_mode import ENTRY_MODE_LABELS, regime_scores, resolve_entry_mode
+from services.entry_mode import ENTRY_MODE_LABELS, classify_entry_case, ma_gap_pct, regime_scores, resolve_entry_mode
 
 from linebot.v3 import WebhookHandler
 from linebot.v3.exceptions import InvalidSignatureError
@@ -234,6 +234,42 @@ def _current_market_adjustment() -> dict:
         logger.warning("market_regime trade_date lookup failed: %s", e)
 
     return result
+
+
+def _current_long_term_market_regime() -> dict:
+    fallback = {
+        "regime": "neutral",
+        "label": "中立",
+        "score": None,
+        "trade_date": None,
+        "ma25_above_ratio": None,
+        "ma75_above_ratio": None,
+        "vix": None,
+        "reasons": [],
+    }
+    try:
+        rows = (
+            supabase.table("long_term_market_regime")
+            .select("*")
+            .order("trade_date", desc=True)
+            .limit(1)
+            .execute()
+            .data or []
+        )
+        if not rows:
+            return fallback
+        row = rows[0]
+        reasons = row.get("reasons") or []
+        if isinstance(reasons, str):
+            try:
+                reasons = json.loads(reasons)
+            except Exception:
+                reasons = [reasons]
+        row["reasons"] = reasons
+        return {**fallback, **row}
+    except Exception as e:
+        logger.warning("long_term_market_regime lookup failed: %s", e)
+        return fallback
 
 # ─── ログ ───
 logging.basicConfig(
@@ -1872,6 +1908,7 @@ def get_watchlist_counts(rows: list[dict], open_trade_codes: set[str] | None = N
 @app.route("/web/dashboard")
 def web_dashboard():
     market_adjustment = _current_market_adjustment()
+    long_term_market = _current_long_term_market_regime()
     cfg = _settings_loader.get_settings()
     entry_mode_context = resolve_entry_mode(cfg, market_adjustment)
     entry_mode_context["scores"] = regime_scores(market_adjustment)
@@ -1961,6 +1998,7 @@ def web_dashboard():
         watching_rows=watching_rows,
         stats=stats,
         market_adjustment=market_adjustment,
+        long_term_market=long_term_market,
         entry_mode_context=entry_mode_context,
     )
 
@@ -2255,8 +2293,11 @@ def web_signals():
 @app.route("/web/trade-assist")
 def web_trade_assist():
     market_adjustment = _current_market_adjustment()
+    long_term_market = _current_long_term_market_regime()
     now_utc = datetime.now(timezone.utc)
     settings = _settings_loader.get_settings()
+    entry_mode_context = resolve_entry_mode(settings, market_adjustment)
+    entry_mode_context["scores"] = regime_scores(market_adjustment)
     stop_loss_pct = float(settings.get("virtual_exit_stop_loss_pct") or 4.0)
     exit_display = {
         "pullback_pct": float(settings.get("virtual_exit_pullback_pct") or 2.0),
@@ -2381,6 +2422,26 @@ def web_trade_assist():
         if r.get("code")
     }
     try:
+        margin_query = (
+            supabase.table("stock_weekly_margin_interest")
+            .select("code,date,margin_ratio")
+            .in_("code", list(candidate_codes))
+            .order("date", desc=True)
+            .limit(1000)
+        )
+        if latest_feature_date:
+            margin_query = margin_query.lte("date", latest_feature_date)
+        margin_rows = margin_query.execute().data or [] if candidate_codes else []
+        margin_by_code = {}
+        for margin_row in margin_rows:
+            code = str(margin_row.get("code") or "")
+            if code and code not in margin_by_code:
+                margin_by_code[code] = margin_row
+    except Exception as e:
+        logger.warning("trade assist margin lookup failed: %s", e)
+        margin_by_code = {}
+
+    try:
         profile_rows = (
             supabase.table("nikkei_company_profiles")
             .select("code,name,sector,business_summary")
@@ -2464,6 +2525,32 @@ def web_trade_assist():
         row["risk_100"] = risk_100
         row["stop_loss_pct"] = stop_loss_pct
         row["source_label"] = source_label
+        row["entry_case"] = row.get("entry_case") or classify_entry_case(row)
+        row["entry_ma5_gap_pct"] = (
+            row.get("entry_ma5_gap_pct")
+            if row.get("entry_ma5_gap_pct") is not None
+            else ma_gap_pct(row, "ma5")
+        )
+        row["entry_ma25_gap_pct"] = (
+            row.get("entry_ma25_gap_pct")
+            if row.get("entry_ma25_gap_pct") is not None
+            else ma_gap_pct(row, "ma25")
+        )
+        row["entry_ma75_gap_pct"] = (
+            row.get("entry_ma75_gap_pct")
+            if row.get("entry_ma75_gap_pct") is not None
+            else ma_gap_pct(row, "ma75")
+        )
+        margin = margin_by_code.get(code) or {}
+        row["margin_ratio"] = row.get("margin_ratio") if row.get("margin_ratio") is not None else margin.get("margin_ratio")
+        row["margin_date"] = row.get("margin_date") or margin.get("date")
+        row["entry_mode_used"] = row.get("entry_mode_used") or entry_mode_context.get("effective")
+        row["recommended_entry_mode"] = row.get("recommended_entry_mode") or entry_mode_context.get("recommended")
+        row["entry_mode_label"] = ENTRY_MODE_LABELS.get(str(row.get("entry_mode_used") or ""), row.get("entry_mode_used") or "-")
+        row["recommended_entry_mode_label"] = ENTRY_MODE_LABELS.get(
+            str(row.get("recommended_entry_mode") or ""),
+            row.get("recommended_entry_mode") or "-",
+        )
         if trade:
             row["virtual_trade_id"] = trade.get("id") or row.get("virtual_trade_id")
             row["trade_created_at"] = trade.get("created_at")
@@ -2535,6 +2622,8 @@ def web_trade_assist():
         summary=summary,
         exit_display=exit_display,
         market_adjustment=market_adjustment,
+        long_term_market=long_term_market,
+        entry_mode_context=entry_mode_context,
     )
 
 
@@ -2583,6 +2672,17 @@ def web_trade_assist_generate_reason():
         flash(f"{code} の急落理由生成に失敗しました: {e}", "warning")
 
     return redirect(url_for("web_trade_assist"))
+
+
+def _entry_mode_migration_status() -> bool:
+    try:
+        supabase.table("strategy_settings").select("entry_mode").limit(1).execute()
+        supabase.table("stock_drop_watchlist").select("entry_mode_used,entry_case,entry_ma5_gap_pct").limit(1).execute()
+        supabase.table("virtual_trades").select("entry_mode_used,entry_case,entry_ma5_gap_pct").limit(1).execute()
+        return True
+    except Exception as e:
+        logger.warning("entry_mode migration check failed: %s", e)
+        return False
 
 
 @app.route("/web/settings", methods=["GET", "POST"])
@@ -2653,7 +2753,13 @@ def web_settings():
             flash(f"保存失敗: {e}", "danger")
         return redirect(url_for("web_settings"))
     cfg = _settings_loader.get_settings()
-    return render_template("web/settings.html", cfg=cfg, entry_mode_labels=ENTRY_MODE_LABELS)
+    entry_mode_migration_ok = _entry_mode_migration_status()
+    return render_template(
+        "web/settings.html",
+        cfg=cfg,
+        entry_mode_labels=ENTRY_MODE_LABELS,
+        entry_mode_migration_ok=entry_mode_migration_ok,
+    )
 
 
 @app.route("/web/virtual-trades")

@@ -19,6 +19,10 @@ ENTRY_MODE_LABELS = {
     "paused": "新規停止",
 }
 
+RISK_ON_PULLBACK_MIN_DROP = -7.0
+RISK_ON_PULLBACK_MAX_DROP = -3.0
+PANIC_DEEP_REBOUND_MAX_DROP = -8.0
+
 
 def _to_float(value: Any, default: float | None = None) -> float | None:
     try:
@@ -110,10 +114,10 @@ def entry_mode_filter(row: dict, effective_mode: str) -> tuple[bool, str | None,
     if ma5_gap is None or drop is None:
         return False, f"entry_mode_{effective_mode}_filter", meta
     if effective_mode == "risk_on_pullback":
-        ok = ma5_gap >= 0 and -5.0 <= drop <= -3.0
+        ok = ma5_gap >= 0 and RISK_ON_PULLBACK_MIN_DROP <= drop <= RISK_ON_PULLBACK_MAX_DROP
         return ok, None if ok else "entry_mode_risk_on_pullback_filter", meta
     if effective_mode == "panic_deep_rebound":
-        ok = ma5_gap < 0 and drop <= -8.0
+        ok = ma5_gap < 0 and drop <= PANIC_DEEP_REBOUND_MAX_DROP
         return ok, None if ok else "entry_mode_panic_deep_rebound_filter", meta
     return True, None, meta
 

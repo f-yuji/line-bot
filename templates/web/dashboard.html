@@ -149,6 +149,9 @@
     <div class="panel-title">現在の地合い目安</div>
   </div>
   <div style="padding:0 16px 14px">
+    <div class="muted" style="font-size:12px;margin-bottom:8px">
+      現在のmarket_regime: <b>{{ em.regime or 'normal' }}</b>
+    </div>
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px;margin-bottom:10px">
       <div class="mini-stat"><span class="muted">risk_on</span><b>{{ sc.risk_on or 0 }}</b></div>
       <div class="mini-stat"><span class="muted">normal</span><b>{{ sc.normal or 0 }}</b></div>
@@ -157,13 +160,41 @@
     </div>
     <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
       <span class="tag">推奨入口: {{ em.recommended_label or 'normal標準型' }}</span>
-      <span class="tag">現在設定: {{ em.configured_label or 'normal標準型' }}</span>
-      {% if em.configured == 'auto' %}
-        <span class="tag">実運用: {{ em.effective_label }}</span>
-      {% endif %}
+      <span class="tag">現在設定中の入口モード: {{ em.configured_label or 'normal標準型' }}</span>
+      <span class="tag">実効入口モード: {{ em.effective_label or 'normal標準型' }}</span>
     </div>
     <p class="muted" style="font-size:12px;line-height:1.6;margin:8px 0 0">
-      regime判定は目安です。最終的な入口モードは設定UIの値を優先します。
+      regime判定は目安です。実運用では設定UIの入口モードが優先されます。
+    </p>
+  </div>
+</div>
+
+{% set lt = long_term_market or {} %}
+<div class="panel" style="margin-bottom:12px">
+  <div class="panel-head">
+    <div class="panel-title">長期市場構造</div>
+  </div>
+  <div style="padding:0 16px 14px">
+    <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:8px">
+      <span class="tag">現在: {{ lt.label or '中立' }}{% if lt.regime %} / {{ lt.regime }}{% endif %}</span>
+      <span class="tag">スコア: {{ lt.score if lt.score is not none else '-' }}</span>
+      {% if lt.trade_date %}<span class="tag">基準日: {{ lt.trade_date }}</span>{% endif %}
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px;margin-bottom:8px">
+      <div class="mini-stat"><span class="muted">MA25上</span><b>{{ "%.0f"|format(lt.ma25_above_ratio * 100) ~ '%' if lt.ma25_above_ratio is not none else '-' }}</b></div>
+      <div class="mini-stat"><span class="muted">MA75上</span><b>{{ "%.0f"|format(lt.ma75_above_ratio * 100) ~ '%' if lt.ma75_above_ratio is not none else '-' }}</b></div>
+      <div class="mini-stat"><span class="muted">VIX</span><b>{{ "%.1f"|format(lt.vix) if lt.vix is not none else '-' }}</b></div>
+      <div class="mini-stat"><span class="muted">日経200MA</span><b>{{ '上' if lt.nikkei_above_200ma else ('下' if lt.nikkei_above_200ma is not none else '-') }}</b></div>
+    </div>
+    {% if lt.reasons %}
+      <div class="muted" style="font-size:12px;line-height:1.6">
+        {% for reason in lt.reasons[:4] %}
+          <div>・{{ reason }}</div>
+        {% endfor %}
+      </div>
+    {% endif %}
+    <p class="muted" style="font-size:12px;line-height:1.6;margin:8px 0 0">
+      長期地合いは半年〜1年の市場構造目安です。短期需給とは異なる場合があります。
     </p>
   </div>
 </div>
