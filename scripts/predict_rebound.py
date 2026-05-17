@@ -76,6 +76,23 @@ def _build_supabase():
     return create_client(url, key)
 
 
+def _current_long_term_market_regime(sb) -> dict:
+    fallback = {"regime": "neutral", "label": "中立", "score": None}
+    try:
+        rows = (
+            sb.table("long_term_market_regime")
+            .select("trade_date,regime,label,score")
+            .order("trade_date", desc=True)
+            .limit(1)
+            .execute()
+            .data or []
+        )
+        return {**fallback, **(rows[0] if rows else {})}
+    except Exception as e:
+        logger.warning("long_term_market_regime lookup failed: %s", e)
+        return fallback
+
+
 def _to_float(value: Any, default: float | None = None) -> float | None:
     try:
         if value is None:
@@ -817,16 +834,26 @@ def _entry_rank_value(candidate: tuple[dict, dict, dict]) -> tuple[float, float]
     return stage_rank, float(result.get("expected_value") or -999.0), float(result.get("probability") or 0.0)
 
 
-def _create_ranked_virtual_trades(sb, candidates: list[tuple[dict, dict, dict]], cfg: dict, market_adjustment: dict, *, dry_run: bool) -> None:
+def _create_ranked_virtual_trades(
+    sb,
+    candidates: list[tuple[dict, dict, dict]],
+    cfg: dict,
+    market_adjustment: dict,
+    long_term_market: dict | None = None,
+    *,
+    dry_run: bool,
+) -> None:
     if not candidates:
         return
-    entry_mode_ctx = resolve_entry_mode(cfg, market_adjustment)
+    entry_mode_ctx = resolve_entry_mode(cfg, market_adjustment, long_term_market)
     logger.info(
-        "[entry_mode] configured=%s recommended=%s effective=%s regime=%s",
+        "[entry_mode] configured=%s recommended=%s effective=%s short_regime=%s long_regime=%s basis=%s",
         entry_mode_ctx["configured"],
         entry_mode_ctx["recommended"],
         entry_mode_ctx["effective"],
         entry_mode_ctx["regime"],
+        entry_mode_ctx.get("long_term_regime"),
+        entry_mode_ctx.get("recommendation_basis"),
     )
     effective_entry_mode = str(entry_mode_ctx["effective"])
     max_open = _int_setting(cfg, "max_open_positions", 20)
@@ -1070,14 +1097,17 @@ def run(args: argparse.Namespace) -> None:
         market_adjustment["entry_size_multiplier"],
         market_adjustment["reason"],
     )
-    entry_mode_ctx = resolve_entry_mode(cfg, market_adjustment)
+    long_term_market = _current_long_term_market_regime(sb)
+    entry_mode_ctx = resolve_entry_mode(cfg, market_adjustment, long_term_market)
     effective_entry_mode = str(entry_mode_ctx["effective"])
     logger.info(
-        "[entry_mode] configured=%s recommended=%s effective=%s regime=%s",
+        "[entry_mode] configured=%s recommended=%s effective=%s short_regime=%s long_regime=%s basis=%s",
         entry_mode_ctx["configured"],
         entry_mode_ctx["recommended"],
         effective_entry_mode,
         entry_mode_ctx["regime"],
+        entry_mode_ctx.get("long_term_regime"),
+        entry_mode_ctx.get("recommendation_basis"),
     )
     target = _target_config(args)
     model_row, bundle = _load_model_bundle(sb, args)
@@ -1157,7 +1187,7 @@ def run(args: argparse.Namespace) -> None:
             entry_candidates.append((row, watch or {}, result))
         if args.notify and not args.dry_run and _notification_allowed(row, result, cfg):
             notify_items.append((row, result))
-    _create_ranked_virtual_trades(sb, entry_candidates, cfg, market_adjustment, dry_run=args.dry_run)
+    _create_ranked_virtual_trades(sb, entry_candidates, cfg, market_adjustment, long_term_market, dry_run=args.dry_run)
     if args.notify and not args.dry_run:
         _notify_batch(sb, notify_items, target_date, mode)
     logger.info("complete: predictions=%d signals=%d dry_run=%s", len(snapshots), signal_count, args.dry_run)

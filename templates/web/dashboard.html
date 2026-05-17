@@ -124,13 +124,14 @@
 </div>
 
 {% set _mc = market_adjustment %}
+{% set em = entry_mode_context or {} %}
+{% set sc = em.scores or {} %}
 <div class="panel" style="margin-bottom:12px;{% if _mc and _mc.regime and _mc.regime != 'normal' %}border-color:var(--accent-dim);{% endif %}">
   <div class="panel-head">
-    <div class="panel-title">市場環境：{{ (_mc.label if _mc and _mc.label) or '未取得' }}{% if _mc and _mc.regime and _mc.regime != 'normal' %}<span class="tag">AI閾値 +{{ "%.0f"|format((_mc.ai_threshold_adjust or 0) * 100) }}%</span>{% endif %}</div>
+    <div class="panel-title">短期地合い・入口モード：{{ (_mc.label if _mc and _mc.label) or '未取得' }}{% if _mc and _mc.regime and _mc.regime != 'normal' %}<span class="tag">AI閾値 +{{ "%.0f"|format((_mc.ai_threshold_adjust or 0) * 100) }}%</span>{% endif %}</div>
   </div>
-  {% if _mc %}
   <div style="padding:0 16px 14px">
-    {% if _mc.trade_date %}<div class="muted" style="font-size:0.82em;margin-bottom:4px">基準日：{{ _mc.trade_date }}{% if _mc.trade_date_stale %} <small style="color:var(--dn)">※古い可能性</small>{% endif %}</div>{% endif %}
+    {% if _mc and _mc.trade_date %}<div class="muted" style="font-size:0.82em;margin-bottom:4px">基準日：{{ _mc.trade_date }} / market_regime: <b>{{ em.regime or _mc.regime or 'normal' }}</b>{% if _mc.trade_date_stale %} <small style="color:var(--dn)">※古い可能性</small>{% endif %}</div>{% endif %}
     {% if _mc.nikkei_pct is not none or _mc.topix_pct is not none or _mc.nikkei_change_yen is not none %}
     <div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:4px">
       {% if _mc.nikkei_pct is not none %}<span>日経平均 <b style="color:{% if _mc.nikkei_pct > 0 %}var(--up){% else %}var(--dn){% endif %}">{{ "%+.1f"|format(_mc.nikkei_pct) }}%</b>{% if _mc.nikkei_pct|abs >= 10 %} <small class="muted">※要確認</small>{% endif %}</span>{% endif %}
@@ -138,20 +139,6 @@
       {% if _mc.nikkei_change_yen is not none %}<span>日経変動 <b>{{ "%+,.0f"|format(_mc.nikkei_change_yen) }}円</b></span>{% endif %}
     </div>
     {% endif %}
-  </div>
-  {% endif %}
-</div>
-
-{% set em = entry_mode_context or {} %}
-{% set sc = em.scores or {} %}
-<div class="panel" style="margin-bottom:12px">
-  <div class="panel-head">
-    <div class="panel-title">現在の地合い目安</div>
-  </div>
-  <div style="padding:0 16px 14px">
-    <div class="muted" style="font-size:12px;margin-bottom:8px">
-      現在のmarket_regime: <b>{{ em.regime or 'normal' }}</b>
-    </div>
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px;margin-bottom:10px">
       <div class="mini-stat"><span class="muted">risk_on</span><b>{{ sc.risk_on or 0 }}</b></div>
       <div class="mini-stat"><span class="muted">normal</span><b>{{ sc.normal or 0 }}</b></div>
@@ -160,11 +147,12 @@
     </div>
     <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
       <span class="tag">推奨入口: {{ em.recommended_label or 'normal標準型' }}</span>
+      <span class="tag">推奨基準: 長期 {{ em.long_term_regime or 'neutral' }}</span>
       <span class="tag">現在設定中の入口モード: {{ em.configured_label or 'normal標準型' }}</span>
       <span class="tag">実効入口モード: {{ em.effective_label or 'normal標準型' }}</span>
     </div>
     <p class="muted" style="font-size:12px;line-height:1.6;margin:8px 0 0">
-      regime判定は目安です。実運用では設定UIの入口モードが優先されます。
+      推奨入口は長期市場構造を基本にし、短期地合いはpanic/risk_off時の警戒にだけ使います。実運用では設定UIの入口モードが優先されます。
     </p>
   </div>
 </div>

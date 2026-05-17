@@ -60,34 +60,51 @@ def classify_entry_case(row: dict) -> str:
     return "unknown"
 
 
-def recommended_entry_mode(market_regime: str | None) -> str:
-    regime = str(market_regime or "normal")
-    if regime in {"strong_risk_on", "risk_on"}:
+def base_entry_mode_from_long_term(long_term_regime: str | None) -> str:
+    regime = str(long_term_regime or "neutral")
+    if regime in {"secular_risk_on", "late_bull", "distribution"}:
         return "risk_on_pullback"
-    if regime in {"panic_rebound", "panic_selloff"}:
+    if regime == "secular_bear":
         return "panic_deep_rebound"
-    if regime == "risk_off":
+    if regime == "panic_crisis":
         return "paused"
     return "normal"
 
 
-def resolve_entry_mode(settings: dict | None, market_adjustment: dict | None) -> dict:
+def recommended_entry_mode(market_regime: str | None, long_term_regime: str | None = None) -> tuple[str, str]:
+    """Recommend an entry mode with long-term structure as the main bias.
+
+    Short-term regime is only a guardrail so the recommendation does not flip
+    back and forth on ordinary daily noise.
+    """
+    short_regime = str(market_regime or "normal")
+    base = base_entry_mode_from_long_term(long_term_regime)
+    basis = "long_term_market_structure"
+
+    if short_regime == "panic_selloff":
+        return "paused", "short_term_panic_selloff_guard"
+    if short_regime == "panic_rebound":
+        return "panic_deep_rebound", "short_term_panic_rebound_guard"
+    if short_regime == "risk_off" and base == "risk_on_pullback":
+        return "normal", "short_term_risk_off_guard"
+    return base, basis
+
+
+def resolve_entry_mode(settings: dict | None, market_adjustment: dict | None, long_term_market: dict | None = None) -> dict:
     configured = str((settings or {}).get("entry_mode") or "normal")
     if configured not in ENTRY_MODES:
         configured = "normal"
     regime = str((market_adjustment or {}).get("regime") or "normal")
-    recommended = recommended_entry_mode(regime)
-    if recommended == "normal":
-        nikkei = _to_float((market_adjustment or {}).get("nikkei_pct"))
-        topix = _to_float((market_adjustment or {}).get("topix_pct"))
-        if (nikkei is not None and nikkei >= 0.75) or (topix is not None and topix >= 0.5):
-            recommended = "risk_on_pullback"
+    long_term_regime = str((long_term_market or {}).get("regime") or "neutral")
+    recommended, recommendation_basis = recommended_entry_mode(regime, long_term_regime)
     effective = recommended if configured == "auto" else configured
     return {
         "configured": configured,
         "effective": effective,
         "recommended": recommended,
         "regime": regime,
+        "long_term_regime": long_term_regime,
+        "recommendation_basis": recommendation_basis,
         "configured_label": ENTRY_MODE_LABELS.get(configured, configured),
         "effective_label": ENTRY_MODE_LABELS.get(effective, effective),
         "recommended_label": ENTRY_MODE_LABELS.get(recommended, recommended),

@@ -1911,7 +1911,7 @@ def web_dashboard():
     market_adjustment = _current_market_adjustment()
     long_term_market = _current_long_term_market_regime()
     cfg = _settings_loader.get_settings()
-    entry_mode_context = resolve_entry_mode(cfg, market_adjustment)
+    entry_mode_context = resolve_entry_mode(cfg, market_adjustment, long_term_market)
     entry_mode_context["scores"] = regime_scores(market_adjustment)
     def _num(row: dict, *keys: str) -> float:
         for key in keys:
@@ -2297,7 +2297,7 @@ def web_trade_assist():
     long_term_market = _current_long_term_market_regime()
     now_utc = datetime.now(timezone.utc)
     settings = _settings_loader.get_settings()
-    entry_mode_context = resolve_entry_mode(settings, market_adjustment)
+    entry_mode_context = resolve_entry_mode(settings, market_adjustment, long_term_market)
     entry_mode_context["scores"] = regime_scores(market_adjustment)
     stop_loss_pct = float(settings.get("virtual_exit_stop_loss_pct") or 4.0)
     exit_display = {
