@@ -14,11 +14,11 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 LONG_TERM_LABELS = {
-    "secular_risk_on": "長期risk_on",
-    "late_bull": "上昇終盤",
-    "distribution": "内部崩壊型",
-    "secular_bear": "長期bear",
-    "panic_crisis": "危機相場",
+    "secular_risk_on": "長期上昇基調",
+    "late_bull": "上昇継続・やや過熱",
+    "distribution": "指数は耐えるが個別は弱い",
+    "secular_bear": "長期下落基調",
+    "panic_crisis": "危機的な全面安",
     "neutral": "中立",
 }
 

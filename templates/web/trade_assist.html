@@ -429,11 +429,29 @@
       <div class="muted">地合い: {{ market_adjustment.label }}{% if market_adjustment.reason %} / {{ market_adjustment.reason }}{% endif %}</div>
     {% endif %}
     {% if long_term_market %}
+      {% set trade_long_labels = {
+        'secular_risk_on': '長期上昇基調',
+        'late_bull': '上昇継続・やや過熱',
+        'distribution': '指数は耐えるが個別は弱い',
+        'secular_bear': '長期下落基調',
+        'panic_crisis': '危機的な全面安',
+        'neutral': '中立'
+      } %}
+      {% set trade_long_hints = {
+        'distribution': '強い銘柄だけを選別する局面',
+        'late_bull': '押し目は有効でも飛び乗り注意',
+        'secular_risk_on': '押し目型が機能しやすい地合い',
+        'secular_bear': '深リバ以外は慎重に見る地合い',
+        'panic_crisis': '新規停止を優先する危険地合い',
+        'neutral': '標準設定を基本に確認'
+      } %}
+      {% set trade_lt_regime = long_term_market.regime or 'neutral' %}
       <div class="muted">
-        長期地合い: {{ long_term_market.label or '中立' }}{% if long_term_market.regime %} / {{ long_term_market.regime }}{% endif %}
+        長期地合い: {{ trade_long_labels.get(trade_lt_regime, long_term_market.label or '中立') }}
         {% if long_term_market.score is not none %}（スコア {{ long_term_market.score }}）{% endif %}
+        / {{ trade_long_hints.get(trade_lt_regime, '参考情報') }}
       </div>
-      <div class="muted">長期地合いは参考情報です。短期需給とは異なる場合があります。</div>
+      <div class="muted">長期地合いは入口モードの基本方針、短期地合いは当日の危険度チェックです。</div>
     {% endif %}
   </div>
 

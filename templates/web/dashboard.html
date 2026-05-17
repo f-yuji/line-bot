@@ -125,7 +125,28 @@
 
 {% set _mc = market_adjustment %}
 {% set em = entry_mode_context or {} %}
-{% set sc = em.scores or {} %}
+{% set long_labels = {
+  'secular_risk_on': '長期上昇基調',
+  'late_bull': '上昇継続・やや過熱',
+  'distribution': '指数は耐えるが個別は弱い',
+  'secular_bear': '長期下落基調',
+  'panic_crisis': '危機的な全面安',
+  'neutral': '中立'
+} %}
+{% set long_hints = {
+  'secular_risk_on': '市場全体に買いが広がりやすく、押し目型が機能しやすい地合いです。',
+  'late_bull': '指数は強い一方で過熱もあります。押し目型は有効でも、飛び乗りは避けたい局面です。',
+  'distribution': '指数は耐えていますが、個別銘柄の広がりは弱めです。強い銘柄だけを選別する局面です。',
+  'secular_bear': '長期では売り優勢です。浅い押し目より、深く売られた後のリバウンドを慎重に見る局面です。',
+  'panic_crisis': '全面安に近い危険地合いです。新規エントリー停止を優先する局面です。',
+  'neutral': '長期構造は中立です。現行normal設定を基本に、短期地合いを確認します。'
+} %}
+{% set guard_labels = {
+  'long_term_market_structure': 'なし（長期方針を採用）',
+  'short_term_panic_selloff_guard': '全面安のため新規停止推奨',
+  'short_term_panic_rebound_guard': 'パニック後反発のため深リバ優先',
+  'short_term_risk_off_guard': '短期悪化のため一段慎重'
+} %}
 <div class="panel" style="margin-bottom:12px;{% if _mc and _mc.regime and _mc.regime != 'normal' %}border-color:var(--accent-dim);{% endif %}">
   <div class="panel-head">
     <div class="panel-title">短期地合い・入口モード：{{ (_mc.label if _mc and _mc.label) or '未取得' }}{% if _mc and _mc.regime and _mc.regime != 'normal' %}<span class="tag">AI閾値 +{{ "%.0f"|format((_mc.ai_threshold_adjust or 0) * 100) }}%</span>{% endif %}</div>
@@ -139,15 +160,10 @@
       {% if _mc.nikkei_change_yen is not none %}<span>日経変動 <b>{{ "%+,.0f"|format(_mc.nikkei_change_yen) }}円</b></span>{% endif %}
     </div>
     {% endif %}
-    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px;margin-bottom:10px">
-      <div class="mini-stat"><span class="muted">risk_on</span><b>{{ sc.risk_on or 0 }}</b></div>
-      <div class="mini-stat"><span class="muted">normal</span><b>{{ sc.normal or 0 }}</b></div>
-      <div class="mini-stat"><span class="muted">risk_off</span><b>{{ sc.risk_off or 0 }}</b></div>
-      <div class="mini-stat"><span class="muted">panic</span><b>{{ sc.panic or 0 }}</b></div>
-    </div>
     <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
       <span class="tag">推奨入口: {{ em.recommended_label or 'normal標準型' }}</span>
       <span class="tag">推奨基準: 長期 {{ em.long_term_regime or 'neutral' }}</span>
+      <span class="tag">短期ガード: {{ guard_labels.get(em.recommendation_basis or 'long_term_market_structure', em.recommendation_basis or '-') }}</span>
       <span class="tag">現在設定中の入口モード: {{ em.configured_label or 'normal標準型' }}</span>
       <span class="tag">実効入口モード: {{ em.effective_label or 'normal標準型' }}</span>
     </div>
@@ -158,16 +174,21 @@
 </div>
 
 {% set lt = long_term_market or {} %}
+{% set lt_regime = lt.regime or 'neutral' %}
+{% set lt_label = long_labels.get(lt_regime, lt.label or '中立') %}
 <div class="panel" style="margin-bottom:12px">
   <div class="panel-head">
-    <div class="panel-title">長期市場構造</div>
+    <div class="panel-title">長期地合い（半年〜1年目線）</div>
   </div>
   <div style="padding:0 16px 14px">
     <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:8px">
-      <span class="tag">現在: {{ lt.label or '中立' }}{% if lt.regime %} / {{ lt.regime }}{% endif %}</span>
+      <span class="tag">現在: {{ lt_label }}</span>
       <span class="tag">スコア: {{ lt.score if lt.score is not none else '-' }}</span>
       {% if lt.trade_date %}<span class="tag">基準日: {{ lt.trade_date }}</span>{% endif %}
     </div>
+    <p class="muted" style="font-size:12px;line-height:1.6;margin:0 0 8px">
+      {{ long_hints.get(lt_regime, '長期地合いは現在の市場構造を整理する参考情報です。') }}
+    </p>
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px;margin-bottom:8px">
       <div class="mini-stat"><span class="muted">MA25上</span><b>{{ "%.0f"|format(lt.ma25_above_ratio * 100) ~ '%' if lt.ma25_above_ratio is not none else '-' }}</b></div>
       <div class="mini-stat"><span class="muted">MA75上</span><b>{{ "%.0f"|format(lt.ma75_above_ratio * 100) ~ '%' if lt.ma75_above_ratio is not none else '-' }}</b></div>
@@ -182,7 +203,7 @@
       </div>
     {% endif %}
     <p class="muted" style="font-size:12px;line-height:1.6;margin:8px 0 0">
-      長期地合いは半年〜1年の市場構造目安です。短期需給とは異なる場合があります。
+      長期地合いは「入口モードの基本方針」を決める材料です。短期地合いは当日の危険度チェックとして使います。
     </p>
   </div>
 </div>
