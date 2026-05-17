@@ -134,6 +134,8 @@ jobs:
         run: python scripts/check_virtual_trades.py
       - name: Predict rebound entries
         run: python scripts/predict_rebound.py --latest
+      - name: Save trade assist candidate history
+        run: python scripts/save_trade_assist_candidate_history.py
       - name: Save UI log
         if: success()
         run: python scripts/log_rebound_ai_daily.py --status completed

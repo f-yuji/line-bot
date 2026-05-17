@@ -118,6 +118,58 @@
     border-color: rgba(94, 230, 168, 0.35);
     box-shadow: 0 0 0 1px rgba(94, 230, 168, 0.05) inset;
   }
+  .ta-card.is-history {
+    opacity: 0.66;
+    filter: saturate(0.72);
+  }
+  .ta-history {
+    margin-top: 22px;
+    display: grid;
+    gap: 10px;
+  }
+  .ta-history-title {
+    margin: 0;
+    color: var(--ta-fg);
+    font-size: 16px;
+    font-weight: 700;
+  }
+  .ta-history details {
+    background: var(--ta-panel);
+    border: 1px solid var(--ta-border);
+    border-radius: 10px;
+    overflow: hidden;
+  }
+  .ta-history summary {
+    cursor: pointer;
+    padding: 12px 14px;
+    color: var(--ta-dim);
+    font-size: 13px;
+    font-weight: 700;
+    list-style: none;
+  }
+  .ta-history summary::-webkit-details-marker { display: none; }
+  .ta-history summary::before {
+    content: "+";
+    display: inline-block;
+    width: 16px;
+    color: var(--ta-dim-2);
+  }
+  .ta-history details[open] summary::before { content: "-"; }
+  .ta-history-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+    gap: 12px;
+    padding: 0 12px 12px;
+  }
+  .ta-history-card {
+    background: var(--ta-panel-2);
+    border: 1px solid var(--ta-border);
+    border-radius: 10px;
+    padding: 14px;
+    display: grid;
+    gap: 10px;
+  }
+  .ta-history-card .ta-card-name { font-size: 16px; }
   .ta-card-head {
     display: flex;
     justify-content: space-between;
@@ -387,7 +439,7 @@
 
   <div class="ta-grid">
     {% for r in rows %}
-      {% set ai_score = ((r.signal_probability or r.entry_probability or 0) * 100) | round(0, 'floor') | int %}
+      {% set ai_score = ((r.display_probability or r.signal_probability or r.entry_probability or 0) * 100) | round(0) | int %}
       {% set ai_cls = 'is-high' if ai_score >= 65 else ('is-mid' if ai_score >= 55 else 'is-low') %}
       {% set strong = r.signal_stage == 'strong_confirmed' %}
       <article class="ta-card {{ 'is-strong' if strong else '' }}">
@@ -408,7 +460,7 @@
             <b>{{ yen(r.entry_price) }}</b>
           </div>
           <div class="ta-hero-block is-right">
-            <span>AIスコア</span>
+            <span>{{ r.ai_score_label or 'AIスコア' }}</span>
             <b class="ta-ai {{ ai_cls }}">{{ ai_score }}<i>%</i></b>
           </div>
         </div>
@@ -492,5 +544,42 @@
       <div class="ta-empty">翌日購入候補はありません。</div>
     {% endfor %}
   </div>
+
+  {% if history_groups %}
+  <section class="ta-history">
+    <h2 class="ta-history-title">過去の購入候補履歴</h2>
+    {% for group in history_groups %}
+      <details {% if loop.first %}open{% endif %}>
+        <summary>{{ group.trade_date }} の候補履歴 / {{ group.rows|length }}件</summary>
+        <div class="ta-history-grid">
+          {% for r in group.rows %}
+            <article class="ta-history-card ta-card is-history">
+              <div class="ta-card-head">
+                <div class="ta-card-id">
+                  <div class="ta-card-meta">{{ r.code }}{% if r.sector %} / {{ r.sector }}{% endif %}</div>
+                  <h3 class="ta-card-name">{{ r.name or '-' }}</h3>
+                </div>
+                <div class="ta-status">履歴</div>
+              </div>
+              <div class="ta-stats">
+                <span>価格 <b>{{ yen(r.entry_price) }}</b></span>
+                <span>AI <b>{{ num(r.ai_score, 0, '%') }}</b></span>
+                <span>期待値 <b>{{ pct(r.expected_value) }}</b></span>
+                <span>急落 <b>{{ pct(r.drop_pct) }}</b></span>
+                <span>信用倍率 <b>{{ num(r.margin_ratio, 1, '倍') }}</b></span>
+              </div>
+              <div class="ta-stats">
+                <span>入口 <b>{{ r.entry_case or '-' }}</b></span>
+                <span>MA5 <b>{{ pct(r.entry_ma5_gap_pct) }}</b></span>
+                <span>MA25 <b>{{ pct(r.entry_ma25_gap_pct) }}</b></span>
+                <span>MA75 <b>{{ pct(r.entry_ma75_gap_pct) }}</b></span>
+              </div>
+            </article>
+          {% endfor %}
+        </div>
+      </details>
+    {% endfor %}
+  </section>
+  {% endif %}
 </div>
 {% endblock %}

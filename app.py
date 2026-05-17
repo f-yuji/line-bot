@@ -14,6 +14,7 @@ from openai import OpenAI
 from supabase import create_client
 from services.signal_stage import SIGNAL_STAGES, STAGE_RANK, evaluate_signal_stage
 from services.entry_mode import ENTRY_MODE_LABELS, classify_entry_case, ma_gap_pct, regime_scores, resolve_entry_mode
+from services.trade_assist_history import decorate_history_rows
 
 from linebot.v3 import WebhookHandler
 from linebot.v3.exceptions import InvalidSignatureError
@@ -2525,6 +2526,10 @@ def web_trade_assist():
         row["risk_100"] = risk_100
         row["stop_loss_pct"] = stop_loss_pct
         row["source_label"] = source_label
+        entry_probability = _num(trade or {}, "entry_probability", default=None) if trade else _num(row, "entry_probability", default=None)
+        signal_probability = _num(row, "signal_probability", "ai_probability", default=None)
+        row["display_probability"] = entry_probability if entry_probability is not None else signal_probability
+        row["ai_score_label"] = "判定時AIスコア" if entry_probability is not None else "現在AIスコア"
         row["entry_case"] = row.get("entry_case") or classify_entry_case(row)
         row["entry_ma5_gap_pct"] = (
             row.get("entry_ma5_gap_pct")
@@ -2570,6 +2575,7 @@ def web_trade_assist():
             {
                 "code": entry.get("code") or trade.get("code"),
                 "name": entry.get("name") or trade.get("name"),
+                "entry_probability": trade.get("entry_probability") or entry.get("entry_probability"),
                 "signal_probability": trade.get("entry_probability") or entry.get("entry_probability"),
                 "expected_value": trade.get("expected_value") or entry.get("expected_value"),
                 "signal_stage": trade.get("signal_stage") or entry.get("signal_stage"),
@@ -2607,6 +2613,28 @@ def web_trade_assist():
         reverse=True,
     )
     cards = cards[:30]
+    try:
+        history_rows = (
+            supabase.table("trade_assist_candidate_history")
+            .select("*")
+            .neq("trade_date", latest_feature_date)
+            .order("trade_date", desc=True)
+            .order("ai_score", desc=True)
+            .limit(120)
+            .execute()
+            .data or []
+        )
+        history_rows = decorate_history_rows(history_rows)
+    except Exception as e:
+        logger.warning("trade assist history load failed: %s", e)
+        history_rows = []
+    history_groups = []
+    for history_row in history_rows:
+        trade_date = str(history_row.get("trade_date") or "-")
+        if not history_groups or history_groups[-1]["trade_date"] != trade_date:
+            history_groups.append({"trade_date": trade_date, "rows": []})
+        history_groups[-1]["rows"].append(history_row)
+    history_groups = history_groups[:10]
 
     summary = {
         "latest_feature_date": latest_feature_date,
@@ -2619,6 +2647,7 @@ def web_trade_assist():
     return render_template(
         "web/trade_assist.html",
         rows=cards,
+        history_groups=history_groups,
         summary=summary,
         exit_display=exit_display,
         market_adjustment=market_adjustment,
