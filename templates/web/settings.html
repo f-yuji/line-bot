@@ -69,6 +69,32 @@
       {% endfor %}
     </div>
 
+    <div class="form-card">
+      <h3>入口モード</h3>
+      {% for value, label, desc in [
+        ("auto", "自動判定（実験的）", "現在の地合い目安から推奨入口モードを自動反映します。"),
+        ("normal", "normal標準型", "現行ロジックを使用します。"),
+        ("risk_on_pullback", "risk_on押し目型", "MA5上側の浅押しを重視します。"),
+        ("panic_deep_rebound", "panic深リバ型", "MA5下側の深い急落リバを重視します。"),
+        ("paused", "新規停止", "新規仮想売買エントリーを停止します。")
+      ] %}
+      <label class="form-row" style="grid-template-columns:auto 1fr;align-items:flex-start">
+        <input type="radio" name="entry_mode" value="{{ value }}" {% if (cfg.entry_mode or 'normal') == value %}checked{% endif %} style="accent-color:var(--accent);margin-top:4px">
+        <span>
+          <strong>{{ label }}</strong>
+          <span class="muted" style="display:block;font-size:12px;line-height:1.5">{{ desc }}</span>
+        </span>
+      </label>
+      {% endfor %}
+      <div class="form-row" style="display:block">
+        <label>メモ</label>
+        <input type="text" name="entry_mode_note" value="{{ cfg.entry_mode_note or '' }}" placeholder="例: 今日はrisk_on押し目型を試す" style="width:100%">
+      </div>
+      <p class="muted" style="font-size:12px;line-height:1.6;margin:8px 0 0">
+        入口モードは実験機能です。過去データ上の傾向をもとにしていますが、現在相場への適合を保証するものではありません。
+      </p>
+    </div>
+
     {# ── 出口系 ── #}
     <div class="form-card">
       <h3>仮想売買の出口</h3>

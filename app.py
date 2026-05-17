@@ -13,6 +13,7 @@ from flask import Flask, request, abort, render_template, redirect, url_for, ses
 from openai import OpenAI
 from supabase import create_client
 from services.signal_stage import SIGNAL_STAGES, STAGE_RANK, evaluate_signal_stage
+from services.entry_mode import ENTRY_MODE_LABELS, regime_scores, resolve_entry_mode
 
 from linebot.v3 import WebhookHandler
 from linebot.v3.exceptions import InvalidSignatureError
@@ -1871,6 +1872,9 @@ def get_watchlist_counts(rows: list[dict], open_trade_codes: set[str] | None = N
 @app.route("/web/dashboard")
 def web_dashboard():
     market_adjustment = _current_market_adjustment()
+    cfg = _settings_loader.get_settings()
+    entry_mode_context = resolve_entry_mode(cfg, market_adjustment)
+    entry_mode_context["scores"] = regime_scores(market_adjustment)
     def _num(row: dict, *keys: str) -> float:
         for key in keys:
             try:
@@ -1957,6 +1961,7 @@ def web_dashboard():
         watching_rows=watching_rows,
         stats=stats,
         market_adjustment=market_adjustment,
+        entry_mode_context=entry_mode_context,
     )
 
 
@@ -2596,6 +2601,7 @@ def web_settings():
             "entry_rank_limit", "max_sector_positions",
             "virtual_exit_holding_days", "virtual_exit_extend_high_update_days",
         }
+        string_fields = {"entry_mode", "entry_mode_note"}
         def _upsert_settings(payload: dict) -> None:
             remaining = dict(payload)
             for _ in range(8):
@@ -2632,8 +2638,13 @@ def web_settings():
                     data[key] = key in request.form
                 elif key in int_fields:
                     data[key] = int(request.form.get(key, default))
+                elif key in string_fields:
+                    data[key] = str(request.form.get(key, default) or default)
                 else:
                     data[key] = float(request.form.get(key, default))
+            if data.get("entry_mode") not in {"auto", "normal", "risk_on_pullback", "panic_deep_rebound", "paused"}:
+                data["entry_mode"] = "normal"
+            data["entry_mode_updated_at"] = data["updated_at"]
             _upsert_settings({**data, "user_id": "global"})
             _settings_loader._cache = None
             flash("設定を保存した", "success")
@@ -2642,7 +2653,7 @@ def web_settings():
             flash(f"保存失敗: {e}", "danger")
         return redirect(url_for("web_settings"))
     cfg = _settings_loader.get_settings()
-    return render_template("web/settings.html", cfg=cfg)
+    return render_template("web/settings.html", cfg=cfg, entry_mode_labels=ENTRY_MODE_LABELS)
 
 
 @app.route("/web/virtual-trades")

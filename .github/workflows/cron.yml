@@ -119,8 +119,6 @@ jobs:
         with:
           python-version: '3.11'
       - run: pip install -r requirements.txt
-      - name: Check open virtual trades
-        run: python scripts/check_virtual_trades.py
       - name: Generate today's feature snapshots
         run: >
           python scripts/generate_feature_snapshots.py
@@ -130,6 +128,8 @@ jobs:
           --max-retries 2
           --retry-wait-seconds 30
           --cooldown-on-429 120
+      - name: Check open virtual trades
+        run: python scripts/check_virtual_trades.py
       - name: Predict rebound entries
         run: python scripts/predict_rebound.py --latest
       - name: Save UI log

@@ -53,12 +53,13 @@ def _log_exit(code: str, update: dict) -> None:
             update.get("exit_trigger_value"),
             update.get("sell_price"),
         )
-    elif reason == "stop_loss_4pct":
+    elif reason in {"stop_loss_4pct", "close_stop_loss_4pct", "gap_down_stop_loss"}:
         logger.info(
-            "[virtual_exit] code=%s reason=%s pnl_pct=%s sell_price=%s",
+            "[virtual_exit] code=%s reason=%s pnl_pct=%s trigger=%s sell_price=%s",
             code,
             reason,
             update.get("profit_loss_pct"),
+            update.get("exit_trigger_value"),
             update.get("sell_price"),
         )
     elif reason == "ma5_failed_recovery":

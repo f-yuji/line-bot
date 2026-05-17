@@ -52,6 +52,8 @@ DEFAULTS: dict = {
     "entry_margin_filter_enabled": True,
     "entry_margin_require_data": True,
     "entry_max_margin_ratio":   5.0,
+    "entry_mode":               "normal",
+    "entry_mode_note":          "",
     "virtual_exit_pullback_pct": 2.0,
     "virtual_exit_rsi_level":    75.0,
     "virtual_exit_rsi_pullback_pct": 1.0,

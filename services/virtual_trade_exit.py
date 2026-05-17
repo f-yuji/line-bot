@@ -266,15 +266,19 @@ def evaluate_virtual_trade_exit(
     exit_date: str | None = None
     last_ma5_diff: float | None = None
     last_daily_return: float | None = None
+    last_open_price: float | None = None
+    stop_loss_price = buy * (1.0 - stop_loss_pct / 100.0)
 
     max_return_pct = _to_float(trade.get("max_return_pct"), None)
     max_drawdown_pct = _to_float(trade.get("max_drawdown_pct"), None)
 
     for row in eval_rows:
+        open_price = _to_float(row.get("open"))
         close = _to_float(row.get("close"))
         if close is None or close <= 0:
             continue
         d = str(row.get("date"))
+        last_open_price = open_price
         closes_so_far.append(close)
 
         pnl_pct = (close / buy - 1.0) * 100.0
@@ -311,9 +315,16 @@ def evaluate_virtual_trade_exit(
             prev_close = close
             continue
 
-        if pnl_pct <= -stop_loss_pct:
-            exit_reason = "stop_loss_4pct"
-            exit_mode = "stop_loss"
+        if open_price is not None and open_price > 0 and open_price <= stop_loss_price:
+            # Separate gap-down stops from close-based stops so real-order
+            # slippage can be analyzed instead of hiding it in one bucket.
+            exit_reason = "gap_down_stop_loss"
+            exit_mode = "gap_down_stop_loss"
+            exit_trigger_value = (open_price / buy - 1.0) * 100.0
+            exit_price = open_price
+        elif pnl_pct <= -stop_loss_pct:
+            exit_reason = "close_stop_loss_4pct"
+            exit_mode = "close_stop_loss"
             exit_trigger_value = pnl_pct
         elif ma5_recovered and close < buy and ma5_diff_pct is not None and ma5_diff_pct <= -ma5_failure_pct:
             exit_reason = "ma5_failed_recovery"
@@ -345,7 +356,8 @@ def evaluate_virtual_trade_exit(
                     exit_mode = "timeout"
 
         if exit_reason:
-            exit_price = close
+            if exit_price is None:
+                exit_price = close
             exit_date = d
             break
         prev_close = close
@@ -375,6 +387,8 @@ def evaluate_virtual_trade_exit(
         "highest_close": round(highest_close, 4),
         "daily_return_pct": round(last_daily_return, 2) if last_daily_return is not None else None,
         "ma5_diff_pct": round(last_ma5_diff, 2) if last_ma5_diff is not None else None,
+        "open_price": round(last_open_price, 4) if last_open_price is not None else None,
+        "stop_loss_price": round(stop_loss_price, 4),
         "exit_settings": {
             "pullback_pct": pullback_pct,
             "rsi_level": rsi_level,

@@ -79,46 +79,51 @@
   </div>
 </div>
 
-<div class="section-h">ケース結果スナップショット</div>
-<div class="panel" style="margin-bottom:14px">
-  <div class="table-wrap">
-    <table class="tbl">
-      <thead>
-        <tr>
-          <th>ケース名</th>
-          <th>期間</th>
-          <th class="right">件数</th>
-          <th class="right">勝率</th>
-          <th class="right">期待値</th>
-          <th class="right">総利回り</th>
-          <th class="right">最大下落</th>
-          <th class="right">平均保有</th>
-          <th>保存日時</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for s in snapshots %}
+<details style="margin-bottom:14px">
+  <summary class="section-h" style="cursor:pointer;list-style:none;display:flex;align-items:center;gap:6px">
+    ケース結果スナップショット
+    <span class="muted" style="font-size:11px">▶</span>
+  </summary>
+  <div class="panel" style="margin-top:4px">
+    <div class="table-wrap">
+      <table class="tbl">
+        <thead>
           <tr>
-            <td>
-              <strong>{{ s.case_name }}</strong>
-              <div class="muted" style="font-size:10px">{{ s.case_key }}</div>
-            </td>
-            <td>{{ s.period_start }} - {{ s.period_end }}</td>
-            <td class="right">{{ num(s.entry_count) }}</td>
-            <td class="right">{{ pct(s.win_rate) }}</td>
-            <td class="right">{{ pct(s.expected_value_pct) }}</td>
-            <td class="right">{{ pct(s.total_profit_pct) }}</td>
-            <td class="right">{{ pct(s.max_drawdown_pct) }}</td>
-            <td class="right">{{ "%.1f日"|format(s.avg_holding_days|float) if s.avg_holding_days is not none else '-' }}</td>
-            <td>{{ s.created_at | jst }}</td>
+            <th>ケース名</th>
+            <th>期間</th>
+            <th class="right">件数</th>
+            <th class="right">勝率</th>
+            <th class="right">期待値</th>
+            <th class="right">総利回り</th>
+            <th class="right">最大下落</th>
+            <th class="right">平均保有</th>
+            <th>保存日時</th>
           </tr>
-        {% else %}
-          <tr><td colspan="9" class="empty">保存済みの比較結果はまだありません。</td></tr>
-        {% endfor %}
-      </tbody>
-    </table>
+        </thead>
+        <tbody>
+          {% for s in snapshots %}
+            <tr>
+              <td>
+                <strong>{{ s.case_name }}</strong>
+                <div class="muted" style="font-size:10px">{{ s.case_key }}</div>
+              </td>
+              <td>{{ s.period_start }} - {{ s.period_end }}</td>
+              <td class="right">{{ num(s.entry_count) }}</td>
+              <td class="right">{{ pct(s.win_rate) }}</td>
+              <td class="right">{{ pct(s.expected_value_pct) }}</td>
+              <td class="right">{{ pct(s.total_profit_pct) }}</td>
+              <td class="right">{{ pct(s.max_drawdown_pct) }}</td>
+              <td class="right">{{ "%.1f日"|format(s.avg_holding_days|float) if s.avg_holding_days is not none else '-' }}</td>
+              <td>{{ s.created_at | jst }}</td>
+            </tr>
+          {% else %}
+            <tr><td colspan="9" class="empty">保存済みの比較結果はまだありません。</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
   </div>
-</div>
+</details>
 
 <div class="section-h">相場期間</div>
 <div class="panel" style="margin-bottom:14px">

@@ -34,6 +34,7 @@ from supabase import create_client
 from settings_loader import get_settings
 from services.market_regime import evaluate_market_regime
 from services.entry_credit_filter import attach_entry_margin_data, evaluate_entry_credit_filter
+from services.entry_mode import classify_entry_case, entry_mode_filter, resolve_entry_mode
 from services.model_storage import download_model_artifact
 from services.signal_stage import SIGNAL_STAGES, evaluate_signal_stage
 from services.signal_history import record_rebound_signal
@@ -447,6 +448,25 @@ def _mark_watchlist_status(sb, watch: dict, snapshot: dict, status: str, reason:
     _signal_lifecycle_log(snapshot.get("code"), watchlist_id, watch.get("status"), status, reason, trade_id=trade_id)
 
 
+def _insert_virtual_trade_with_optional_columns(sb, row: dict) -> list[dict]:
+    remaining = dict(row)
+    for _ in range(10):
+        try:
+            return sb.table("virtual_trades").insert(remaining).execute().data or []
+        except Exception as e:
+            msg = str(e)
+            marker = "Could not find the '"
+            missing = None
+            if marker in msg:
+                missing = msg.split(marker, 1)[1].split("'", 1)[0]
+            if missing and missing in remaining:
+                logger.warning("virtual_trades column missing; skip optional field for insert: %s", missing)
+                remaining.pop(missing, None)
+                continue
+            raise
+    return sb.table("virtual_trades").insert(remaining).execute().data or []
+
+
 def _current_mode(sb, target_date: str) -> dict:
     try:
         rows = (
@@ -717,12 +737,19 @@ def _create_virtual_trade(sb, snapshot: dict, watch: dict, result: dict, *, dry_
             "market_nikkei_pct": result.get("market_nikkei_pct"),
             "market_topix_pct": result.get("market_topix_pct"),
             "market_nikkei_change_yen": result.get("market_nikkei_change_yen"),
+            "entry_mode_used": result.get("entry_mode_used"),
+            "entry_mode_reason": result.get("entry_mode_reason"),
+            "recommended_entry_mode": result.get("recommended_entry_mode"),
+            "entry_ma5_gap_pct": result.get("entry_ma5_gap_pct"),
+            "entry_ma25_gap_pct": result.get("entry_ma25_gap_pct"),
+            "entry_ma75_gap_pct": result.get("entry_ma75_gap_pct"),
+            "entry_case": result.get("entry_case"),
             "status": "open",
         }
         if dry_run:
             logger.info("DRYRUN virtual_trade insert: %s", row)
             return True
-        inserted = sb.table("virtual_trades").insert(row).execute().data or []
+        inserted = _insert_virtual_trade_with_optional_columns(sb, row)
         trade = inserted[0] if inserted else {}
         _mark_watchlist_status(
             sb,
@@ -748,6 +775,15 @@ def _entry_rank_value(candidate: tuple[dict, dict, dict]) -> tuple[float, float]
 def _create_ranked_virtual_trades(sb, candidates: list[tuple[dict, dict, dict]], cfg: dict, market_adjustment: dict, *, dry_run: bool) -> None:
     if not candidates:
         return
+    entry_mode_ctx = resolve_entry_mode(cfg, market_adjustment)
+    logger.info(
+        "[entry_mode] configured=%s recommended=%s effective=%s regime=%s",
+        entry_mode_ctx["configured"],
+        entry_mode_ctx["recommended"],
+        entry_mode_ctx["effective"],
+        entry_mode_ctx["regime"],
+    )
+    effective_entry_mode = str(entry_mode_ctx["effective"])
     max_open = _int_setting(cfg, "max_open_positions", 20)
     max_daily = _int_setting(cfg, "max_daily_entries", 5)
     max_sector = _int_setting(cfg, "max_sector_positions", 2)
@@ -760,6 +796,23 @@ def _create_ranked_virtual_trades(sb, candidates: list[tuple[dict, dict, dict]],
     attach_entry_margin_data(sb, candidate_rows)
     filtered_candidates: list[tuple[dict, dict, dict]] = []
     for row, watch, result in candidates:
+        passed_mode, mode_reason, mode_meta = entry_mode_filter(row, effective_entry_mode)
+        result.update(mode_meta)
+        result["entry_mode_used"] = effective_entry_mode
+        result["entry_mode_reason"] = mode_reason or "entry_mode_passed"
+        result["recommended_entry_mode"] = entry_mode_ctx["recommended"]
+        if not passed_mode:
+            logger.info(
+                "[entry_mode_filter] skip code=%s mode=%s reason=%s ma5_gap=%s case=%s drop=%s",
+                row.get("code"),
+                effective_entry_mode,
+                mode_reason,
+                mode_meta.get("entry_ma5_gap_pct"),
+                mode_meta.get("entry_case"),
+                row.get("drop_pct"),
+            )
+            _mark_watchlist_status(sb, watch, row, "signal_skipped", str(mode_reason or "entry_mode_filter"), dry_run=dry_run)
+            continue
         credit = evaluate_entry_credit_filter(sb, row, cfg)
         if not credit.passed:
             logger.info(

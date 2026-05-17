@@ -521,6 +521,20 @@ input, select, textarea { font-family: inherit; }
   gap: 10px;
   margin-bottom: 14px;
 }
+.mini-stat {
+  border: 1px solid var(--line);
+  background: rgba(255,255,255,.03);
+  border-radius: 8px;
+  padding: 8px 10px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.mini-stat b {
+  font-size: 18px;
+  color: var(--text);
+}
 .stat-tile {
   background: var(--bg-1);
   border: 1px solid var(--line);
@@ -1705,6 +1719,8 @@ details[open].score-legend summary::before {
     display: grid;
     grid-template-columns: 86px minmax(0, 1fr);
     gap: 6px 10px;
+    height: auto !important;
+    white-space: normal !important;
     align-items: center;
     height: auto;
     min-height: 0;

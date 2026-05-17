@@ -142,6 +142,32 @@
   {% endif %}
 </div>
 
+{% set em = entry_mode_context or {} %}
+{% set sc = em.scores or {} %}
+<div class="panel" style="margin-bottom:12px">
+  <div class="panel-head">
+    <div class="panel-title">現在の地合い目安</div>
+  </div>
+  <div style="padding:0 16px 14px">
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px;margin-bottom:10px">
+      <div class="mini-stat"><span class="muted">risk_on</span><b>{{ sc.risk_on or 0 }}</b></div>
+      <div class="mini-stat"><span class="muted">normal</span><b>{{ sc.normal or 0 }}</b></div>
+      <div class="mini-stat"><span class="muted">risk_off</span><b>{{ sc.risk_off or 0 }}</b></div>
+      <div class="mini-stat"><span class="muted">panic</span><b>{{ sc.panic or 0 }}</b></div>
+    </div>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+      <span class="tag">推奨入口: {{ em.recommended_label or 'normal標準型' }}</span>
+      <span class="tag">現在設定: {{ em.configured_label or 'normal標準型' }}</span>
+      {% if em.configured == 'auto' %}
+        <span class="tag">実運用: {{ em.effective_label }}</span>
+      {% endif %}
+    </div>
+    <p class="muted" style="font-size:12px;line-height:1.6;margin:8px 0 0">
+      regime判定は目安です。最終的な入口モードは設定UIの値を優先します。
+    </p>
+  </div>
+</div>
+
 <div class="stat-grid">
   <div class="stat-tile info">
     <div class="label">監視中銘柄</div>
