@@ -96,17 +96,34 @@ def _save_to_supabase(supabase, records: list[dict], *, dry_run: bool = False) -
     logger.info("upsert prime_stocks_cache rows=%d", len(rows))
 
 
-def _load_from_supabase(supabase) -> list[dict] | None:
+def _load_from_supabase(supabase, *, allow_stale: bool = False) -> list[dict] | None:
     try:
-        res = supabase.table("prime_stocks_cache").select("code, name, sector, updated_at").limit(3000).execute()
-        rows = res.data or []
+        rows = []
+        offset = 0
+        while True:
+            data = (
+                supabase.table("prime_stocks_cache")
+                .select("code, name, sector, updated_at")
+                .order("code")
+                .range(offset, offset + 999)
+                .execute()
+                .data or []
+            )
+            rows.extend(data)
+            if len(data) < 1000:
+                break
+            offset += 1000
         if not rows:
             return None
         latest = max(r.get("updated_at", "") for r in rows)
+        records = [{"code": r["code"], "name": r.get("name", ""), "sector": r.get("sector", "")} for r in rows]
+        if allow_stale:
+            logger.warning("prime_stocks_cache stale fallback rows=%d latest=%s", len(records), latest)
+            return records
         if latest:
             dt = datetime.fromisoformat(str(latest).replace("Z", "+00:00"))
             if datetime.now(timezone.utc) - dt < timedelta(days=CACHE_TTL_DAYS):
-                return [{"code": r["code"], "name": r.get("name", ""), "sector": r.get("sector", "")} for r in rows]
+                return records
     except Exception as e:
         logger.warning("prime_stocks_cache load failed: %s", e)
     return None
@@ -126,6 +143,10 @@ def get_prime_tickers(supabase=None, *, force_refresh: bool = False) -> list[dic
             return stocks
     except Exception as e:
         logger.warning("J-Quants listed/info failed; fallback used: %s", e)
+        if supabase:
+            cached = _load_from_supabase(supabase, allow_stale=True)
+            if cached:
+                return cached
 
     logger.warning("prime stock fetch failed; Nikkei225 fallback used")
     from nikkei_alert import NIKKEI225

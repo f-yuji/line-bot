@@ -1,4 +1,5 @@
 ﻿import functools
+import html
 import json
 import logging
 import os
@@ -9,7 +10,7 @@ from typing import List, Optional
 from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
-from flask import Flask, request, abort, render_template, redirect, url_for, session, flash
+from flask import Flask, request, abort, render_template, redirect, url_for, session, flash, Response
 from openai import OpenAI
 from supabase import create_client
 from services.signal_stage import SIGNAL_STAGES, STAGE_RANK, evaluate_signal_stage
@@ -2253,14 +2254,13 @@ def web_signals():
         except Exception:
             return True
 
-    open_trade_codes = _open_virtual_trade_codes()
     try:
         rows = (
             supabase.table("stock_drop_watchlist")
             .select("*")
-            .eq("status", "rebound_signal")
+            .in_("status", ["rebound_signal", "entered", "signal_skipped"])
             .order("last_signal_at", desc=True)
-            .limit(300)
+            .limit(500)
             .execute()
             .data or []
         )
@@ -2271,15 +2271,14 @@ def web_signals():
 
     rows = [
         r for r in rows
-        if r.get("status") == "rebound_signal"
-        and r.get("signal_stage") in {"confirmed", "strong_confirmed"}
+        if r.get("signal_stage") in {"confirmed", "strong_confirmed"}
         and not r.get("is_excluded")
-        and not r.get("virtual_trade_id")
-        and str(r.get("code") or "") not in open_trade_codes
-        and _not_expired(r)
+        and (r.get("status") != "rebound_signal" or _not_expired(r))
     ]
+    status_rank = {"rebound_signal": 3, "entered": 2, "signal_skipped": 1}
     rows.sort(
         key=lambda r: (
+            status_rank.get(str(r.get("status") or ""), 0),
             STAGE_RANK.get(r.get("signal_stage"), 0),
             _num(r, "signal_probability", "ai_probability"),
             _num(r, "expected_value"),
@@ -2288,7 +2287,153 @@ def web_signals():
         ),
         reverse=True,
     )
-    return render_template("web/signals.html", rows=rows, market_adjustment=market_adjustment)
+    signal_stats = {
+        "total": len(rows),
+        "active": sum(1 for r in rows if r.get("status") == "rebound_signal"),
+        "entered": sum(1 for r in rows if r.get("status") == "entered"),
+        "skipped": sum(1 for r in rows if r.get("status") == "signal_skipped"),
+    }
+    return render_template("web/signals.html", rows=rows, market_adjustment=market_adjustment, signal_stats=signal_stats)
+
+
+def _trade_assist_chart_placeholder(message: str) -> Response:
+    safe_message = html.escape(message or "chart unavailable")
+    svg = f"""<svg xmlns="http://www.w3.org/2000/svg" width="720" height="260" viewBox="0 0 720 260" role="img">
+  <rect width="720" height="260" fill="#0a0c10"/>
+  <rect x="1" y="1" width="718" height="258" rx="10" fill="none" stroke="#1f242e"/>
+  <text x="360" y="130" fill="#6c7280" font-family="system-ui, sans-serif" font-size="16" text-anchor="middle">{safe_message}</text>
+</svg>"""
+    return Response(svg, mimetype="image/svg+xml")
+
+
+def _trade_assist_svg_polyline(points: list[tuple[float, float]], color: str, width: float = 2.0, opacity: float = 1.0) -> str:
+    if len(points) < 2:
+        return ""
+    coords = " ".join(f"{x:.1f},{y:.1f}" for x, y in points)
+    return f'<polyline points="{coords}" fill="none" stroke="{color}" stroke-width="{width}" stroke-linejoin="round" stroke-linecap="round" opacity="{opacity}"/>'
+
+
+@app.route("/web/trade-assist/chart/<code>.svg")
+def web_trade_assist_chart(code):
+    code = re.sub(r"[^0-9A-Za-z.]", "", str(code or ""))[:16]
+    if not code:
+        return _trade_assist_chart_placeholder("code missing")
+
+    def _to_float(value):
+        try:
+            if value in (None, ""):
+                return None
+            return float(value)
+        except Exception:
+            return None
+
+    try:
+        rows = (
+            supabase.table("stock_feature_snapshots")
+            .select("trade_date,close,high,low,ma5,ma25,ma75")
+            .eq("code", code)
+            .order("trade_date", desc=True)
+            .limit(90)
+            .execute()
+            .data or []
+        )
+    except Exception as e:
+        logger.warning("trade assist chart load failed code=%s: %s", code, e)
+        return _trade_assist_chart_placeholder("chart data unavailable")
+
+    rows = list(reversed(rows))
+    points_src = []
+    for row in rows:
+        close = _to_float(row.get("close"))
+        if close is None:
+            continue
+        points_src.append({
+            "date": str(row.get("trade_date") or ""),
+            "close": close,
+            "high": _to_float(row.get("high")) or close,
+            "low": _to_float(row.get("low")) or close,
+            "ma5": _to_float(row.get("ma5")),
+            "ma25": _to_float(row.get("ma25")),
+            "ma75": _to_float(row.get("ma75")),
+        })
+
+    if len(points_src) < 3:
+        return _trade_assist_chart_placeholder("not enough chart data")
+
+    width, height = 720, 260
+    left, right, top, bottom = 54, 18, 22, 36
+    plot_w = width - left - right
+    plot_h = height - top - bottom
+
+    values = []
+    for row in points_src:
+        values.extend([row["close"], row["high"], row["low"]])
+        for key in ("ma5", "ma25", "ma75"):
+            if row.get(key) is not None:
+                values.append(row[key])
+    min_v, max_v = min(values), max(values)
+    if max_v <= min_v:
+        max_v = min_v + 1
+    pad = (max_v - min_v) * 0.08
+    min_v -= pad
+    max_v += pad
+
+    def _x(i: int) -> float:
+        return left + (plot_w * i / max(len(points_src) - 1, 1))
+
+    def _y(value: float) -> float:
+        return top + (max_v - value) * plot_h / (max_v - min_v)
+
+    def _series(key: str) -> list[tuple[float, float]]:
+        return [(_x(i), _y(row[key])) for i, row in enumerate(points_src) if row.get(key) is not None]
+
+    recent = points_src[-20:] if len(points_src) >= 20 else points_src
+    support = min(row["low"] for row in recent)
+    resistance = max(row["high"] for row in recent)
+    last = points_src[-1]
+    first_date = html.escape(points_src[0].get("date") or "")
+    last_date = html.escape(last.get("date") or "")
+    code_label = html.escape(code)
+    close_label = f"{last['close']:,.0f}"
+    support_label = f"{support:,.0f}"
+    resistance_label = f"{resistance:,.0f}"
+
+    grid_lines = []
+    for step in range(5):
+        y = top + plot_h * step / 4
+        value = max_v - (max_v - min_v) * step / 4
+        grid_lines.append(
+            f'<line x1="{left}" y1="{y:.1f}" x2="{width-right}" y2="{y:.1f}" stroke="#1f242e" stroke-width="1"/>'
+            f'<text x="{left-8}" y="{y+4:.1f}" fill="#6c7280" font-family="ui-monospace, monospace" font-size="10" text-anchor="end">{value:,.0f}</text>'
+        )
+
+    support_y = _y(support)
+    resistance_y = _y(resistance)
+    svg = f"""<svg xmlns="http://www.w3.org/2000/svg" width="720" height="260" viewBox="0 0 720 260" role="img" aria-label="{code_label} daily chart">
+  <rect width="720" height="260" fill="#0a0c10"/>
+  <rect x="1" y="1" width="718" height="258" rx="10" fill="none" stroke="#1f242e"/>
+  <g>{''.join(grid_lines)}</g>
+  <line x1="{left}" y1="{support_y:.1f}" x2="{width-right}" y2="{support_y:.1f}" stroke="#5ee6a8" stroke-width="1.3" stroke-dasharray="5 5" opacity="0.75"/>
+  <line x1="{left}" y1="{resistance_y:.1f}" x2="{width-right}" y2="{resistance_y:.1f}" stroke="#ff7a85" stroke-width="1.3" stroke-dasharray="5 5" opacity="0.75"/>
+  {_trade_assist_svg_polyline(_series("ma75"), "#7d8597", 1.4, 0.55)}
+  {_trade_assist_svg_polyline(_series("ma25"), "#e6c860", 1.6, 0.75)}
+  {_trade_assist_svg_polyline(_series("ma5"), "#56b7ff", 1.7, 0.85)}
+  {_trade_assist_svg_polyline(_series("close"), "#e6e9ef", 2.4, 1.0)}
+  <circle cx="{_x(len(points_src)-1):.1f}" cy="{_y(last['close']):.1f}" r="3.4" fill="#e6e9ef"/>
+  <text x="{left}" y="16" fill="#e6e9ef" font-family="system-ui, sans-serif" font-size="13" font-weight="700">{code_label} 日足</text>
+  <text x="{width-right}" y="16" fill="#9aa0aa" font-family="ui-monospace, monospace" font-size="11" text-anchor="end">終値 {close_label}円</text>
+  <text x="{left}" y="{height-12}" fill="#6c7280" font-family="ui-monospace, monospace" font-size="10">{first_date}</text>
+  <text x="{width-right}" y="{height-12}" fill="#6c7280" font-family="ui-monospace, monospace" font-size="10" text-anchor="end">{last_date}</text>
+  <text x="{width-right-4}" y="{support_y-5:.1f}" fill="#5ee6a8" font-family="system-ui, sans-serif" font-size="10" text-anchor="end">支持 {support_label}</text>
+  <text x="{width-right-4}" y="{resistance_y+12:.1f}" fill="#ff7a85" font-family="system-ui, sans-serif" font-size="10" text-anchor="end">抵抗 {resistance_label}</text>
+  <g font-family="system-ui, sans-serif" font-size="10">
+    <text x="78" y="238" fill="#e6e9ef">終値</text>
+    <text x="122" y="238" fill="#56b7ff">MA5</text>
+    <text x="166" y="238" fill="#e6c860">MA25</text>
+    <text x="218" y="238" fill="#7d8597">MA75</text>
+  </g>
+</svg>"""
+    return Response(svg, mimetype="image/svg+xml")
 
 
 @app.route("/web/trade-assist")
@@ -2331,6 +2476,32 @@ def web_trade_assist():
             return dt > now_utc
         except Exception:
             return True
+
+    def _date_text(value) -> str | None:
+        if not value:
+            return None
+        text = str(value)
+        return text.split("T", 1)[0][:10]
+
+    def _days_between(start: str | None, end: str | None) -> int | None:
+        try:
+            if not start or not end:
+                return None
+            start_dt = datetime.fromisoformat(start[:10])
+            end_dt = datetime.fromisoformat(end[:10])
+            return (end_dt.date() - start_dt.date()).days
+        except Exception:
+            return None
+
+    def _recent_margin_from_row(row: dict, ref_date: str | None, max_age_days: int = 60) -> dict:
+        margin_date = _date_text(row.get("margin_date"))
+        margin_ratio = row.get("margin_ratio")
+        if margin_ratio is None or not margin_date:
+            return {}
+        age = _days_between(margin_date, ref_date)
+        if age is not None and 0 <= age <= max_age_days:
+            return {"date": margin_date, "margin_ratio": margin_ratio}
+        return {}
 
     latest_log = None
     latest_feature_date = None
@@ -2423,6 +2594,12 @@ def web_trade_assist():
         if r.get("code")
     }
     try:
+        margin_start_date = None
+        if latest_feature_date:
+            try:
+                margin_start_date = (datetime.fromisoformat(str(latest_feature_date)[:10]) - timedelta(days=60)).date().isoformat()
+            except Exception:
+                margin_start_date = None
         margin_query = (
             supabase.table("stock_weekly_margin_interest")
             .select("code,date,margin_ratio")
@@ -2432,6 +2609,8 @@ def web_trade_assist():
         )
         if latest_feature_date:
             margin_query = margin_query.lte("date", latest_feature_date)
+        if margin_start_date:
+            margin_query = margin_query.gte("date", margin_start_date)
         margin_rows = margin_query.execute().data or [] if candidate_codes else []
         margin_by_code = {}
         for margin_row in margin_rows:
@@ -2546,9 +2725,9 @@ def web_trade_assist():
             if row.get("entry_ma75_gap_pct") is not None
             else ma_gap_pct(row, "ma75")
         )
-        margin = margin_by_code.get(code) or {}
-        row["margin_ratio"] = row.get("margin_ratio") if row.get("margin_ratio") is not None else margin.get("margin_ratio")
-        row["margin_date"] = row.get("margin_date") or margin.get("date")
+        margin = margin_by_code.get(code) or _recent_margin_from_row(row, latest_feature_date)
+        row["margin_ratio"] = margin.get("margin_ratio")
+        row["margin_date"] = margin.get("date")
         row["entry_mode_used"] = row.get("entry_mode_used") or entry_mode_context.get("effective")
         row["recommended_entry_mode"] = row.get("recommended_entry_mode") or entry_mode_context.get("recommended")
         row["entry_mode_label"] = ENTRY_MODE_LABELS.get(str(row.get("entry_mode_used") or ""), row.get("entry_mode_used") or "-")

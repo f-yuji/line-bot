@@ -7,7 +7,7 @@ virtual_trades, watchlist lifecycle, or entry logic.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from services.entry_mode import ENTRY_MODE_LABELS, classify_entry_case, ma_gap_pct
@@ -47,6 +47,12 @@ def _fetch_by_ids(sb, table: str, ids: list[Any], select: str = "*") -> dict[str
 def _latest_margin_by_code(sb, codes: set[str], trade_date: str | None) -> dict[str, dict]:
     if not codes:
         return {}
+    start_date = None
+    if trade_date:
+        try:
+            start_date = (datetime.fromisoformat(str(trade_date)[:10]) - timedelta(days=60)).date().isoformat()
+        except Exception:
+            start_date = None
     q = (
         sb.table("stock_weekly_margin_interest")
         .select("code,date,margin_ratio")
@@ -56,6 +62,8 @@ def _latest_margin_by_code(sb, codes: set[str], trade_date: str | None) -> dict[
     )
     if trade_date:
         q = q.lte("date", trade_date)
+    if start_date:
+        q = q.gte("date", start_date)
     rows = q.execute().data or []
     out: dict[str, dict] = {}
     for row in rows:
@@ -103,8 +111,8 @@ def _card_payload(row: dict, *, trade_date: str, source_kind: str, margin_by_cod
         "drop_pct": row.get("drop_pct") or row.get("day_change_pct"),
         "rsi14": row.get("rsi14"),
         "volume_ratio_20d": row.get("volume_ratio_20d"),
-        "margin_ratio": row.get("margin_ratio") if row.get("margin_ratio") is not None else margin.get("margin_ratio"),
-        "margin_date": row.get("margin_date") or margin.get("date"),
+        "margin_ratio": margin.get("margin_ratio"),
+        "margin_date": margin.get("date"),
         "entry_case": row.get("entry_case") or classify_entry_case(row),
         "entry_mode_used": row.get("entry_mode_used"),
         "recommended_entry_mode": row.get("recommended_entry_mode"),

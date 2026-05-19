@@ -42,6 +42,19 @@
   <h1 class="page-title">リバウンドシグナル<small>SIGNALS ・ {{ rows|length }}件</small></h1>
 </div>
 
+<div class="panel" style="margin-bottom:12px">
+  <div class="panel-head">
+    <div class="panel-title">シグナル発生一覧<span class="tag">CONFIRMED / STRONG</span></div>
+  </div>
+  <div style="padding:0 16px 14px;display:flex;gap:12px;flex-wrap:wrap">
+    <span class="tag">全体 {{ signal_stats.total if signal_stats else rows|length }}</span>
+    <span class="tag">未処理 {{ signal_stats.active if signal_stats else 0 }}</span>
+    <span class="tag">仮想購入済み {{ signal_stats.entered if signal_stats else 0 }}</span>
+    <span class="tag">見送り {{ signal_stats.skipped if signal_stats else 0 }}</span>
+    <span class="muted">AIが本命以上と判定した銘柄を、購入済み・見送りも含めて表示します。</span>
+  </div>
+</div>
+
 {% set _mc = market_adjustment %}
 <div class="panel" style="margin-bottom:12px;{% if _mc and _mc.regime and _mc.regime != 'normal' %}border-color:var(--accent-dim);{% endif %}">
   <div class="panel-head">
@@ -63,7 +76,7 @@
 
 <div class="panel">
   <div class="panel-head">
-    <div class="panel-title">現在シグナル<span class="tag">ACTIVE SIGNALS</span></div>
+    <div class="panel-title">本命シグナル一覧<span class="tag">ALL SIGNALS</span></div>
   </div>
   <div class="table-wrap">
     <table class="tbl">
@@ -73,7 +86,7 @@
           <th class="right">AIスコア</th><th class="right">期待値</th>
           <th class="right">急落率</th><th class="right">急落時株価</th>
           <th class="right">ルールスコア</th><th class="right">条件数</th><th class="right">悪材料</th>
-          <th>セクター</th><th>最終シグナル</th><th>通知日時</th><th>急落日</th>
+          <th>セクター</th><th>処理理由</th><th>最終シグナル</th><th>通知日時</th><th>急落日</th>
         </tr>
       </thead>
       <tbody>
@@ -90,12 +103,13 @@
           <td class="right num">{{ r.signal_count if r.signal_count is not none else "" }}</td>
           <td class="right num">{{ "%.0f"|format(r.bad_news_score) if r.bad_news_score is not none else "" }}</td>
           <td class="muted">{{ r.sector or "" }}</td>
+          <td class="muted">{{ r.signal_status_reason or "" }}</td>
           <td class="muted num">{{ r.last_signal_at | jst }}</td>
           <td class="muted num">{{ r.rebound_notified_at | jst if r.rebound_notified_at else "—" }}</td>
           <td class="muted num">{{ r.drop_detected_at | jst("%Y-%m-%d") }}</td>
         </tr>
         {% else %}
-        <tr><td colspan="14" class="center muted" style="padding:28px">現在有効なシグナルはありません</td></tr>
+        <tr><td colspan="15" class="center muted" style="padding:28px">本命以上のシグナルはありません</td></tr>
         {% endfor %}
       </tbody>
     </table>

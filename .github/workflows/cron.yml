@@ -9,6 +9,7 @@ on:
     - cron: "17 0 * * 1-5"  # 09:17 JST
     - cron: "23 3 * * 1-5"  # 12:23 JST
     - cron: "47 7 * * 1-5"  # 16:47 JST (AI rebound daily pipeline)
+    - cron: "17 12 * * 1-5" # 21:17 JST (backup AI rebound daily pipeline)
     - cron: "11 12 * * 6"   # 21:11 JST Sat (weekly model training)
 
 jobs:
@@ -96,7 +97,7 @@ jobs:
           SUPABASE_MODE: prod
 
   rebound-ai-daily:
-    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '47 7 * * 1-5'
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '47 7 * * 1-5' || github.event.schedule == '17 12 * * 1-5'
     runs-on: ubuntu-latest
     env:
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
@@ -119,35 +120,8 @@ jobs:
         with:
           python-version: '3.11'
       - run: pip install -r requirements.txt
-      - name: Generate today's feature snapshots
-        run: >
-          python scripts/generate_feature_snapshots.py
-          --date today
-          --source jquants
-          --sleep-seconds 0.2
-          --max-retries 2
-          --retry-wait-seconds 30
-          --cooldown-on-429 120
-      - name: Update long-term market regime
-        run: python scripts/update_long_term_market_regime.py
-      - name: Check open virtual trades
-        run: python scripts/check_virtual_trades.py
-      - name: Predict rebound entries
-        run: python scripts/predict_rebound.py --latest
-      - name: Save trade assist candidate history
-        run: python scripts/save_trade_assist_candidate_history.py
-      - name: Save UI log
-        if: success()
-        run: python scripts/log_rebound_ai_daily.py --status completed
-      - name: Save failed UI log
-        if: failure()
-        run: python scripts/log_rebound_ai_daily.py --status failed --error-message "rebound-ai-daily failed; check GitHub Actions logs"
-      - name: Save cron UI log
-        if: success()
-        run: python scripts/log_cron_run.py --job rebound-ai-daily --status completed --schedule "16:47 JST Mon-Fri"
-      - name: Save failed cron UI log
-        if: failure()
-        run: python scripts/log_cron_run.py --job rebound-ai-daily --status failed --schedule "16:47 JST Mon-Fri" --error-message "rebound-ai-daily failed; check GitHub Actions logs"
+      - name: Run rebound AI daily pipeline
+        run: python scripts/run_rebound_ai_daily.py
       - name: Summarize rebound AI run
         run: |
           python - <<'PY'

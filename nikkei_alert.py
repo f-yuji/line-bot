@@ -73,7 +73,7 @@ SUPABASE_URL = _mode_env("SUPABASE_URL", SUPABASE_MODE, required=True)
 SUPABASE_KEY = _mode_env("SUPABASE_KEY", SUPABASE_MODE, required=True)
 LINE_CHANNEL_ACCESS_TOKEN = _opt("LINE_CHANNEL_ACCESS_TOKEN")
 if not LINE_CHANNEL_ACCESS_TOKEN:
-    raise KeyError("LINE_CHANNEL_ACCESS_TOKEN")
+    logger.warning("LINE_CHANNEL_ACCESS_TOKEN is not set; LINE push functions are disabled")
 OPENAI_API_KEY = _opt("OPENAI_API_KEY")
 JQUANTS_API_KEY = _opt("JQUANTS_API_KEY") or _opt("JQUANTS_REFRESH_TOKEN")
 JQUANTS_API_BASE = "https://api.jquants.com/v2"

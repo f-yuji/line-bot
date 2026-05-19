@@ -241,6 +241,18 @@
   .ta-ai.is-high { color: var(--ta-up); }
   .ta-ai.is-mid { color: var(--ta-warn); }
   .ta-ai.is-low { color: var(--ta-dim); }
+  .ta-chart {
+    background: var(--ta-panel-2);
+    border: 1px solid var(--ta-border);
+    border-radius: 10px;
+    overflow: hidden;
+  }
+  .ta-chart img {
+    display: block;
+    width: 100%;
+    height: auto;
+    min-height: 150px;
+  }
   .ta-company,
   .ta-reason {
     background: var(--ta-panel-2);
@@ -481,6 +493,10 @@
             <span>{{ r.ai_score_label or 'AIスコア' }}</span>
             <b class="ta-ai {{ ai_cls }}">{{ ai_score }}<i>%</i></b>
           </div>
+        </div>
+
+        <div class="ta-chart">
+          <img src="{{ url_for('web_trade_assist_chart', code=r.code) }}" alt="{{ r.code }} 日足チャート" loading="lazy">
         </div>
 
         <div class="ta-section-label">寄付き判断レンジ</div>

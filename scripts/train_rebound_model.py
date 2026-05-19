@@ -99,7 +99,20 @@ def _build_supabase():
     return create_client(url, key)
 
 
-def _fetch_all(query_factory, *, page_size: int = 1000, label: str = "rows") -> list[dict]:
+def _date_chunks(start: str, end: str, chunk_days: int) -> list[tuple[str, str]]:
+    start_date = datetime.fromisoformat(str(start)[:10]).date()
+    end_date = datetime.fromisoformat(str(end)[:10]).date()
+    chunk_days = max(1, int(chunk_days or 31))
+    chunks: list[tuple[str, str]] = []
+    cur = start_date
+    while cur <= end_date:
+        chunk_end = min(end_date, cur + timedelta(days=chunk_days - 1))
+        chunks.append((cur.isoformat(), chunk_end.isoformat()))
+        cur = chunk_end + timedelta(days=1)
+    return chunks
+
+
+def _fetch_all(query_factory, *, page_size: int = 500, label: str = "rows") -> list[dict]:
     rows: list[dict] = []
     last_id = 0
     while True:
@@ -115,6 +128,36 @@ def _fetch_all(query_factory, *, page_size: int = 1000, label: str = "rows") -> 
             break
         if len(rows) % 10000 == 0:
             logger.info("load %s progress: rows=%d", label, len(rows))
+    return rows
+
+
+def _fetch_all_chunked(query_factory, *, start: str, end: str, chunk_days: int = 31, page_size: int = 500, label: str = "rows") -> list[dict]:
+    rows: list[dict] = []
+    seen_ids: set[Any] = set()
+    chunks = _date_chunks(start, end, chunk_days)
+    for chunk_start, chunk_end in chunks:
+        chunk_rows = _fetch_all(
+            lambda last_id, cs=chunk_start, ce=chunk_end: query_factory(last_id, cs, ce),
+            page_size=page_size,
+            label=f"{label} {chunk_start}..{chunk_end}",
+        )
+        added = 0
+        for row in chunk_rows:
+            row_id = row.get("id")
+            if row_id is not None and row_id in seen_ids:
+                continue
+            if row_id is not None:
+                seen_ids.add(row_id)
+            rows.append(row)
+            added += 1
+        logger.info(
+            "load %s chunk: %s..%s rows=%d total=%d",
+            label,
+            chunk_start,
+            chunk_end,
+            added,
+            len(rows),
+        )
     return rows
 
 
@@ -142,27 +185,27 @@ def _load_training_rows(sb, args: argparse.Namespace) -> "pd.DataFrame":
         "label_10d_success", "label_10d_max_return", "label_10d_max_drawdown",
         "max_return_5d_pct", "max_drawdown_5d_pct",
     ]
-    def snapshot_query(last_id: int = 0):
+    def snapshot_query(last_id: int = 0, chunk_start: str = start, chunk_end: str = end):
         q = (
             sb.table("stock_feature_snapshots")
             .select(",".join(snap_cols))
             .eq("is_drop_candidate", True)
             .eq("is_tradeable", True)
-            .gte("trade_date", start)
-            .lte("trade_date", end)
+            .gte("trade_date", chunk_start)
+            .lte("trade_date", chunk_end)
             .order("id")
         )
         if last_id:
             q = q.gt("id", last_id)
         return q
 
-    def label_query(last_id: int = 0):
+    def label_query(last_id: int = 0, chunk_start: str = start, chunk_end: str = end):
         q = (
             sb.table("stock_rebound_labels")
             .select(",".join(label_cols))
             .eq("is_valid_label", True)
-            .gte("trade_date", start)
-            .lte("trade_date", end)
+            .gte("trade_date", chunk_start)
+            .lte("trade_date", chunk_end)
             .order("id")
         )
         try:
@@ -173,8 +216,22 @@ def _load_training_rows(sb, args: argparse.Namespace) -> "pd.DataFrame":
             q = q.gt("id", last_id)
         return q
 
-    snapshots = _fetch_all(snapshot_query, label="snapshots")
-    labels = _fetch_all(label_query, label="labels")
+    snapshots = _fetch_all_chunked(
+        snapshot_query,
+        start=start,
+        end=end,
+        chunk_days=args.fetch_chunk_days,
+        page_size=args.fetch_page_size,
+        label="snapshots",
+    )
+    labels = _fetch_all_chunked(
+        label_query,
+        start=start,
+        end=end,
+        chunk_days=args.fetch_chunk_days,
+        page_size=args.fetch_page_size,
+        label="labels",
+    )
     logger.info("loaded training source rows: snapshots=%d labels=%d", len(snapshots), len(labels))
     if not snapshots or not labels:
         return pd.DataFrame()
@@ -418,6 +475,8 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--model-name")
     p.add_argument("--force", action="store_true")
     p.add_argument("--no-upload-storage", action="store_true")
+    p.add_argument("--fetch-chunk-days", type=int, default=31, help="Split Supabase training fetches into date chunks to avoid statement timeouts.")
+    p.add_argument("--fetch-page-size", type=int, default=500, help="Rows per Supabase page while loading training data.")
     return p.parse_args()
 
 
