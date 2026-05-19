@@ -15,6 +15,12 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+# exit_reason values added after the DB sell_reason CHECK constraint was frozen.
+# sell_reason must use the legacy value that the constraint allows.
+_LEGACY_SELL_REASON: dict[str, str] = {
+    "close_stop_loss_4pct": "close_stop_loss",
+}
+
 DEFAULT_EXIT_SETTINGS = {
     "virtual_exit_pullback_pct": 2.0,
     "virtual_exit_rsi_level": 75.0,
@@ -406,7 +412,7 @@ def evaluate_virtual_trade_exit(
         update.update({
             "sell_price": round(exit_price, 4),
             "sell_date": exit_date,
-            "sell_reason": exit_reason,
+            "sell_reason": _LEGACY_SELL_REASON.get(exit_reason, exit_reason),
             "exit_reason": exit_reason,
             "exit_mode": exit_mode,
             "exit_trigger_value": round(exit_trigger_value, 4) if exit_trigger_value is not None else None,

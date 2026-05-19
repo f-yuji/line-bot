@@ -88,11 +88,16 @@ def run(args: argparse.Namespace) -> None:
             retries=int(args.retries),
             base_sleep=float(args.retry_wait_seconds),
         )
-        mapped = [
-            mapped_row
-            for mapped_row in (_weekly_row(row) for row in rows)
-            if mapped_row and mapped_row.get("code") in code_set
-        ]
+        seen_keys: set[tuple] = set()
+        mapped = []
+        for mapped_row in (_weekly_row(row) for row in rows):
+            if not mapped_row or mapped_row.get("code") not in code_set:
+                continue
+            key = (mapped_row.get("code"), mapped_row.get("date"))
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
+            mapped.append(mapped_row)
         fetched += len(mapped)
         if args.dry_run:
             if mapped:
