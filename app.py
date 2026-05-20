@@ -2009,7 +2009,9 @@ def web_dashboard():
 
 BOX_SETTINGS_DEFAULTS = {
     "entry_mode": "normal",
-    "box_width_pct": 8.0,
+    "box_width_pct": 12.0,
+    "signal_box_position_pct": 45.0,
+    "max_pending_days": 5,
     "atr_max_pct": 4.0,
     "gu_skip_pct": 3.0,
     "gd_skip_pct": 5.0,
@@ -3151,6 +3153,7 @@ def web_settings():
 def web_box_settings():
     numeric_fields = {
         "box_width_pct": float,
+        "signal_box_position_pct": float,
         "atr_max_pct": float,
         "gu_skip_pct": float,
         "gd_skip_pct": float,
@@ -3160,7 +3163,7 @@ def web_box_settings():
         "max_per": float,
         "max_pbr": float,
     }
-    int_fields = {"max_open_positions", "max_sector_positions"}
+    int_fields = {"max_open_positions", "max_sector_positions", "max_pending_days"}
     if request.method == "POST":
         settings, settings_ok, settings_error = _box_load_settings()
         if not settings_ok:

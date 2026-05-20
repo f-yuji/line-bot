@@ -74,7 +74,7 @@
           <td class="code">{{ r.code }}</td>
           <td class="name">{{ r.name or '—' }}</td>
           <td>
-            {% if r.entry_status == 'entry_pending' %}<span class="badge signal">entry_pending</span>
+            {% if r.entry_status == 'entry_pending' %}<span class="badge signal">押し目待ち</span><br><span class="muted" style="font-size:10px">指値待機中</span>
             {% elif r.entry_status == 'entered' %}<span class="badge notified">entered</span>
             {% elif r.entry_status == 'skipped' %}<span class="badge closed">skipped</span>
             {% elif r.entry_status == 'expired' %}<span class="badge closed">expired</span>
@@ -92,7 +92,7 @@
           <td class="right num">{{ "{:,.0f}".format(r.close) if r.close is not none else '—' }}</td>
           <td class="right num">{{ "{:,.0f}".format(r.entry_price_min) if r.entry_price_min is not none else '—' }}</td>
           <td class="right num">{{ "{:,.0f}".format(r.entry_price_max) if r.entry_price_max is not none else '—' }}</td>
-          <td class="right num">{{ pct(r.box_position_pct) }}</td>
+          <td class="right num">{{ pct(r.box_position_pct) }}<br><span class="muted" style="font-size:10px">下限距離</span></td>
           <td class="right num">{{ pct(r.box_width_pct) }}</td>
           <td class="right num">{{ "%.0f"|format(r.rsi14) if r.rsi14 is not none else '—' }}</td>
           <td class="right num {% if r.margin_ratio is not none and r.margin_ratio > 30 %}warn-text{% endif %}">

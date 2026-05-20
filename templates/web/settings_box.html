@@ -36,7 +36,7 @@
           <option value="paused" {% if cfg.entry_mode == 'paused' %}selected{% endif %}>新規停止</option>
         </select>
       </div>
-      {% set ideal_box_width = cfg.box_width_pct or 8 %}
+      {% set ideal_box_width = cfg.box_width_pct or 12 %}
       {% set box_width_min = [3.0, ideal_box_width * 0.6]|max %}
       {% set box_width_max = [12.0, ideal_box_width * 2.5]|max %}
       <div class="form-row">
@@ -48,6 +48,20 @@
       </div>
       <div class="muted" style="font-size:11px;line-height:1.6;margin:-4px 0 8px">
         抽出目安: 約{{ "%.1f"|format(box_width_min) }}〜{{ "%.1f"|format(box_width_max) }}%
+      </div>
+      <div class="form-row">
+        <label>シグナル下限距離上限<small>box下限からどこまでを押し目として許容するか。35%はかなり下限寄りだけ待つ、45%は大型株の一般的な押し目を許容、55%以上は中段買い寄りです。</small></label>
+        <div class="input-group">
+          <input type="number" step="0.1" name="signal_box_position_pct" value="{{ cfg.signal_box_position_pct or 45 }}">
+          <span class="unit">%</span>
+        </div>
+      </div>
+      <div class="form-row">
+        <label>指値待機日数<small>signal発生後、何営業日まで指値待ちするか。大型株はbox下限で数日ヨコヨコしやすいため5営業日推奨。</small></label>
+        <div class="input-group">
+          <input type="number" step="1" name="max_pending_days" value="{{ cfg.max_pending_days or 5 }}">
+          <span class="unit">営業日</span>
+        </div>
       </div>
       <div class="form-row">
         <label>ATR上限</label>

@@ -114,10 +114,14 @@ def _load_settings(sb) -> dict:
                 "min_equity_ratio",
                 "max_per",
                 "max_pbr",
+                "signal_box_position_pct",
+                "max_pending_days",
             ):
                 value = _to_float(row.get(key))
                 if value is not None:
                     cfg[key] = value
+                    if key == "signal_box_position_pct":
+                        cfg["signal_box_position_max_pct"] = value
             ideal_box_width = _to_float(row.get("box_width_pct"))
             if ideal_box_width is not None and ideal_box_width > 0:
                 cfg["ideal_box_width_pct"] = ideal_box_width
@@ -371,11 +375,13 @@ def run(args: argparse.Namespace) -> None:
     logger.info("[box_lab] margin warnings: missing=%d high=%d overheated=%d", margin_missing, margin_high, margin_overheated)
     logger.info("[box_lab] trade_date=%s latest_rows=%d dry_run=%s", trade_date, len(latest_rows), args.dry_run)
     logger.info(
-        "[box_lab] settings: entry_mode=%s ideal_box_width=%.1f box_width_range=%.1f-%.1f min_equity_ratio=%.1f atr_max_pct=%.1f",
+        "[box_lab] settings: entry_mode=%s ideal_box_width=%.1f box_width_range=%.1f-%.1f signal_box_position=%.1f max_pending_days=%s min_equity_ratio=%.1f atr_max_pct=%.1f",
         cfg["entry_mode"],
         cfg["ideal_box_width_pct"],
         cfg["watch_box_width_min_pct"],
         cfg["watch_box_width_max_pct"],
+        cfg["signal_box_position_pct"],
+        int(cfg["max_pending_days"]),
         cfg["min_equity_ratio"],
         cfg["signal_atr_max_pct"],
     )

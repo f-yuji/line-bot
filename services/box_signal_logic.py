@@ -13,7 +13,7 @@ DEFAULTS: dict[str, Any] = {
     "entry_mode": "normal",
     "min_price": 1000.0,
     "min_turnover_value": 1_000_000_000.0,
-    "ideal_box_width_pct": 8.0,
+    "ideal_box_width_pct": 12.0,
     "watch_box_width_min_pct": 5.0,
     "watch_box_width_max_pct": 25.0,
     "watch_rsi_min": 30.0,
@@ -21,7 +21,9 @@ DEFAULTS: dict[str, Any] = {
     "watch_atr_max_pct": 6.0,
     "watch_volume_ratio_min": 0.5,
     "watch_min_bounce_count": 2,
-    "signal_box_position_pct": 35.0,
+    "signal_box_position_pct": 45.0,
+    "signal_box_position_max_pct": 45.0,
+    "max_pending_days": 5,
     "signal_strong_position_pct": 20.0,
     "signal_rsi_min": 35.0,
     "signal_rsi_cool_max": 55.0,
@@ -172,7 +174,8 @@ def _watch_rejects(row: dict, metrics: dict, cfg: dict) -> list[str]:
 def _signal_rejects(row: dict, metrics: dict, cfg: dict) -> list[str]:
     reasons = _watch_rejects(row, metrics, cfg)
     pos = metrics["box_position_pct"]
-    if not (0 <= pos <= cfg["signal_box_position_pct"]):
+    signal_position_max = cfg.get("signal_box_position_pct", cfg.get("signal_box_position_max_pct", 45.0))
+    if not (0 <= pos <= signal_position_max):
         reasons.append("not_near_box_low")
     rsi = _to_float(row.get("rsi14"))
     if rsi is None or rsi < cfg["signal_rsi_min"] or rsi >= cfg["signal_rsi_hard_max"]:
@@ -210,7 +213,7 @@ def _score(row: dict, metrics: dict, cfg: dict, *, signal: bool) -> tuple[float,
         if 0 <= pos <= cfg["signal_strong_position_pct"]:
             score += 28
             reasons.append("box下限強接近")
-        elif 0 <= pos <= cfg["signal_box_position_pct"]:
+        elif 0 <= pos <= cfg.get("signal_box_position_pct", cfg.get("signal_box_position_max_pct", 45.0)):
             score += 20
             reasons.append("box下限接近")
     else:

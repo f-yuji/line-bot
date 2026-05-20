@@ -80,6 +80,33 @@ def _fetch_all(build_query, *, page_size: int = 1000) -> list[dict]:
         offset += page_size
 
 
+def _date_chunks(start_date: str, end_date: str, days: int) -> list[tuple[str, str]]:
+    start = datetime.fromisoformat(start_date).date()
+    end = datetime.fromisoformat(end_date).date()
+    chunks: list[tuple[str, str]] = []
+    cur = start
+    while cur <= end:
+        chunk_end = min(cur + timedelta(days=max(1, days) - 1), end)
+        chunks.append((cur.isoformat(), chunk_end.isoformat()))
+        cur = chunk_end + timedelta(days=1)
+    return chunks
+
+
+def _latest_snapshot_date(sb, end_date: str) -> str:
+    rows = (
+        sb.table("stock_feature_snapshots")
+        .select("trade_date")
+        .lte("trade_date", end_date)
+        .order("trade_date", desc=True)
+        .limit(1)
+        .execute()
+        .data or []
+    )
+    if not rows:
+        raise RuntimeError(f"stock_feature_snapshots has no rows before {end_date}")
+    return str(rows[0]["trade_date"])
+
+
 # ── Data loading ─────────────────────────────────────────────────────────────
 
 def _load_settings(sb) -> dict:
@@ -96,10 +123,12 @@ def _load_settings(sb) -> dict:
         if rows:
             row = rows[0]
             for key in ("min_price", "min_turnover_value", "gu_skip_pct", "gd_skip_pct",
-                        "min_equity_ratio", "max_per", "max_pbr"):
+                        "min_equity_ratio", "max_per", "max_pbr", "signal_box_position_pct", "max_pending_days"):
                 v = _to_float(row.get(key))
                 if v is not None:
                     cfg[key] = v
+                    if key == "signal_box_position_pct":
+                        cfg["signal_box_position_max_pct"] = v
             ideal = _to_float(row.get("box_width_pct"))
             if ideal and ideal > 0:
                 cfg["ideal_box_width_pct"] = ideal
@@ -114,25 +143,80 @@ def _load_settings(sb) -> dict:
     return cfg
 
 
-def _load_history(sb, start_date: str, end_date: str) -> dict[str, list[dict]]:
-    """Load OHLCV + indicator history for all prime stocks in the date range."""
+def _load_history(
+    sb,
+    start_date: str,
+    end_date: str,
+    chunk_size: int = 25,
+    date_chunk_days: int = 120,
+    page_size: int = 1000,
+) -> dict[str, list[dict]]:
+    """Load OHLCV + indicator history for all prime stocks in the date range.
+
+    Fetches in code chunks to avoid Supabase statement timeout.
+    """
     logger.info("[backtest] loading history %s ~ %s ...", start_date, end_date)
-    rows = _fetch_all(
+
+    # Step 1: get code list from the latest available snapshot in range.
+    # Avoid ordering all rows <= end_date, which can hit Supabase statement timeout.
+    latest_date = _latest_snapshot_date(sb, end_date)
+    logger.info("[backtest] latest code universe date=%s", latest_date)
+    code_rows = _fetch_all(
         lambda: (
             sb.table("stock_feature_snapshots")
-            .select(HIST_COLUMNS)
+            .select("code")
+            .eq("trade_date", latest_date)
             .eq("market", "prime")
-            .gte("trade_date", start_date)
-            .lte("trade_date", end_date)
-            .order("trade_date")
+            .order("code")
         )
     )
+    codes = sorted({str(r["code"]) for r in code_rows if r.get("code")})
+    date_ranges = _date_chunks(start_date, end_date, date_chunk_days)
+    logger.info(
+        "[backtest] prime codes=%d; fetching code_chunks=%d date_chunks=%d ...",
+        len(codes),
+        chunk_size,
+        len(date_ranges),
+    )
+
+    # Step 2: fetch by both code chunk and date chunk. Keeping each SQL small is
+    # slower than one broad query, but much more reliable for multi-year tests.
     by_code: dict[str, list[dict]] = defaultdict(list)
-    for r in rows:
-        code = str(r.get("code") or "")
-        if code:
-            by_code[code].append(r)
-    logger.info("[backtest] history rows=%d codes=%d", len(rows), len(by_code))
+    total_rows = 0
+    total_chunks = -(-len(codes) // chunk_size)
+    for i in range(0, len(codes), chunk_size):
+        code_chunk = codes[i : i + chunk_size]
+        chunk_total = 0
+        for range_start, range_end in date_ranges:
+            chunk_rows = _fetch_all(
+                lambda code_chunk=code_chunk, range_start=range_start, range_end=range_end: (
+                    sb.table("stock_feature_snapshots")
+                    .select(HIST_COLUMNS)
+                    .in_("code", code_chunk)
+                    .gte("trade_date", range_start)
+                    .lte("trade_date", range_end)
+                    .order("trade_date")
+                    .order("code")
+                ),
+                page_size=page_size,
+            )
+            for r in chunk_rows:
+                code = str(r.get("code") or "")
+                if code:
+                    by_code[code].append(r)
+            total_rows += len(chunk_rows)
+            chunk_total += len(chunk_rows)
+        logger.info(
+            "[backtest] chunk %d/%d done (+%d rows, total=%d)",
+            i // chunk_size + 1,
+            total_chunks,
+            chunk_total,
+            total_rows,
+        )
+
+    for rows in by_code.values():
+        rows.sort(key=lambda r: str(r.get("trade_date") or ""))
+    logger.info("[backtest] history total rows=%d codes=%d", total_rows, len(by_code))
     return dict(by_code)
 
 
@@ -569,6 +653,14 @@ def _write_csv(path: Path, rows: list[dict]) -> None:
 def run(args: argparse.Namespace) -> None:
     sb = _build_supabase()
     cfg = _load_settings(sb)
+    if args.signal_box_position_max_pct is not None:
+        cfg["signal_box_position_pct"] = float(args.signal_box_position_max_pct)
+        cfg["signal_box_position_max_pct"] = float(args.signal_box_position_max_pct)
+    logger.info(
+        "[backtest] settings: signal_box_position=%.1f max_pending_days=%s",
+        cfg["signal_box_position_pct"],
+        args.max_pending_days,
+    )
 
     start_date = args.start
     end_date = args.end
@@ -724,13 +816,19 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--window", type=int, default=120, help="Box window (trading days)")
     parser.add_argument("--lookback-days", type=int, default=220, help="Calendar days for history fetch pre-start")
     parser.add_argument("--max-holding-days", type=int, default=20, help="Max holding days per trade")
-    parser.add_argument("--max-pending-days", type=int, default=3, help="Max days waiting for entry fill")
+    parser.add_argument("--max-pending-days", type=int, default=5, help="Max days waiting for entry fill")
+    parser.add_argument(
+        "--signal-box-position-max-pct",
+        type=float,
+        default=45.0,
+        help="Override box_position_pct max for signal generation. Default: 45.",
+    )
     parser.add_argument(
         "--exit-case",
         nargs="+",
         choices=EXIT_CASES,
-        default=None,
-        help="Exit cases to simulate (default: all three)",
+        default=["ma25_stop_box_tp"],
+        help="Exit cases to simulate (default: ma25_stop_box_tp)",
     )
     return parser.parse_args()
 

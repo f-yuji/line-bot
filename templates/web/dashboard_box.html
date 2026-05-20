@@ -119,6 +119,14 @@
         <div style="font-size:10px;color:var(--text-3);letter-spacing:.06em;text-transform:uppercase">理想box幅</div>
         <div style="font-family:var(--font-mono);font-size:14px;font-weight:600;margin-top:3px">{{ box_settings.box_width_pct if box_settings else '—' }}%</div>
       </div>
+      <div style="padding:10px 12px;border-left:1px solid var(--line)">
+        <div style="font-size:10px;color:var(--text-3);letter-spacing:.06em;text-transform:uppercase">下限距離上限</div>
+        <div style="font-family:var(--font-mono);font-size:14px;font-weight:600;margin-top:3px">{{ box_settings.signal_box_position_pct if box_settings else '—' }}%</div>
+      </div>
+      <div style="padding:10px 12px;border-left:1px solid var(--line)">
+        <div style="font-size:10px;color:var(--text-3);letter-spacing:.06em;text-transform:uppercase">指値待機</div>
+        <div style="font-family:var(--font-mono);font-size:14px;font-weight:600;margin-top:3px">{{ box_settings.max_pending_days if box_settings else '—' }}営業日</div>
+      </div>
     </div>
   </div>
 </div>
@@ -166,7 +174,7 @@
           <td class="code">{{ row.code }}</td>
           <td class="name">{{ row.name or '—' }}</td>
           <td>
-            {% if row.entry_status == 'entry_pending' %}<span class="badge signal">{{ row.entry_status }}</span>
+            {% if row.entry_status == 'entry_pending' %}<span class="badge signal">押し目待ち</span>
             {% elif row.entry_status == 'entered' %}<span class="badge notified">{{ row.entry_status }}</span>
             {% elif row.entry_status == 'skipped' %}<span class="badge closed">{{ row.entry_status }}</span>
             {% else %}<span class="badge watching">{{ row.entry_status or '—' }}</span>{% endif %}

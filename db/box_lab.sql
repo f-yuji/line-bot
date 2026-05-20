@@ -10,7 +10,9 @@ create table if not exists box_settings (
   id uuid primary key default gen_random_uuid(),
   user_id text not null default 'global',
   entry_mode text not null default 'normal',
-  box_width_pct numeric default 8.0,
+  box_width_pct numeric default 12.0,
+  signal_box_position_pct numeric default 45.0,
+  max_pending_days integer default 5,
   atr_max_pct numeric default 4.0,
   gu_skip_pct numeric default 3.0,
   gd_skip_pct numeric default 5.0,
@@ -110,6 +112,22 @@ create index if not exists idx_box_virtual_trades_code on box_virtual_trades (co
 insert into box_settings (user_id)
 values ('global')
 on conflict (user_id) do nothing;
+
+alter table box_settings add column if not exists signal_box_position_pct numeric default 45.0;
+alter table box_settings add column if not exists max_pending_days integer default 5;
+alter table box_settings alter column box_width_pct set default 12.0;
+alter table box_settings alter column signal_box_position_pct set default 45.0;
+alter table box_settings alter column max_pending_days set default 5;
+
+-- Current box_lab baseline from long portfolio backtest:
+-- signal_box_position_pct=45, max_pending_days=5, ideal box width=12.
+update box_settings
+set
+  box_width_pct = 12.0,
+  signal_box_position_pct = 45.0,
+  max_pending_days = 5,
+  updated_at = now()
+where user_id = 'global';
 
 create table if not exists box_watchlist (
   id uuid primary key default gen_random_uuid(),
