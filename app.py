@@ -1908,6 +1908,8 @@ def get_watchlist_counts(rows: list[dict], open_trade_codes: set[str] | None = N
 
 @app.route("/web/")
 @app.route("/web/dashboard")
+@app.route("/lab/rebound")
+@app.route("/lab/rebound/dashboard")
 def web_dashboard():
     market_adjustment = _current_market_adjustment()
     long_term_market = _current_long_term_market_regime()
@@ -2002,6 +2004,95 @@ def web_dashboard():
         market_adjustment=market_adjustment,
         long_term_market=long_term_market,
         entry_mode_context=entry_mode_context,
+    )
+
+
+BOX_SETTINGS_DEFAULTS = {
+    "entry_mode": "normal",
+    "box_width_pct": 8.0,
+    "atr_max_pct": 4.0,
+    "gu_skip_pct": 3.0,
+    "gd_skip_pct": 5.0,
+    "max_open_positions": 5,
+    "max_sector_positions": 2,
+    "min_turnover_value": 1000000000,
+    "min_price": 1000,
+    "min_equity_ratio": 30,
+    "max_per": 40,
+    "max_pbr": 5,
+    "note": "",
+}
+
+
+def _box_load_settings() -> tuple[dict, bool, str | None]:
+    try:
+        rows = (
+            supabase.table("box_settings")
+            .select("*")
+            .eq("user_id", "global")
+            .limit(1)
+            .execute()
+            .data or []
+        )
+        return {**BOX_SETTINGS_DEFAULTS, **(rows[0] if rows else {})}, True, None
+    except Exception as e:
+        logger.warning("box_settings load failed: %s", e)
+        return dict(BOX_SETTINGS_DEFAULTS), False, str(e)
+
+
+def _box_fetch_rows(table: str, query_fn=None) -> tuple[list[dict], bool, str | None]:
+    try:
+        query = supabase.table(table).select("*")
+        if query_fn:
+            query = query_fn(query)
+        return query.execute().data or [], True, None
+    except Exception as e:
+        logger.warning("%s load failed: %s", table, e)
+        return [], False, str(e)
+
+
+def _box_counts() -> dict:
+    rows, ok, _ = _box_fetch_rows("box_signals", lambda q: q.order("trade_date", desc=True).limit(500))
+    watch_rows, watch_ok, _ = _box_fetch_rows("box_watchlist", lambda q: q.order("trade_date", desc=True).limit(500))
+    trades, trades_ok, _ = _box_fetch_rows("box_virtual_trades", lambda q: q.order("created_at", desc=True).limit(500))
+    return {
+        "schema_ok": ok and watch_ok and trades_ok,
+        "watchlist": len(watch_rows),
+        "signals": len(rows),
+        "entry_pending": sum(1 for r in rows if r.get("entry_status") == "entry_pending"),
+        "generated": sum(1 for r in rows if r.get("entry_status") == "signal_generated"),
+        "skipped": sum(1 for r in rows if r.get("entry_status") == "skipped"),
+        "open_positions": sum(1 for r in trades if r.get("status") == "open" and not r.get("sell_date")),
+        "closed_positions": sum(1 for r in trades if r.get("status") == "closed" or r.get("sell_date")),
+    }
+
+
+@app.route("/lab/box")
+@app.route("/lab/box/dashboard")
+def web_box_dashboard():
+    market_adjustment = _current_market_adjustment()
+    long_term_market = _current_long_term_market_regime()
+    settings, settings_ok, settings_error = _box_load_settings()
+    cfg = _settings_loader.get_settings()
+    entry_mode_context = resolve_entry_mode(cfg, market_adjustment, long_term_market)
+    entry_mode_context["scores"] = regime_scores(market_adjustment)
+    counts = _box_counts()
+    latest_signals, signals_ok, signals_error = _box_fetch_rows(
+        "box_signals",
+        lambda q: q.order("trade_date", desc=True).order("created_at", desc=True).limit(20),
+    )
+    schema_ok = settings_ok and signals_ok and counts.get("schema_ok", False)
+    schema_error = settings_error or signals_error
+    return render_template(
+        "web/dashboard_box.html",
+        market_adjustment=market_adjustment,
+        long_term_market=long_term_market,
+        entry_mode_context=entry_mode_context,
+        box_settings=settings,
+        box_counts=counts,
+        latest_signals=latest_signals,
+        schema_ok=schema_ok,
+        schema_error=schema_error,
     )
 
 
@@ -2294,6 +2385,11 @@ def web_signals():
         "skipped": sum(1 for r in rows if r.get("status") == "signal_skipped"),
     }
     return render_template("web/signals.html", rows=rows, market_adjustment=market_adjustment, signal_stats=signal_stats)
+
+
+@app.route("/lab")
+def lab_select():
+    return render_template("web/lab_select.html", market_adjustment=_current_market_adjustment())
 
 
 def _trade_assist_chart_placeholder(message: str) -> Response:
@@ -2835,6 +2931,87 @@ def web_trade_assist():
     )
 
 
+@app.route("/lab/box/trade_assist")
+@app.route("/lab/box/trade-assist")
+def web_box_trade_assist():
+    market_adjustment = _current_market_adjustment()
+    long_term_market = _current_long_term_market_regime()
+    settings, settings_ok, settings_error = _box_load_settings()
+    pending_rows, pending_ok, pending_error = _box_fetch_rows(
+        "box_signals",
+        lambda q: q.eq("entry_status", "entry_pending").order("trade_date", desc=True).order("created_at", desc=True).limit(100),
+    )
+    watch_rows, watch_ok, watch_error = _box_fetch_rows(
+        "box_watchlist",
+        lambda q: q.eq("status", "watching").order("trade_date", desc=True).order("watch_score", desc=True).limit(150),
+    )
+    history_rows, history_ok, history_error = _box_fetch_rows(
+        "box_signals",
+        lambda q: q.neq("entry_status", "entry_pending").order("trade_date", desc=True).order("created_at", desc=True).limit(120),
+    )
+    schema_ok = settings_ok and pending_ok and watch_ok and history_ok
+    schema_error = settings_error or pending_error or watch_error or history_error
+    summary = {
+        "pending": len(pending_rows),
+        "watchlist": len(watch_rows),
+        "history": len(history_rows),
+        "entry_mode": settings.get("entry_mode"),
+        "gu_skip_pct": settings.get("gu_skip_pct"),
+        "gd_skip_pct": settings.get("gd_skip_pct"),
+    }
+    return render_template(
+        "web/trade_assist_box.html",
+        rows=pending_rows,
+        watch_rows=watch_rows,
+        history_rows=history_rows,
+        summary=summary,
+        box_settings=settings,
+        market_adjustment=market_adjustment,
+        long_term_market=long_term_market,
+        schema_ok=schema_ok,
+        schema_error=schema_error,
+    )
+
+
+@app.route("/lab/box/watchlist")
+def web_box_watchlist():
+    rows, ok, error = _box_fetch_rows(
+        "box_watchlist",
+        lambda q: q.order("trade_date", desc=True).order("watch_score", desc=True).limit(300),
+    )
+    return render_template(
+        "web/box_watchlist.html",
+        rows=rows,
+        title="boxウォッチリスト",
+        subtitle="6か月ボックス監視リスト",
+        schema_ok=ok,
+        schema_error=error,
+        market_adjustment=_current_market_adjustment(),
+    )
+
+
+@app.route("/lab/box/signals")
+def web_box_signals():
+    rows, ok, error = _box_fetch_rows(
+        "box_signals",
+        lambda q: q.order("trade_date", desc=True).order("box_score", desc=True).limit(300),
+    )
+    stats = {
+        "total": len(rows),
+        "active": sum(1 for r in rows if r.get("entry_status") == "entry_pending"),
+        "entered": sum(1 for r in rows if r.get("entry_status") == "entered"),
+        "skipped": sum(1 for r in rows if r.get("entry_status") == "skipped"),
+    }
+    return render_template(
+        "web/box_signals.html",
+        rows=rows,
+        signal_stats=stats,
+        schema_ok=ok,
+        schema_error=error,
+        market_adjustment=_current_market_adjustment(),
+    )
+
+
 @app.route("/web/trade-assist/generate-reason", methods=["POST"])
 def web_trade_assist_generate_reason():
     def _to_float(value, default=None):
@@ -2959,7 +3136,7 @@ def web_settings():
         except Exception as e:
             logger.error("settings save error: %s", e)
             flash(f"保存失敗: {e}", "danger")
-        return redirect(url_for("web_settings"))
+        return redirect(request.path)
     cfg = _settings_loader.get_settings()
     entry_mode_migration_ok = _entry_mode_migration_status()
     return render_template(
@@ -2967,6 +3144,60 @@ def web_settings():
         cfg=cfg,
         entry_mode_labels=ENTRY_MODE_LABELS,
         entry_mode_migration_ok=entry_mode_migration_ok,
+    )
+
+
+@app.route("/lab/box/settings", methods=["GET", "POST"])
+def web_box_settings():
+    numeric_fields = {
+        "box_width_pct": float,
+        "atr_max_pct": float,
+        "gu_skip_pct": float,
+        "gd_skip_pct": float,
+        "min_turnover_value": float,
+        "min_price": float,
+        "min_equity_ratio": float,
+        "max_per": float,
+        "max_pbr": float,
+    }
+    int_fields = {"max_open_positions", "max_sector_positions"}
+    if request.method == "POST":
+        settings, settings_ok, settings_error = _box_load_settings()
+        if not settings_ok:
+            flash(f"box_settings が未適用です。db/box_lab.sql をSupabase SQL Editorで実行してください: {settings_error}", "danger")
+            return redirect(url_for("web_box_settings"))
+        payload = {"updated_at": datetime.now(timezone.utc).isoformat()}
+        try:
+            entry_mode = str(request.form.get("entry_mode") or "normal")
+            if entry_mode not in {"normal", "box_pullback", "paused"}:
+                entry_mode = "normal"
+            payload["entry_mode"] = entry_mode
+            for key, caster in numeric_fields.items():
+                payload[key] = caster(request.form.get(key, settings.get(key)))
+            for key in int_fields:
+                payload[key] = int(request.form.get(key, settings.get(key)))
+            payload["note"] = str(request.form.get("note") or "")
+            updated = (
+                supabase.table("box_settings")
+                .update(payload)
+                .eq("user_id", "global")
+                .execute()
+                .data or []
+            )
+            if not updated:
+                supabase.table("box_settings").insert({**payload, "user_id": "global"}).execute()
+            flash("box_lab設定を保存しました", "success")
+        except Exception as e:
+            logger.exception("box_settings save failed")
+            flash(f"box_lab設定の保存に失敗しました: {e}", "danger")
+        return redirect(url_for("web_box_settings"))
+
+    settings, settings_ok, settings_error = _box_load_settings()
+    return render_template(
+        "web/settings_box.html",
+        cfg=settings,
+        schema_ok=settings_ok,
+        schema_error=settings_error,
     )
 
 
@@ -3078,6 +3309,197 @@ def web_virtual_trades():
         open_unrealized_pct_total=open_unrealized_pct_total,
         market_adjustment=_current_market_adjustment(),
     )
+
+
+@app.route("/lab/box/positions")
+@app.route("/lab/box/virtual-trades")
+def web_box_positions():
+    open_trades, open_ok, open_error = _box_fetch_rows(
+        "box_virtual_trades",
+        lambda q: q.eq("status", "open").order("buy_date", desc=True).limit(100),
+    )
+    closed_trades, closed_ok, closed_error = _box_fetch_rows(
+        "box_virtual_trades",
+        lambda q: q.or_("status.eq.closed,sell_date.not.is.null").order("sell_date", desc=True).limit(100),
+    )
+    schema_ok = open_ok and closed_ok
+    schema_error = open_error or closed_error
+
+    open_cost_total = 0.0
+    open_value_total = 0.0
+    open_unrealized_pnl_total = 0.0
+    for trade in open_trades:
+        buy = float(trade.get("buy_price") or 0)
+        qty = int(trade.get("quantity") or 100)
+        current = trade.get("current_price")
+        cost = buy * qty
+        open_cost_total += cost
+        try:
+            current_f = float(current) if current is not None else buy
+            value = current_f * qty
+            pnl = value - cost
+            trade["market_value"] = value
+            trade["unrealized_pnl"] = pnl
+            trade["unrealized_pnl_pct"] = (current_f / buy - 1) * 100 if buy > 0 else None
+            open_value_total += value
+            open_unrealized_pnl_total += pnl
+        except Exception:
+            trade["market_value"] = cost
+            open_value_total += cost
+
+    total_pnl = sum(float(t.get("profit_loss") or 0) for t in closed_trades)
+    win_count = sum(1 for t in closed_trades if float(t.get("profit_loss") or 0) > 0)
+    open_unrealized_pct_total = open_unrealized_pnl_total / open_cost_total * 100 if open_cost_total > 0 else None
+    return render_template(
+        "web/positions_box.html",
+        open_trades=open_trades,
+        closed_trades=closed_trades,
+        total_pnl=total_pnl,
+        win_count=win_count,
+        open_cost_total=open_cost_total,
+        open_value_total=open_value_total,
+        open_unrealized_pnl_total=open_unrealized_pnl_total,
+        open_unrealized_pct_total=open_unrealized_pct_total,
+        market_adjustment=_current_market_adjustment(),
+        schema_ok=schema_ok,
+        schema_error=schema_error,
+    )
+
+
+@app.route("/lab/box/virtual-trades/performance")
+def web_box_virtual_trade_performance():
+    from services.virtual_trade_performance import aggregate, open_summary, top_card_summary
+
+    period = request.args.get("period", "weekly")
+    if period not in ("daily", "weekly", "monthly"):
+        period = "weekly"
+    try:
+        all_rows = (
+            supabase.table("box_virtual_trades")
+            .select("*")
+            .order("buy_date", desc=True)
+            .execute()
+            .data or []
+        )
+    except Exception as e:
+        logger.warning("[box_virtual_trade_performance] load failed: %s", e)
+        all_rows = []
+        flash("box_virtual_trades が未作成かもしれません。db/box_lab.sql をSupabaseで実行してください。", "warning")
+
+    rows = aggregate(all_rows, period)
+    open_sum = open_summary(all_rows)
+    top = top_card_summary(all_rows)
+    return render_template(
+        "web/virtual_trade_performance.html",
+        rows=rows,
+        period=period,
+        open_sum=open_sum,
+        top=top,
+        base_path="/lab/box/virtual-trades/performance",
+    )
+
+
+@app.route("/lab/box/virtual-trades/performance/detail")
+def web_box_virtual_trade_performance_detail():
+    from services.virtual_trade_performance import detail_trades
+
+    period = request.args.get("period", "weekly")
+    period_start = request.args.get("period_start", "")
+    period_end = request.args.get("period_end", "")
+    try:
+        all_rows = (
+            supabase.table("box_virtual_trades")
+            .select("*")
+            .order("buy_date", desc=True)
+            .execute()
+            .data or []
+        )
+    except Exception as e:
+        logger.warning("[box_virtual_trade_performance_detail] load failed: %s", e)
+        all_rows = []
+    trades = detail_trades(all_rows, period_start, period_end)
+    return render_template(
+        "web/virtual_trade_performance_detail.html",
+        trades=trades,
+        period=period,
+        period_start=period_start,
+        period_end=period_end,
+    )
+
+
+@app.route("/lab/box/case-tests")
+def web_box_case_tests():
+    return render_template(
+        "web/stub.html",
+        title="box比較テスト",
+        message="box_lab専用の比較テストは次フェーズで実装します。UI導線だけ先に分離しています。",
+        market_adjustment=_current_market_adjustment(),
+    )
+
+
+@app.route("/lab/box/research-db")
+def web_box_research_db():
+    return render_template(
+        "web/stub.html",
+        title="box検証データベース",
+        message="box_lab専用の検証DBビューは次フェーズで実装します。市場データはrebound_labと共有します。",
+        market_adjustment=_current_market_adjustment(),
+    )
+
+
+@app.route("/lab/box/models")
+def web_box_models():
+    return render_template(
+        "web/stub.html",
+        title="box AI Models",
+        message="box_lab専用モデル管理は未実装です。まずはルールベースのbox_watchlist / box_signalsを使います。",
+        market_adjustment=_current_market_adjustment(),
+    )
+
+
+@app.route("/lab/rebound/watchlist")
+def web_rebound_watchlist_alias():
+    return web_watchlist()
+
+
+@app.route("/lab/rebound/signals")
+def web_rebound_signals_alias():
+    return web_signals()
+
+
+@app.route("/lab/rebound/trade-assist")
+def web_rebound_trade_assist_alias():
+    return web_trade_assist()
+
+
+@app.route("/lab/rebound/virtual-trades")
+def web_rebound_virtual_trades_alias():
+    return web_virtual_trades()
+
+
+@app.route("/lab/rebound/virtual-trades/performance")
+def web_rebound_virtual_trade_performance_alias():
+    return web_virtual_trade_performance()
+
+
+@app.route("/lab/rebound/case-tests")
+def web_rebound_case_tests_alias():
+    return web_case_tests()
+
+
+@app.route("/lab/rebound/research-db")
+def web_rebound_research_db_alias():
+    return web_research_db()
+
+
+@app.route("/lab/rebound/models")
+def web_rebound_models_alias():
+    return web_models()
+
+
+@app.route("/lab/rebound/settings", methods=["GET", "POST"])
+def web_rebound_settings_alias():
+    return web_settings()
 
 
 @app.route("/web/virtual-trades/performance")

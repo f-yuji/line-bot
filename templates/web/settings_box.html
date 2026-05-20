@@ -1,0 +1,151 @@
+{% extends "web/base.html" %}
+{% block title %}box設定{% endblock %}
+{% block page_label %}box設定{% endblock %}
+
+{% block content %}
+<div class="page-head">
+  <h1 class="page-title">box設定<small>BOX STRATEGY · rebound とは別管理</small></h1>
+  <div class="page-actions">
+    <a class="btn sm" href="/lab/box/dashboard">box_dashboard</a>
+  </div>
+</div>
+
+{% if not schema_ok %}
+<div class="panel" style="border-color:var(--up);margin-bottom:12px">
+  <div style="padding:12px 14px;color:var(--up);font-size:12px;line-height:1.6">
+    box_settings が未適用です。<code style="font-family:var(--font-mono);color:var(--text-2)">db/box_lab.sql</code> をSupabase SQL Editorで実行してください。
+    {% if schema_error %}<div class="muted" style="margin-top:4px">{{ schema_error }}</div>{% endif %}
+  </div>
+</div>
+{% endif %}
+
+<form method="post">
+  <div class="form-grid">
+
+    {# ── 入口 ── #}
+    <div class="form-card">
+      <h3>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12h18M3 6h18M3 18h18"/></svg>
+        入口
+      </h3>
+      <div class="form-row" style="grid-template-columns:1fr 160px">
+        <label>entry_mode<small>box_lab専用設定です</small></label>
+        <select name="entry_mode" style="background:var(--bg-2);border:1px solid var(--line);color:var(--text);padding:4px 8px;font-size:11px;border-radius:var(--radius);outline:none">
+          <option value="normal" {% if cfg.entry_mode == 'normal' %}selected{% endif %}>normal標準型</option>
+          <option value="box_pullback" {% if cfg.entry_mode == 'box_pullback' %}selected{% endif %}>box押し目型</option>
+          <option value="paused" {% if cfg.entry_mode == 'paused' %}selected{% endif %}>新規停止</option>
+        </select>
+      </div>
+      <div class="form-row">
+        <label>box幅</label>
+        <div class="input-group">
+          <input type="number" step="0.1" name="box_width_pct" value="{{ cfg.box_width_pct }}">
+          <span class="unit">%</span>
+        </div>
+      </div>
+      <div class="form-row">
+        <label>ATR上限</label>
+        <div class="input-group">
+          <input type="number" step="0.1" name="atr_max_pct" value="{{ cfg.atr_max_pct }}">
+          <span class="unit">%</span>
+        </div>
+      </div>
+      <p class="muted" style="font-size:11px;line-height:1.6;margin:8px 0 0">
+        rebound_lab の入口モードには影響しません。
+      </p>
+    </div>
+
+    {# ── 執行 ── #}
+    <div class="form-card">
+      <h3>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+        執行
+      </h3>
+      <div class="form-row">
+        <label>GU 見送り<small>寄付GUがこの%以上で見送り</small></label>
+        <div class="input-group">
+          <input type="number" step="0.1" name="gu_skip_pct" value="{{ cfg.gu_skip_pct }}">
+          <span class="unit">%</span>
+        </div>
+      </div>
+      <div class="form-row">
+        <label>GD 警戒<small>寄付GDがこの%以下で警戒</small></label>
+        <div class="input-group">
+          <input type="number" step="0.1" name="gd_skip_pct" value="{{ cfg.gd_skip_pct }}">
+          <span class="unit">%</span>
+        </div>
+      </div>
+      <div class="form-row">
+        <label>最大保有数</label>
+        <div class="input-group">
+          <input type="number" step="1" name="max_open_positions" value="{{ cfg.max_open_positions }}">
+        </div>
+      </div>
+      <div class="form-row">
+        <label>同セクター最大</label>
+        <div class="input-group">
+          <input type="number" step="1" name="max_sector_positions" value="{{ cfg.max_sector_positions }}">
+        </div>
+      </div>
+    </div>
+
+    {# ── 対象銘柄 ── #}
+    <div class="form-card">
+      <h3>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        対象銘柄
+      </h3>
+      <div class="form-row">
+        <label>最低売買代金</label>
+        <div class="input-group">
+          <input type="number" step="1000000" name="min_turnover_value" value="{{ cfg.min_turnover_value }}">
+          <span class="unit">円</span>
+        </div>
+      </div>
+      <div class="form-row">
+        <label>最低株価</label>
+        <div class="input-group">
+          <input type="number" step="1" name="min_price" value="{{ cfg.min_price }}">
+          <span class="unit">円</span>
+        </div>
+      </div>
+      <div class="form-row">
+        <label>自己資本比率下限</label>
+        <div class="input-group">
+          <input type="number" step="0.1" name="min_equity_ratio" value="{{ cfg.min_equity_ratio }}">
+          <span class="unit">%</span>
+        </div>
+      </div>
+      <div class="form-row">
+        <label>PER上限</label>
+        <div class="input-group">
+          <input type="number" step="0.1" name="max_per" value="{{ cfg.max_per }}">
+          <span class="unit">倍</span>
+        </div>
+      </div>
+      <div class="form-row">
+        <label>PBR上限</label>
+        <div class="input-group">
+          <input type="number" step="0.1" name="max_pbr" value="{{ cfg.max_pbr }}">
+          <span class="unit">倍</span>
+        </div>
+      </div>
+    </div>
+
+    {# ── メモ ── #}
+    <div class="form-card">
+      <h3>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+        メモ
+      </h3>
+      <textarea name="note" rows="10" style="width:100%;background:var(--bg-2);border:1px solid var(--line);color:var(--text);padding:8px 10px;font-size:12px;font-family:var(--font-mono);border-radius:var(--radius);outline:none;resize:vertical;line-height:1.6">{{ cfg.note or '' }}</textarea>
+    </div>
+
+  </div>
+
+  <div style="display:flex;gap:8px;margin-top:14px">
+    <button type="submit" class="btn primary" {% if not schema_ok %}disabled{% endif %}>保存</button>
+    <a href="/lab/box/settings" class="btn">リセット</a>
+  </div>
+</form>
+{% endblock %}

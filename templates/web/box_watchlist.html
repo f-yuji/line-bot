@@ -1,0 +1,88 @@
+{% extends "web/base.html" %}
+{% block title %}{{ title or 'boxウォッチリスト' }}{% endblock %}
+{% block page_label %}{{ title or 'boxウォッチリスト' }}{% endblock %}
+
+{% macro pct(v, digits=1) -%}
+  {%- if v is none -%}<span class="muted">—</span>
+  {%- else -%}{{ ("%." ~ digits ~ "f")|format(v) }}%
+  {%- endif -%}
+{%- endmacro %}
+
+{% block content %}
+<div class="page-head">
+  <h1 class="page-title">{{ title or 'boxウォッチリスト' }}<small>{{ subtitle or 'BOX WATCHLIST' }} · {{ rows|length }}件</small></h1>
+  <div class="page-actions">
+    <a class="btn primary sm" href="/lab/box/trade-assist">購入候補へ</a>
+    <a class="btn sm" href="/lab/box/signals">boxシグナル</a>
+  </div>
+</div>
+
+{% if not schema_ok %}
+<div class="panel" style="border-color:var(--up);margin-bottom:12px">
+  <div style="padding:12px 14px;color:var(--up);font-size:12px;line-height:1.6">
+    box_watchlist が未適用です。<code style="font-family:var(--font-mono);color:var(--text-2)">db/box_lab.sql</code> をSupabase SQL Editorで再実行してください。
+    {% if schema_error %}<div class="muted" style="margin-top:4px">{{ schema_error }}</div>{% endif %}
+  </div>
+</div>
+{% endif %}
+
+<div class="panel">
+  <div class="panel-head">
+    <div class="panel-title">box監視銘柄<span class="tag">WATCHING</span></div>
+    <div class="muted" style="font-size:10.5px;font-family:var(--font-mono)">押し目待ちの母集団</div>
+  </div>
+  <div class="table-wrap">
+    <table class="tbl">
+      <thead>
+        <tr>
+          <th>コード</th><th>銘柄</th><th>状態</th>
+          <th class="right">score</th><th class="right">終値</th>
+          <th class="center">box位置</th><th class="right">box幅</th>
+          <th class="right">反発</th><th class="right">RSI</th>
+          <th class="right">ATR</th><th class="right">売買代金</th>
+          <th>セクター</th><th>理由</th><th>基準日</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in rows %}
+        <tr>
+          <td class="code">{{ r.code }}</td>
+          <td class="name">{{ r.name or '—' }}</td>
+          <td><span class="badge watching">{{ r.status or 'watching' }}</span></td>
+          <td class="right num">
+            {% if r.watch_score is not none -%}
+              {%- set cls = 'high' if r.watch_score >= 80 else ('mid' if r.watch_score >= 65 else 'low') -%}
+              <div class="score-bar {{ cls }}" style="display:inline-flex">
+                <div class="track"><div class="fill" style="width:{{ r.watch_score }}%"></div></div>
+                <span class="num">{{ "%.0f"|format(r.watch_score) }}</span>
+              </div>
+            {%- else %}<span class="muted">—</span>{% endif %}
+          </td>
+          <td class="right num">{{ "{:,.0f}".format(r.close) if r.close is not none else '—' }}</td>
+          <td class="center">
+            {% if r.box_position_pct is not none %}
+              <div style="display:inline-flex;align-items:center;gap:6px;font-family:var(--font-mono);font-size:11px">
+                <div style="width:54px;height:4px;background:var(--bg-3);border-radius:2px;position:relative;overflow:hidden">
+                  <div style="position:absolute;top:0;bottom:0;width:2px;background:var(--accent);left:{{ [[r.box_position_pct, 100]|min, 0]|max }}%"></div>
+                </div>
+                <span>{{ "%.0f"|format(r.box_position_pct) }}%</span>
+              </div>
+            {% else %}<span class="muted">—</span>{% endif %}
+          </td>
+          <td class="right num">{{ pct(r.box_width_pct) }}</td>
+          <td class="right num">{{ r.bounce_count if r.bounce_count is not none else '—' }}</td>
+          <td class="right num">{{ "%.0f"|format(r.rsi14) if r.rsi14 is not none else '—' }}</td>
+          <td class="right num">{{ pct(r.atr_pct) }}</td>
+          <td class="right num">{{ "{:,.1f}".format((r.turnover_value or 0) / 100000000) if r.turnover_value is not none else '—' }}億</td>
+          <td class="muted">{{ r.sector or '—' }}</td>
+          <td class="muted">{{ r.watch_reason or r.warnings or '—' }}</td>
+          <td class="muted num">{{ r.trade_date }}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="14" class="center muted" style="padding:28px">boxウォッチリストはまだありません</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

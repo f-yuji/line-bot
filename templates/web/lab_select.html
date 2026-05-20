@@ -1,0 +1,75 @@
+{% extends "web/base.html" %}
+{% block title %}ラボ選択{% endblock %}
+{% block page_label %}LAB SELECT{% endblock %}
+
+{% block content %}
+<style>
+  .lab-select-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 16px;
+  }
+  .lab-card {
+    display: grid;
+    gap: 12px;
+    padding: 20px;
+    min-height: 190px;
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    background: var(--panel);
+    text-decoration: none;
+    color: var(--text);
+  }
+  .lab-card:hover { border-color: var(--accent); }
+  .lab-card small {
+    color: var(--text-3);
+    font-family: var(--font-mono);
+    letter-spacing: .08em;
+  }
+  .lab-card h2 {
+    margin: 0;
+    font-size: 24px;
+    letter-spacing: 0;
+  }
+  .lab-card p {
+    margin: 0;
+    color: var(--text-2);
+    line-height: 1.7;
+  }
+  .lab-card .tag-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+</style>
+
+<div class="page-head">
+  <h1 class="page-title">ラボ選択<small>MARKET RESEARCH / LIVE SWING</small></h1>
+</div>
+
+<div class="lab-select-grid">
+  <a class="lab-card" href="/web/dashboard">
+    <small>市場研究ラボ</small>
+    <h2>rebound_lab</h2>
+    <p>急落、panic、market regime、異常需給を観測する研究室です。市場温度感と歪みを見るために残します。</p>
+    <div class="tag-row">
+      <span class="tag">panic</span>
+      <span class="tag">risk_on</span>
+      <span class="tag">急落研究</span>
+      <span class="tag">高ボラ</span>
+    </div>
+  </a>
+
+  <a class="lab-card" href="/lab/box/dashboard">
+    <small>実運用ラボ</small>
+    <h2>box_lab</h2>
+    <p>大型、高流動性、良ファンダ、ボックス押し目を扱う実運用向けラボです。低DDと再現性を重視します。</p>
+    <div class="tag-row">
+      <span class="tag">大型押し目</span>
+      <span class="tag">ボックス</span>
+      <span class="tag">低DD</span>
+      <span class="tag">資金配置</span>
+    </div>
+  </a>
+</div>
+{% endblock %}

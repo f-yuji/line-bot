@@ -70,9 +70,10 @@
 
 {# ── 期間切替タブ ── #}
 <div class="perf-tabs">
-  <a class="perf-tab {% if period == 'daily' %}active{% endif %}" href="/web/virtual-trades/performance?period=daily">日次</a>
-  <a class="perf-tab {% if period == 'weekly' %}active{% endif %}" href="/web/virtual-trades/performance?period=weekly">週次</a>
-  <a class="perf-tab {% if period == 'monthly' %}active{% endif %}" href="/web/virtual-trades/performance?period=monthly">月次</a>
+  {% set perf_base = base_path or '/web/virtual-trades/performance' %}
+  <a class="perf-tab {% if period == 'daily' %}active{% endif %}" href="{{ perf_base }}?period=daily">日次</a>
+  <a class="perf-tab {% if period == 'weekly' %}active{% endif %}" href="{{ perf_base }}?period=weekly">週次</a>
+  <a class="perf-tab {% if period == 'monthly' %}active{% endif %}" href="{{ perf_base }}?period=monthly">月次</a>
 </div>
 
 {# ── 集計テーブル ── #}
@@ -133,7 +134,7 @@
         <td class="right muted">—</td>
         <td class="right muted">—</td>
         <td class="center">
-          <a class="detail-link" href="/web/virtual-trades/performance/detail?period={{ period }}&period_start={{ r.period_start }}&period_end={{ r.period_end }}">詳細</a>
+          <a class="detail-link" href="{{ perf_base }}/detail?period={{ period }}&period_start={{ r.period_start }}&period_end={{ r.period_end }}">詳細</a>
         </td>
       </tr>
       {% endfor %}

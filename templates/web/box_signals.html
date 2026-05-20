@@ -1,0 +1,109 @@
+{% extends "web/base.html" %}
+{% block title %}boxシグナル{% endblock %}
+{% block page_label %}boxシグナル{% endblock %}
+
+{% macro pct(v, digits=1) -%}
+  {%- if v is none -%}<span class="muted">—</span>
+  {%- else -%}{{ ("%." ~ digits ~ "f")|format(v) }}%
+  {%- endif -%}
+{%- endmacro %}
+
+{% block content %}
+<div class="page-head">
+  <h1 class="page-title">boxシグナル<small>SIGNALS · {{ rows|length }}件</small></h1>
+  <div class="page-actions">
+    <a class="btn primary sm" href="/lab/box/trade-assist">トレード補助</a>
+    <a class="btn sm" href="/lab/box/dashboard">ダッシュボード</a>
+  </div>
+</div>
+
+{% if not schema_ok %}
+<div class="panel" style="border-color:var(--up);margin-bottom:12px">
+  <div style="padding:12px 14px;color:var(--up);font-size:12px;line-height:1.6">
+    box_signals が未適用です。<code style="font-family:var(--font-mono);color:var(--text-2)">db/box_lab.sql</code> をSupabase SQL Editorで実行してください。
+    {% if schema_error %}<div class="muted" style="margin-top:4px">{{ schema_error }}</div>{% endif %}
+  </div>
+</div>
+{% endif %}
+
+{# ── 状態サマリー ── #}
+<div class="stat-grid" style="grid-template-columns:repeat(4,1fr)">
+  <div class="stat-tile">
+    <div class="label">全体</div>
+    <div class="value">{{ signal_stats.total if signal_stats else rows|length }}</div>
+    <div class="sub muted">TOTAL</div>
+  </div>
+  <div class="stat-tile accent">
+    <div class="label">購入待ち</div>
+    <div class="value">{{ signal_stats.active if signal_stats else 0 }}</div>
+    <div class="sub muted">ENTRY PENDING</div>
+  </div>
+  <div class="stat-tile up">
+    <div class="label">仮想購入済み</div>
+    <div class="value">{{ signal_stats.entered if signal_stats else 0 }}</div>
+    <div class="sub muted">ENTERED</div>
+  </div>
+  <div class="stat-tile">
+    <div class="label">見送り</div>
+    <div class="value">{{ signal_stats.skipped if signal_stats else 0 }}</div>
+    <div class="sub muted">SKIPPED</div>
+  </div>
+</div>
+
+<div class="panel" style="margin-top:14px">
+  <div class="panel-head">
+    <div class="panel-title">box購入候補一覧<span class="tag">ALL SIGNALS</span></div>
+    <div class="muted" style="font-size:10.5px;font-family:var(--font-mono)">box下限接近銘柄のみ</div>
+  </div>
+  <div class="table-wrap">
+    <table class="tbl">
+      <thead>
+        <tr>
+          <th>コード</th><th>銘柄</th><th>状態</th>
+          <th class="right">score</th><th class="right">終値</th>
+          <th class="right">entry下限</th><th class="right">entry上限</th>
+          <th class="right">box位置</th><th class="right">box幅</th><th class="right">RSI</th>
+          <th class="right">損切</th><th class="right">利確</th>
+          <th>理由</th><th>基準日</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in rows %}
+        <tr class="{{ 'signal-row' if r.entry_status == 'entry_pending' else '' }}">
+          <td class="code">{{ r.code }}</td>
+          <td class="name">{{ r.name or '—' }}</td>
+          <td>
+            {% if r.entry_status == 'entry_pending' %}<span class="badge signal">entry_pending</span>
+            {% elif r.entry_status == 'entered' %}<span class="badge notified">entered</span>
+            {% elif r.entry_status == 'skipped' %}<span class="badge closed">skipped</span>
+            {% elif r.entry_status == 'expired' %}<span class="badge closed">expired</span>
+            {% else %}<span class="badge watching">{{ r.entry_status or '—' }}</span>{% endif %}
+          </td>
+          <td class="right num">
+            {% if r.box_score is not none -%}
+              {%- set cls = 'high' if r.box_score >= 80 else ('mid' if r.box_score >= 65 else 'low') -%}
+              <div class="score-bar {{ cls }}" style="display:inline-flex">
+                <div class="track"><div class="fill" style="width:{{ r.box_score }}%"></div></div>
+                <span class="num">{{ "%.0f"|format(r.box_score) }}</span>
+              </div>
+            {%- else %}<span class="muted">—</span>{% endif %}
+          </td>
+          <td class="right num">{{ "{:,.0f}".format(r.close) if r.close is not none else '—' }}</td>
+          <td class="right num">{{ "{:,.0f}".format(r.entry_price_min) if r.entry_price_min is not none else '—' }}</td>
+          <td class="right num">{{ "{:,.0f}".format(r.entry_price_max) if r.entry_price_max is not none else '—' }}</td>
+          <td class="right num">{{ pct(r.box_position_pct) }}</td>
+          <td class="right num">{{ pct(r.box_width_pct) }}</td>
+          <td class="right num">{{ "%.0f"|format(r.rsi14) if r.rsi14 is not none else '—' }}</td>
+          <td class="right num down-text">{{ "{:,.0f}".format(r.stop_loss_price) if r.stop_loss_price is not none else '—' }}</td>
+          <td class="right num up-text">{{ "{:,.0f}".format(r.take_profit_price) if r.take_profit_price is not none else '—' }}</td>
+          <td class="muted">{{ r.entry_reason or r.signal_reason or r.warnings or '—' }}</td>
+          <td class="muted num">{{ r.trade_date }}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="14" class="center muted" style="padding:28px">boxシグナルはまだありません</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}
