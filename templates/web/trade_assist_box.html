@@ -128,10 +128,11 @@
     padding: 14px 16px;
     display: flex;
     justify-content: space-between;
-    align-items: baseline;
+    align-items: stretch;
     gap: 12px;
   }
   .ta-hero-block { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+  .ta-hero-block.is-center { text-align: center; justify-content: center; }
   .ta-hero-block.is-right { text-align: right; }
   .ta-hero-block > span { color: var(--ta-dim-2); font-size: 11px; }
   .ta-hero-block > b {
@@ -142,6 +143,17 @@
     line-height: 1.1;
   }
   .ta-hero-entry { font-size: 19px !important; }
+  .ta-position { font-size: 25px !important; }
+  .ta-position.is-strong { color: var(--accent) !important; }
+  .ta-position.is-mid { color: var(--ta-up) !important; }
+  .ta-position.is-wait { color: var(--ta-warn) !important; }
+  .ta-position.is-high { color: var(--ta-dim) !important; }
+  .ta-position-note {
+    color: var(--ta-dim-2);
+    font-size: 10px;
+    line-height: 1.35;
+    max-width: 120px;
+  }
   .ta-section-label {
     margin: -2px 0 -6px;
     color: var(--ta-dim-2);
@@ -369,6 +381,8 @@
       {%- set box_high = r.box_upper or r.box_high -%}
       {%- set pos = r.box_position_pct if r.box_position_pct is not none else 0 -%}
       {%- set pos_clamp = [[pos, 100]|min, 0]|max -%}
+      {%- set pos_label = '下限接近 / 強候補' if pos <= 20 else ('下限圏 / 候補' if pos <= 35 else ('中段 / 待ち' if pos <= 70 else '上限寄り / 新規買い非推奨')) -%}
+      {%- set pos_cls = 'is-strong' if pos <= 20 else ('is-mid' if pos <= 35 else ('is-wait' if pos <= 70 else 'is-high')) -%}
       <article class="ta-card {{ 'is-strong' if strong else '' }}">
         <div class="ta-card-head">
           <div class="ta-card-id">
@@ -383,6 +397,11 @@
             <span>現在値</span>
             <b>{{ yen(r.close) }}</b>
           </div>
+          <div class="ta-hero-block is-center">
+            <span>box下限から</span>
+            <b class="ta-position {{ pos_cls }}">{{ "%.0f"|format(pos) }}%</b>
+            <small class="ta-position-note">{{ pos_label }}</small>
+          </div>
           <div class="ta-hero-block is-right">
             <span>理想 entry</span>
             <b class="ta-hero-entry">
@@ -395,7 +414,7 @@
         <div class="ta-box-vis">
           <div class="ta-box-labels">
             <span>下限 <b>{{ "{:,.0f}".format(box_low) }}</b></span>
-            <span>box位置 <b style="color:var(--accent)">{{ "%.0f"|format(pos) }}%</b></span>
+            <span>下限距離 <b style="color:var(--accent)">{{ "%.0f"|format(pos) }}%</b></span>
             <span>上限 <b>{{ "{:,.0f}".format(box_high) }}</b></span>
           </div>
           <div class="ta-box-bar">
@@ -408,7 +427,7 @@
           </div>
           <div class="ta-box-labels">
             <span>box幅 <b>{{ "%.1f"|format(r.box_width_pct) if r.box_width_pct is not none else '—' }}%</b></span>
-            <span>反発 <b>{{ r.bounce_count if r.bounce_count is not none else '—' }}回</b></span>
+            <span>下限反発 <b>{{ r.bounce_count if r.bounce_count is not none else '—' }}回</b></span>
           </div>
         </div>
         {% endif %}
@@ -442,6 +461,12 @@
           <span>RSI <b class="{% if r.rsi14 and r.rsi14 > 70 %}warn-text{% endif %}">{{ num(r.rsi14, 0) }}</b></span>
           <span>ATR <b>{{ num(r.atr_pct, 1, '%') }}</b></span>
           <span>出来高 <b>{{ num(r.volume_ratio_20d, 1, '倍') }}</b></span>
+          <span>信用倍率
+            {%- if r.margin_ratio is not none -%}
+              <b class="{% if r.margin_ratio > 30 %}warn-text{% endif %}">{{ "%.1f"|format(r.margin_ratio) }}倍</b>
+              {%- if r.margin_date %}<span style="color:var(--ta-dim-2);font-size:10px;margin-left:2px">{{ r.margin_date }}</span>{% endif -%}
+            {%- else -%}<b class="muted">—</b>{%- endif -%}
+          </span>
         </div>
 
         <div class="ta-reason">
@@ -474,9 +499,9 @@
         <thead>
           <tr>
             <th>コード</th><th>銘柄</th>
-            <th class="right">終値</th><th class="right">box位置</th><th class="right">box幅</th>
-            <th class="right">反発</th><th class="right">RSI</th><th class="right">売買代金</th>
-            <th>理由</th>
+            <th class="right">終値</th><th class="right">下限距離</th><th class="right">box幅</th>
+            <th class="right">下限反発</th><th class="right">RSI</th><th class="right">信用倍率</th>
+            <th class="right">売買代金</th><th>理由</th>
           </tr>
         </thead>
         <tbody>
@@ -487,13 +512,16 @@
             <td class="right num">{{ "{:,.0f}".format(r.close) if r.close is not none else '—' }}</td>
             <td class="right num">{{ "%.1f"|format(r.box_position_pct) if r.box_position_pct is not none else '—' }}%</td>
             <td class="right num">{{ "%.1f"|format(r.box_width_pct) if r.box_width_pct is not none else '—' }}%</td>
-            <td class="right num">{{ r.bounce_count if r.bounce_count is not none else '—' }}</td>
+            <td class="right num">{{ r.bounce_count if r.bounce_count is not none else '—' }}{% if r.bounce_count is not none %}回{% endif %}</td>
             <td class="right num">{{ "%.0f"|format(r.rsi14) if r.rsi14 is not none else '—' }}</td>
+            <td class="right num {% if r.margin_ratio is not none and r.margin_ratio > 30 %}warn-text{% endif %}">
+              {{ "%.1f"|format(r.margin_ratio) ~ '倍' if r.margin_ratio is not none else '—' }}
+            </td>
             <td class="right num">{{ "{:,.1f}".format((r.turnover_value or 0) / 100000000) if r.turnover_value is not none else '—' }}億</td>
             <td class="muted">{{ r.watch_reason or '—' }}</td>
           </tr>
           {% else %}
-          <tr><td colspan="9" class="center muted" style="padding:24px">監視リストはまだありません</td></tr>
+          <tr><td colspan="10" class="center muted" style="padding:24px">監視リストはまだありません</td></tr>
           {% endfor %}
         </tbody>
       </table>

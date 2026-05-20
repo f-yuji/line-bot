@@ -63,6 +63,7 @@
           <th class="right">score</th><th class="right">終値</th>
           <th class="right">entry下限</th><th class="right">entry上限</th>
           <th class="right">box位置</th><th class="right">box幅</th><th class="right">RSI</th>
+          <th class="right">信用倍率</th>
           <th class="right">損切</th><th class="right">利確</th>
           <th>理由</th><th>基準日</th>
         </tr>
@@ -94,13 +95,17 @@
           <td class="right num">{{ pct(r.box_position_pct) }}</td>
           <td class="right num">{{ pct(r.box_width_pct) }}</td>
           <td class="right num">{{ "%.0f"|format(r.rsi14) if r.rsi14 is not none else '—' }}</td>
+          <td class="right num {% if r.margin_ratio is not none and r.margin_ratio > 30 %}warn-text{% endif %}">
+            {{ "%.1f"|format(r.margin_ratio) ~ '倍' if r.margin_ratio is not none else '—' }}
+            {%- if r.margin_ratio is not none and r.margin_date %}<br><span class="muted" style="font-size:10px">{{ r.margin_date }}</span>{% endif -%}
+          </td>
           <td class="right num down-text">{{ "{:,.0f}".format(r.stop_loss_price) if r.stop_loss_price is not none else '—' }}</td>
           <td class="right num up-text">{{ "{:,.0f}".format(r.take_profit_price) if r.take_profit_price is not none else '—' }}</td>
           <td class="muted">{{ r.entry_reason or r.signal_reason or r.warnings or '—' }}</td>
           <td class="muted num">{{ r.trade_date }}</td>
         </tr>
         {% else %}
-        <tr><td colspan="14" class="center muted" style="padding:28px">boxシグナルはまだありません</td></tr>
+        <tr><td colspan="15" class="center muted" style="padding:28px">boxシグナルはまだありません</td></tr>
         {% endfor %}
       </tbody>
     </table>

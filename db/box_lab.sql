@@ -138,6 +138,7 @@ create table if not exists box_watchlist (
   turnover_value numeric,
   per numeric,
   pbr numeric,
+  equity_ratio numeric,
   warnings text,
   raw jsonb default '{}'::jsonb,
   created_at timestamptz not null default now(),
@@ -161,6 +162,21 @@ alter table box_signals add column if not exists signal_reason text;
 alter table box_signals add column if not exists stop_loss_price numeric;
 alter table box_signals add column if not exists take_profit_price numeric;
 alter table box_signals add column if not exists warnings text;
+alter table box_signals add column if not exists market_support_status text;
+alter table box_signals add column if not exists nikkei_trend_warning text;
+alter table box_signals add column if not exists relative_strength_vs_nikkei numeric;
+alter table box_watchlist add column if not exists equity_ratio numeric;
+alter table box_watchlist add column if not exists market_support_status text;
+alter table box_watchlist add column if not exists nikkei_trend_warning text;
+alter table box_watchlist add column if not exists relative_strength_vs_nikkei numeric;
 
 create index if not exists idx_box_signals_strategy_score
   on box_signals (strategy_type, box_score desc, trade_date desc);
+
+alter table box_watchlist add column if not exists margin_ratio numeric;
+alter table box_watchlist add column if not exists margin_date date;
+alter table box_watchlist add column if not exists margin_buy_balance numeric;
+alter table box_watchlist add column if not exists margin_sell_balance numeric;
+
+alter table box_signals add column if not exists margin_buy_balance numeric;
+alter table box_signals add column if not exists margin_sell_balance numeric;

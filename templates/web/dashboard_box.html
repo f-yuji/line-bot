@@ -116,7 +116,7 @@
         <div style="font-family:var(--font-mono);font-size:14px;font-weight:600;margin-top:3px">{{ box_settings.max_open_positions if box_settings else '—' }}</div>
       </div>
       <div style="padding:10px 12px">
-        <div style="font-size:10px;color:var(--text-3);letter-spacing:.06em;text-transform:uppercase">box幅</div>
+        <div style="font-size:10px;color:var(--text-3);letter-spacing:.06em;text-transform:uppercase">理想box幅</div>
         <div style="font-family:var(--font-mono);font-size:14px;font-weight:600;margin-top:3px">{{ box_settings.box_width_pct if box_settings else '—' }}%</div>
       </div>
     </div>
@@ -153,6 +153,9 @@
       <thead>
         <tr>
           <th>コード</th><th>銘柄</th><th>状態</th>
+          <th class="right">box score</th><th class="right">下限距離</th>
+          <th class="right">box幅</th><th class="right">下限反発</th>
+          <th class="right">信用</th>
           <th class="right">box下限</th><th class="right">box上限</th>
           <th>理由</th><th>基準日</th>
         </tr>
@@ -168,13 +171,20 @@
             {% elif row.entry_status == 'skipped' %}<span class="badge closed">{{ row.entry_status }}</span>
             {% else %}<span class="badge watching">{{ row.entry_status or '—' }}</span>{% endif %}
           </td>
+          <td class="right num">{{ "%.0f"|format(row.box_score) if row.box_score is not none else '—' }}</td>
+          <td class="right num">{{ "%.1f"|format(row.box_position_pct) if row.box_position_pct is not none else '—' }}%</td>
+          <td class="right num">{{ "%.1f"|format(row.box_width_pct) if row.box_width_pct is not none else '—' }}%</td>
+          <td class="right num">{{ row.bounce_count if row.bounce_count is not none else '—' }}回</td>
+          <td class="right num {% if row.margin_ratio is not none and row.margin_ratio > 30 %}warn-text{% endif %}">
+            {{ "%.1f"|format(row.margin_ratio) ~ '倍' if row.margin_ratio is not none else '—' }}
+          </td>
           <td class="right num">{{ "{:,.0f}".format(row.box_lower) if row.box_lower is not none else '—' }}</td>
           <td class="right num">{{ "{:,.0f}".format(row.box_upper) if row.box_upper is not none else '—' }}</td>
           <td class="muted">{{ row.entry_reason or '—' }}</td>
           <td class="muted num">{{ row.trade_date }}</td>
         </tr>
         {% else %}
-        <tr><td colspan="7" class="center muted" style="padding:28px">boxシグナルはまだありません</td></tr>
+        <tr><td colspan="12" class="center muted" style="padding:28px">boxシグナルはまだありません</td></tr>
         {% endfor %}
       </tbody>
     </table>

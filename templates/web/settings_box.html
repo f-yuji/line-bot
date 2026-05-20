@@ -36,12 +36,18 @@
           <option value="paused" {% if cfg.entry_mode == 'paused' %}selected{% endif %}>新規停止</option>
         </select>
       </div>
+      {% set ideal_box_width = cfg.box_width_pct or 8 %}
+      {% set box_width_min = [3.0, ideal_box_width * 0.6]|max %}
+      {% set box_width_max = [12.0, ideal_box_width * 2.5]|max %}
       <div class="form-row">
-        <label>box幅</label>
+        <label>理想box幅<small>許容するボックス値幅の中心値です。実際の抽出ではこの値を中心に一定の幅を許容します。</small></label>
         <div class="input-group">
           <input type="number" step="0.1" name="box_width_pct" value="{{ cfg.box_width_pct }}">
           <span class="unit">%</span>
         </div>
+      </div>
+      <div class="muted" style="font-size:11px;line-height:1.6;margin:-4px 0 8px">
+        抽出目安: 約{{ "%.1f"|format(box_width_min) }}〜{{ "%.1f"|format(box_width_max) }}%
       </div>
       <div class="form-row">
         <label>ATR上限</label>

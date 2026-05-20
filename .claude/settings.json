@@ -54,7 +54,11 @@
       "Bash(Select-Object -ExpandProperty Name)",
       "Bash(Sort-Object)",
       "Bash(Get-Unique)",
-      "Bash(git rm *)"
+      "Bash(git rm *)",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('scripts/generate_box_signals.py'\\).read\\(\\)\\); print\\('OK'\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('scripts/generate_box_signals.py', encoding='utf-8'\\).read\\(\\)\\); print\\('OK'\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('scripts/backtest_box_pullback.py', encoding='utf-8'\\).read\\(\\)\\); print\\('OK'\\)\")",
+      "Bash(python -c \"import sys; sys.path.insert\\(0,'..'\\); from services.box_signal_logic import DEFAULTS, _box_metrics, _score; print\\('import OK'\\)\")"
     ]
   }
 }
