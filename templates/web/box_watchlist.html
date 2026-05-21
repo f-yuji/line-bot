@@ -3,16 +3,77 @@
 {% block page_label %}{{ title or 'boxウォッチリスト' }}{% endblock %}
 
 {% macro pct(v, digits=1) -%}
-  {%- if v is none -%}<span class="muted">—</span>
+  {%- if v is none -%}<span class="muted">-</span>
   {%- else -%}{{ ("%." ~ digits ~ "f")|format(v) }}%
   {%- endif -%}
 {%- endmacro %}
 
 {% block content %}
+<style>
+  .box-watch-chart {
+    width: 220px;
+    min-width: 220px;
+    height: 82px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: #0a0c10;
+    overflow: hidden;
+  }
+  .box-watch-chart img {
+    width: 220px;
+    height: 82px;
+    object-fit: cover;
+    object-position: right center;
+    display: block;
+  }
+  .box-state {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+  }
+  .box-state .sub {
+    color: var(--text-3);
+    font-family: var(--font-mono);
+    font-size: 10px;
+  }
+  .box-position-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+  }
+  .box-position-pill .track {
+    width: 58px;
+    height: 5px;
+    background: var(--bg-3);
+    border-radius: 999px;
+    position: relative;
+    overflow: hidden;
+  }
+  .box-position-pill .marker {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 2px;
+    background: var(--accent);
+    border-radius: 2px;
+  }
+  @media (max-width: 768px) {
+    .box-watch-chart,
+    .box-watch-chart img {
+      width: 180px;
+      min-width: 180px;
+      height: 70px;
+    }
+  }
+</style>
+
 <div class="page-head">
-  <h1 class="page-title">{{ title or 'boxウォッチリスト' }}<small>{{ subtitle or 'BOX WATCHLIST' }} · {{ rows|length }}件</small></h1>
+  <h1 class="page-title">{{ title or 'boxウォッチリスト' }}<small>{{ subtitle or 'BOX WATCHLIST' }} / {{ rows|length }}件</small></h1>
   <div class="page-actions">
-    <a class="btn primary sm" href="/lab/box/trade-assist">購入候補へ</a>
+    <a class="btn primary sm" href="/lab/box/trade-assist">トレード補助へ</a>
     <a class="btn sm" href="/lab/box/signals">boxシグナル</a>
   </div>
 </div>
@@ -20,7 +81,7 @@
 {% if not schema_ok %}
 <div class="panel" style="border-color:var(--up);margin-bottom:12px">
   <div style="padding:12px 14px;color:var(--up);font-size:12px;line-height:1.6">
-    box_watchlist が未適用です。<code style="font-family:var(--font-mono);color:var(--text-2)">db/box_lab.sql</code> をSupabase SQL Editorで再実行してください。
+    box_watchlist / box_signals が未適用の可能性があります。<code style="font-family:var(--font-mono);color:var(--text-2)">db/box_lab.sql</code> をSupabase SQL Editorで再実行してください。
     {% if schema_error %}<div class="muted" style="margin-top:4px">{{ schema_error }}</div>{% endif %}
   </div>
 </div>
@@ -28,28 +89,55 @@
 
 <div class="panel">
   <div class="panel-head">
-    <div class="panel-title">box監視銘柄<span class="tag">WATCHING</span></div>
-    <div class="muted" style="font-size:10.5px;font-family:var(--font-mono)">押し目待ちの母集団</div>
+    <div class="panel-title">box監視リスト <span class="tag">WATCHING</span></div>
+    <div class="muted" style="font-size:10.5px;font-family:var(--font-mono)">大型・高流動性・ボックス形成銘柄の押し目待ち母集団</div>
   </div>
   <div class="table-wrap">
     <table class="tbl">
       <thead>
         <tr>
-          <th>コード</th><th>銘柄</th><th>状態</th>
-          <th class="right">score</th><th class="right">終値</th>
-          <th class="center">下限距離</th><th class="right">box幅</th>
-          <th class="right">下限反発</th><th class="right">RSI</th>
+          <th>コード</th>
+          <th>銘柄</th>
+          <th>状態</th>
+          <th>チャート</th>
+          <th class="right">score</th>
+          <th class="right">終値</th>
+          <th class="center">下限距離</th>
+          <th class="right">box幅</th>
+          <th class="right">下限反発</th>
+          <th class="right">RSI</th>
           <th class="right">信用倍率</th>
-          <th class="right">ATR</th><th class="right">売買代金</th>
-          <th>セクター</th><th>理由</th><th>基準日</th>
+          <th class="right">ATR</th>
+          <th class="right">売買代金</th>
+          <th>セクター</th>
+          <th>理由</th>
+          <th>基準日</th>
         </tr>
       </thead>
       <tbody>
         {% for r in rows %}
-        <tr>
+        {% set pos = r.box_position_pct %}
+        {% set pos_left = 0 if pos is none else ([100, [0, pos]|max]|min) %}
+        <tr class="{% if r.signal_entry_status == 'entry_pending' %}row-accent{% endif %}">
           <td class="code">{{ r.code }}</td>
-          <td class="name">{{ r.name or '—' }}</td>
-          <td><span class="badge watching">{{ r.status or 'watching' }}</span></td>
+          <td class="name">{{ r.name or '-' }}</td>
+          <td>
+            <div class="box-state">
+              {% if r.signal_entry_status == 'entry_pending' %}
+                <span class="badge signal">シグナル発生中</span>
+                <span class="sub">押し目待ち</span>
+              {% elif r.signal_entry_status == 'entered' %}
+                <span class="badge notified">仮想購入済み</span>
+              {% else %}
+                <span class="badge watching">監視中</span>
+              {% endif %}
+            </div>
+          </td>
+          <td>
+            <a class="box-watch-chart" href="/web/trade-assist/chart/{{ r.code }}.svg" target="_blank" rel="noopener" title="{{ r.code }} chart">
+              <img src="/web/trade-assist/chart/{{ r.code }}.svg" alt="{{ r.code }} chart" loading="lazy">
+            </a>
+          </td>
           <td class="right num">
             {% if r.watch_score is not none -%}
               {%- set cls = 'high' if r.watch_score >= 80 else ('mid' if r.watch_score >= 65 else 'low') -%}
@@ -57,36 +145,34 @@
                 <div class="track"><div class="fill" style="width:{{ r.watch_score }}%"></div></div>
                 <span class="num">{{ "%.0f"|format(r.watch_score) }}</span>
               </div>
-            {%- else %}<span class="muted">—</span>{% endif %}
+            {%- else %}<span class="muted">-</span>{% endif %}
           </td>
-          <td class="right num">{{ "{:,.0f}".format(r.close) if r.close is not none else '—' }}</td>
+          <td class="right num">{{ "{:,.0f}".format(r.close) if r.close is not none else '-' }}</td>
           <td class="center">
             {% if r.box_position_pct is not none %}
-              <div style="display:inline-flex;align-items:center;gap:6px;font-family:var(--font-mono);font-size:11px">
-                <div style="width:54px;height:4px;background:var(--bg-3);border-radius:2px;position:relative;overflow:hidden">
-                  <div style="position:absolute;top:0;bottom:0;width:2px;background:var(--accent);left:{{ [[r.box_position_pct, 100]|min, 0]|max }}%"></div>
-                </div>
+              <div class="box-position-pill">
+                <div class="track"><div class="marker" style="left:{{ pos_left }}%"></div></div>
                 <span>{{ "%.0f"|format(r.box_position_pct) }}%</span>
               </div>
-            {% else %}<span class="muted">—</span>{% endif %}
+            {% else %}<span class="muted">-</span>{% endif %}
           </td>
           <td class="right num">{{ pct(r.box_width_pct) }}</td>
           <td class="right num">
-            {{ r.bounce_count if r.bounce_count is not none else '—' }}{% if r.bounce_count is not none %}回{% endif %}
-            {% if r.bounce_count is not none and r.bounce_count >= 3 %}<span class="badge notified" style="margin-left:4px">下限意識強め</span>{% endif %}
+            {{ r.bounce_count if r.bounce_count is not none else '-' }}{% if r.bounce_count is not none %}回{% endif %}
+            {% if r.bounce_count is not none and r.bounce_count >= 3 %}<span class="badge notified" style="margin-left:4px">下限意識</span>{% endif %}
           </td>
-          <td class="right num">{{ "%.0f"|format(r.rsi14) if r.rsi14 is not none else '—' }}</td>
+          <td class="right num">{{ "%.0f"|format(r.rsi14) if r.rsi14 is not none else '-' }}</td>
           <td class="right num {% if r.margin_ratio is not none and r.margin_ratio > 30 %}warn-text{% endif %}">
-            {{ "%.1f"|format(r.margin_ratio) ~ '倍' if r.margin_ratio is not none else '—' }}
+            {{ "%.1f"|format(r.margin_ratio) ~ '倍' if r.margin_ratio is not none else '-' }}
           </td>
           <td class="right num">{{ pct(r.atr_pct) }}</td>
-          <td class="right num">{{ "{:,.1f}".format((r.turnover_value or 0) / 100000000) if r.turnover_value is not none else '—' }}億</td>
-          <td class="muted">{{ r.sector or '—' }}</td>
-          <td class="muted">{{ r.watch_reason or '—' }}{% if r.warnings %}<br><span style="color:var(--warn)">警戒: {{ r.warnings }}</span>{% endif %}</td>
+          <td class="right num">{{ "{:,.1f}".format((r.turnover_value or 0) / 100000000) if r.turnover_value is not none else '-' }}億</td>
+          <td class="muted">{{ r.sector or '-' }}</td>
+          <td class="muted">{{ r.watch_reason or '-' }}{% if r.warnings %}<br><span style="color:var(--warn)">警告: {{ r.warnings }}</span>{% endif %}</td>
           <td class="muted num">{{ r.trade_date }}</td>
         </tr>
         {% else %}
-        <tr><td colspan="15" class="center muted" style="padding:28px">boxウォッチリストはまだありません</td></tr>
+        <tr><td colspan="16" class="center muted" style="padding:28px">boxウォッチリストはまだありません</td></tr>
         {% endfor %}
       </tbody>
     </table>

@@ -2220,6 +2220,57 @@ def web_refresh_prices():
     return redirect(request.referrer or url_for("web_dashboard"))
 
 
+@app.route("/lab/box/actions/refresh-prices", methods=["POST"])
+def web_box_refresh_prices():
+    now_utc = datetime.now(timezone.utc).isoformat()
+    try:
+        open_trades = (
+            supabase.table("box_virtual_trades")
+            .select("id,code,buy_price,quantity,status,sell_date,exit_date")
+            .eq("status", "open")
+            .limit(200)
+            .execute()
+            .data or []
+        )
+    except Exception as e:
+        logger.exception("[box_refresh_prices] open trade fetch failed")
+        flash(f"box株価更新失敗: {e}", "danger")
+        return redirect(request.referrer or url_for("web_box_positions"))
+
+    updated = 0
+    errors = 0
+    for trade in open_trades:
+        code = str(trade.get("code") or "").strip()
+        if not code:
+            continue
+        current = _fetch_latest_price(code)
+        if current is None:
+            errors += 1
+            continue
+        try:
+            buy = float(trade.get("buy_price") or 0)
+            qty = int(trade.get("quantity") or 100)
+            pnl = (current - buy) * qty if buy > 0 else None
+            pnl_pct = (current / buy - 1) * 100 if buy > 0 else None
+            supabase.table("box_virtual_trades").update({
+                "current_price": current,
+                "unrealized_pnl": round(pnl, 0) if pnl is not None else None,
+                "unrealized_pnl_pct": round(pnl_pct, 2) if pnl_pct is not None else None,
+                "updated_at": now_utc,
+            }).eq("id", trade["id"]).execute()
+            updated += 1
+        except Exception as e:
+            errors += 1
+            logger.warning("[box_refresh_prices] trade update failed code=%s error=%s", code, e)
+
+    logger.info("[box_refresh_prices] open_trades=%d updated=%d errors=%d", len(open_trades), updated, errors)
+    if errors:
+        flash(f"box株価更新: {updated}件更新（一部失敗 {errors}）", "warning")
+    else:
+        flash(f"box株価更新: {updated}件更新", "success")
+    return redirect(request.referrer or url_for("web_box_positions"))
+
+
 @app.route("/web/watchlist")
 def web_watchlist():
     status_filter = request.args.get("status", "all")
@@ -2981,13 +3032,37 @@ def web_box_watchlist():
         "box_watchlist",
         lambda q: q.order("trade_date", desc=True).order("watch_score", desc=True).limit(300),
     )
+    signal_rows, signal_ok, signal_error = _box_fetch_rows(
+        "box_signals",
+        lambda q: q.in_("entry_status", ["entry_pending", "entered"]).order("trade_date", desc=True).limit(500),
+    )
+    signal_by_date_code = {
+        (str(r.get("trade_date")), str(r.get("code"))): r
+        for r in signal_rows
+        if r.get("trade_date") and r.get("code")
+    }
+    latest_signal_by_code = {}
+    for sig in signal_rows:
+        code = str(sig.get("code") or "")
+        if code and code not in latest_signal_by_code:
+            latest_signal_by_code[code] = sig
+    for row in rows:
+        key = (str(row.get("trade_date")), str(row.get("code")))
+        sig = signal_by_date_code.get(key) or latest_signal_by_code.get(str(row.get("code") or ""))
+        if sig:
+            row["signal_entry_status"] = sig.get("entry_status")
+            row["signal_box_score"] = sig.get("box_score")
+            row["signal_trade_date"] = sig.get("trade_date")
+            row["signal_id"] = sig.get("id")
+    schema_ok = ok and signal_ok
+    schema_error = error or signal_error
     return render_template(
         "web/box_watchlist.html",
         rows=rows,
         title="boxウォッチリスト",
         subtitle="6か月ボックス監視リスト",
-        schema_ok=ok,
-        schema_error=error,
+        schema_ok=schema_ok,
+        schema_error=schema_error,
         market_adjustment=_current_market_adjustment(),
     )
 
