@@ -389,6 +389,9 @@
           <div class="ta-card-id">
             <div class="ta-card-meta">{{ r.code }}{% if r.sector %} / {{ r.sector }}{% endif %}</div>
             <h2 class="ta-card-name">{{ r.name or r.code }}</h2>
+            <div class="ta-card-meta">
+              {{ 'SUPPORT / 支持線反発押し目' if r.strategy_type == 'support_bounce' else 'BOX / box下限押し目' }}
+            </div>
           </div>
           <div class="ta-status {{ 'is-strong' if strong else '' }}">{{ r.entry_status }}</div>
         </div>

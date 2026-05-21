@@ -232,3 +232,44 @@ alter table box_watchlist add column if not exists margin_sell_balance numeric;
 
 alter table box_signals add column if not exists margin_buy_balance numeric;
 alter table box_signals add column if not exists margin_sell_balance numeric;
+alter table box_signals add column if not exists ma75_gap_pct numeric;
+alter table box_signals add column if not exists turnover_value numeric;
+
+-- support_bounce strategy fields. box_pullback と同じUI/テーブルで扱う。
+alter table box_watchlist add column if not exists strategy_type text default 'box_pullback';
+alter table box_watchlist add column if not exists support_line numeric;
+alter table box_watchlist add column if not exists support_zone_low numeric;
+alter table box_watchlist add column if not exists support_zone_high numeric;
+alter table box_watchlist add column if not exists support_touch_count integer;
+alter table box_watchlist add column if not exists support_break_count integer;
+alter table box_watchlist add column if not exists support_distance_pct numeric;
+alter table box_watchlist add column if not exists avg_bounce_return_pct numeric;
+
+alter table box_signals add column if not exists strategy_type text default 'box_pullback';
+alter table box_signals add column if not exists support_line numeric;
+alter table box_signals add column if not exists support_zone_low numeric;
+alter table box_signals add column if not exists support_zone_high numeric;
+alter table box_signals add column if not exists support_touch_count integer;
+alter table box_signals add column if not exists support_break_count integer;
+alter table box_signals add column if not exists support_distance_pct numeric;
+alter table box_signals add column if not exists avg_bounce_return_pct numeric;
+
+alter table box_virtual_trades add column if not exists strategy_type text default 'box_pullback';
+alter table box_virtual_trades add column if not exists support_line numeric;
+alter table box_virtual_trades add column if not exists support_zone_low numeric;
+alter table box_virtual_trades add column if not exists support_zone_high numeric;
+alter table box_virtual_trades add column if not exists support_touch_count integer;
+alter table box_virtual_trades add column if not exists support_break_count integer;
+alter table box_virtual_trades add column if not exists support_distance_pct numeric;
+alter table box_virtual_trades add column if not exists avg_bounce_return_pct numeric;
+
+-- 同一銘柄が box_pullback / support_bounce の両方に該当しても上書きしない。
+alter table box_watchlist drop constraint if exists box_watchlist_trade_date_code_key;
+alter table box_signals drop constraint if exists box_signals_trade_date_code_key;
+create unique index if not exists ux_box_watchlist_date_code_strategy
+  on box_watchlist (trade_date, code, strategy_type);
+create unique index if not exists ux_box_signals_date_code_strategy
+  on box_signals (trade_date, code, strategy_type);
+
+create index if not exists idx_box_watchlist_strategy_score
+  on box_watchlist (strategy_type, watch_score desc, trade_date desc);

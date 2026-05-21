@@ -126,6 +126,9 @@
           <td class="name">{{ r.name or '-' }}</td>
           <td>
             <div class="box-state">
+              <span class="badge {% if r.strategy_type == 'support_bounce' %}notified{% else %}watching{% endif %}">
+                {{ 'SUPPORT' if r.strategy_type == 'support_bounce' else 'BOX' }}
+              </span>
               {% if r.signal_entry_status == 'entry_pending' %}
                 <span class="badge signal">シグナル発生中</span>
                 <span class="sub">押し目待ち</span>

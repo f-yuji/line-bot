@@ -25,11 +25,17 @@ jobs:
         with:
           python-version: '3.11'
       - run: pip install -r requirements.txt
-      - run: python nikkei_alert.py --fetch-financials
+      - run: |
+          python scripts/import_jquants_financials.py
+          python scripts/enrich_box_financials.py
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
-          LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
+          JQUANTS_API_KEY: ${{ secrets.JQUANTS_API_KEY }}
+          JQUANTS_EMAIL: ${{ secrets.JQUANTS_EMAIL }}
+          JQUANTS_PASSWORD: ${{ secrets.JQUANTS_PASSWORD }}
+          ENV: prod
+          SUPABASE_MODE: prod
       - name: Save cron UI log
         if: success()
         run: python scripts/log_cron_run.py --job run-financials --status completed --schedule "08:07 JST Mon-Fri"

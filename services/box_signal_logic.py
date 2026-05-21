@@ -38,6 +38,19 @@ DEFAULTS: dict[str, Any] = {
     "gd_skip_pct": 5.0,
     "max_margin_ratio_hard": 100.0,
     "margin_ratio_warning": 30.0,
+    "support_lookback_days": 120,
+    "support_zone_low_pct": -1.5,
+    "support_zone_high_pct": 2.5,
+    "support_rebound_days": 5,
+    "support_rebound_pct": 3.0,
+    "support_min_touch_count": 3,
+    "support_max_break_count": 1,
+    "support_watch_distance_pct": 12.0,
+    "support_signal_distance_pct": 6.0,
+    "support_watch_rsi_min": 35.0,
+    "support_watch_rsi_max": 70.0,
+    "support_signal_rsi_min": 40.0,
+    "support_signal_rsi_max": 65.0,
 }
 
 
@@ -116,6 +129,129 @@ def _box_metrics(history: list[dict], window: int) -> dict | None:
         "bounce_count": bounce_count,
         "avg_close": mean(closes),
     }
+
+
+def _support_events(rows: list[dict], support_line: float, cfg: dict) -> tuple[list[dict], int]:
+    zone_high = support_line * (1.0 + float(cfg.get("support_zone_high_pct", 2.5)) / 100.0)
+    rebound_days = int(cfg.get("support_rebound_days", 5) or 5)
+    rebound_pct = float(cfg.get("support_rebound_pct", 3.0) or 3.0)
+    events: list[dict] = []
+    break_count = 0
+    last_event_i = -999
+    in_zone_cluster = False
+
+    for i, row in enumerate(rows):
+        low = _to_float(row.get("low"))
+        close = _to_float(row.get("close"))
+        if low is None or close is None:
+            continue
+        if close < support_line * 0.97:
+            break_count += 1
+
+        near_support = low <= zone_high and close >= support_line
+        if not near_support:
+            in_zone_cluster = False
+            continue
+        if in_zone_cluster:
+            continue
+        in_zone_cluster = True
+        if i - last_event_i < rebound_days:
+            continue
+
+        future = rows[i + 1 : i + 1 + rebound_days]
+        future_closes = [_to_float(r.get("close")) for r in future]
+        future_closes = [v for v in future_closes if v is not None]
+        if not future_closes:
+            continue
+        future_max_close = max(future_closes)
+        if future_max_close < support_line * (1.0 + rebound_pct / 100.0):
+            continue
+
+        base = close if close > 0 else support_line
+        events.append(
+            {
+                "date": row.get("trade_date"),
+                "price": low,
+                "rebound_pct": (future_max_close - base) / base * 100.0 if base else None,
+            }
+        )
+        last_event_i = i
+    return events, break_count
+
+
+def _support_candidate_lines(rows: list[dict]) -> list[tuple[str, float]]:
+    lines: list[tuple[str, float]] = []
+    lows = [_to_float(r.get("low")) for r in rows]
+    lows = [v for v in lows if v is not None and v > 0]
+    if lows:
+        sorted_lows = sorted(lows)
+        idx = max(0, min(len(sorted_lows) - 1, int(len(sorted_lows) * 0.15)))
+        lines.append(("major_low_120d", sorted_lows[idx]))
+    ma25 = _to_float(rows[-1].get("ma25")) if rows else None
+    ma75 = _to_float(rows[-1].get("ma75")) if rows else None
+    if ma25 and ma25 > 0:
+        lines.append(("ma25", ma25))
+    if ma75 and ma75 > 0:
+        lines.append(("ma75", ma75))
+    return lines
+
+
+def _support_metrics(history: list[dict], cfg: dict) -> dict | None:
+    rows = [
+        r
+        for r in history
+        if _to_float(r.get("low")) is not None and _to_float(r.get("close")) is not None
+    ]
+    lookback = int(cfg.get("support_lookback_days", 120) or 120)
+    if len(rows) < min(80, lookback):
+        return None
+    rows = rows[-lookback:]
+    close = _to_float(rows[-1].get("close"))
+    ma75 = _to_float(rows[-1].get("ma75"))
+    ma75_past = _to_float(rows[-21].get("ma75")) if len(rows) >= 21 else None
+    if close is None or ma75 is None or close <= ma75:
+        return None
+    if ma75_past is not None and ma75 <= ma75_past:
+        return None
+
+    best: dict | None = None
+    for source, support_line in _support_candidate_lines(rows):
+        if not support_line or support_line <= 0:
+            continue
+        events, break_count = _support_events(rows, support_line, cfg)
+        distance_pct = (close - support_line) / support_line * 100.0
+        avg_bounce = mean([e["rebound_pct"] for e in events if e.get("rebound_pct") is not None]) if events else None
+        recent_high_60d = max(
+            v
+            for v in (_to_float(r.get("high")) for r in rows[-60:])
+            if v is not None
+        )
+        score_key = (
+            len(events) * 10
+            - break_count * 8
+            - max(distance_pct, 0) * 0.7
+            + (5 if source in {"ma25", "ma75"} else 0)
+        )
+        candidate = {
+            "support_source": source,
+            "support_line": support_line,
+            "support_zone_low": support_line * 0.985,
+            "support_zone_high": support_line * 1.025,
+            "support_touch_count": len(events),
+            "support_break_count": break_count,
+            "support_distance_pct": distance_pct,
+            "avg_bounce_return_pct": avg_bounce,
+            "support_points": events[-10:],
+            "recent_high_60d": recent_high_60d,
+            "ma75_slope_positive": ma75_past is None or ma75 > ma75_past,
+            "_score_key": score_key,
+        }
+        if best is None or score_key > best.get("_score_key", -999999):
+            best = candidate
+    if not best:
+        return None
+    best.pop("_score_key", None)
+    return best
 
 
 def _quality_warnings(row: dict, metrics: dict, cfg: dict) -> list[str]:
@@ -289,5 +425,125 @@ def _score(row: dict, metrics: dict, cfg: dict, *, signal: bool) -> tuple[float,
         warnings.append("信用倍率高め")
     else:
         warnings.append("信用倍率過熱")
+
+    return min(score, 100.0), reasons, warnings
+
+
+def _support_watch_rejects(row: dict, metrics: dict, cfg: dict) -> list[str]:
+    reasons: list[str] = []
+    d = _derived(row)
+    close = d["close"]
+    if close is None or close < cfg["min_price"]:
+        reasons.append("support_price_below_min")
+    if d["turnover_value"] is None or d["turnover_value"] < cfg["min_turnover_value"]:
+        reasons.append("support_turnover_below_min")
+    if metrics["support_touch_count"] < cfg["support_min_touch_count"]:
+        reasons.append("support_touch_count_low")
+    if metrics["support_break_count"] > cfg["support_max_break_count"]:
+        reasons.append("support_break_count_high")
+    distance = metrics["support_distance_pct"]
+    if not (0 <= distance <= cfg["support_watch_distance_pct"]):
+        reasons.append("support_distance_too_far")
+    rsi = _to_float(row.get("rsi14"))
+    if rsi is None or rsi < cfg["support_watch_rsi_min"] or rsi >= cfg["support_watch_rsi_max"]:
+        reasons.append("support_rsi_out_of_range")
+    if d["atr_pct"] is not None and d["atr_pct"] > cfg["watch_atr_max_pct"]:
+        reasons.append("support_atr_too_high")
+    if _to_bool(row.get("is_deficit")):
+        reasons.append("support_deficit")
+    equity_ratio = _equity_ratio(row)
+    if equity_ratio is not None and equity_ratio < cfg["min_equity_ratio"]:
+        reasons.append("support_equity_ratio_low")
+    per = _to_float(row.get("per"))
+    if per is not None and (per <= 0 or per > cfg["max_per"]):
+        reasons.append("support_per_outlier")
+    pbr = _to_float(row.get("pbr"))
+    if pbr is not None and (pbr <= 0 or pbr > cfg["max_pbr"]):
+        reasons.append("support_pbr_outlier")
+    margin_ratio = _to_float(row.get("margin_ratio"))
+    if margin_ratio is not None and margin_ratio > cfg["max_margin_ratio_hard"]:
+        reasons.append("support_margin_ratio_too_high")
+    return reasons
+
+
+def _support_signal_rejects(row: dict, metrics: dict, cfg: dict) -> list[str]:
+    reasons = _support_watch_rejects(row, metrics, cfg)
+    distance = metrics["support_distance_pct"]
+    if not (0 <= distance <= cfg["support_signal_distance_pct"]):
+        reasons.append("support_signal_distance_too_far")
+    rsi = _to_float(row.get("rsi14"))
+    if rsi is None or rsi < cfg["support_signal_rsi_min"] or rsi >= cfg["support_signal_rsi_max"]:
+        reasons.append("support_signal_rsi_out_of_range")
+    d = _derived(row)
+    if d["atr_pct"] is not None and d["atr_pct"] > cfg["signal_atr_max_pct"]:
+        reasons.append("support_signal_atr_too_high")
+    return reasons
+
+
+def _support_score(row: dict, metrics: dict, cfg: dict, *, signal: bool) -> tuple[float, list[str], list[str]]:
+    reasons = ["支持線反発", "長期上昇中"]
+    warnings = _quality_warnings(row, {"box_position_pct": 999, "bounce_count": metrics["support_touch_count"]}, cfg)
+    score = 0.0
+    close = _to_float(row.get("close"), 0.0) or 0.0
+    ma75 = _to_float(row.get("ma75"))
+    if ma75 and close > ma75 and metrics.get("ma75_slope_positive"):
+        score += 20
+        reasons.append("MA75上昇")
+
+    touches = int(metrics["support_touch_count"] or 0)
+    if touches >= 5:
+        score += 25
+        reasons.append("支持線反発5回以上")
+    elif touches == 4:
+        score += 20
+        reasons.append("支持線反発4回")
+    elif touches >= 3:
+        score += 15
+        reasons.append("支持線反発3回")
+
+    breaks = int(metrics["support_break_count"] or 0)
+    if breaks == 0:
+        score += 15
+        reasons.append("支持線割れなし")
+    elif breaks == 1:
+        score += 7
+        warnings.append("支持線割れ1回")
+
+    distance = metrics["support_distance_pct"]
+    if 0 <= distance <= 2:
+        score += 20
+        reasons.append("支持線至近")
+    elif 2 < distance <= 4:
+        score += 15
+        reasons.append("支持線近辺")
+    elif 4 < distance <= cfg["support_signal_distance_pct" if signal else "support_watch_distance_pct"]:
+        score += 10
+        reasons.append("支持線圏")
+
+    rsi = _to_float(row.get("rsi14"))
+    if rsi is not None:
+        if 45 <= rsi <= 58:
+            score += 10
+            reasons.append("RSI適温")
+        elif cfg["support_signal_rsi_min"] <= rsi < cfg["support_signal_rsi_max"]:
+            score += 6
+        elif cfg["support_watch_rsi_min"] <= rsi < cfg["support_watch_rsi_max"]:
+            score += 3
+
+    turnover = _derived(row)["turnover_value"]
+    if turnover and turnover >= cfg["min_turnover_value"]:
+        score += 5
+
+    margin_ratio = _to_float(row.get("margin_ratio"))
+    if margin_ratio is None:
+        score += 2
+        warnings.append("信用倍率未取得")
+    elif 0 < margin_ratio <= 5:
+        score += 5
+        reasons.append("信用倍率良好")
+    elif margin_ratio <= cfg["margin_ratio_warning"]:
+        score += 3
+    else:
+        warnings.append("信用倍率高め")
 
     return min(score, 100.0), reasons, warnings

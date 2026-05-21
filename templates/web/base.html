@@ -501,7 +501,10 @@ function openBoxDetail(r) {
   const score = r.box_score ?? r.watch_score ?? r.signal_box_score;
   const position = r.box_position_pct;
   const margin = r.margin_ratio;
+  const strategyType = r.strategy_type || 'box_pullback';
+  const strategyLabel = strategyType === 'support_bounce' ? 'SUPPORT / 支持線反発押し目' : 'BOX / box下限押し目';
   document.getElementById('box-m-kpi').innerHTML = _boxKv([
+    ['種類', strategyLabel],
     ['boxスコア', score == null ? '—' : Math.round(Number(score))],
     ['下限距離', _boxPct(position, 1), position != null && Number(position) <= 20 ? 'up-text' : ''],
     ['box幅', _boxPct(r.box_width_pct, 1)],
@@ -523,6 +526,12 @@ function openBoxDetail(r) {
     ['利確目安', _boxYen(r.take_profit_price ?? boxHigh), 'up-text'],
     ['box下限', _boxYen(boxLow)],
     ['box上限', _boxYen(boxHigh)],
+    ['支持線', _boxYen(r.support_line)],
+    ['支持帯', r.support_zone_low == null && r.support_zone_high == null ? '—' : `${_boxYen(r.support_zone_low)} - ${_boxYen(r.support_zone_high)}`],
+    ['支持線距離', _boxPct(r.support_distance_pct, 1)],
+    ['支持線反発', r.support_touch_count == null ? '—' : `${r.support_touch_count}回`],
+    ['支持線割れ', r.support_break_count == null ? '—' : `${r.support_break_count}回`],
+    ['平均反発率', _boxPct(r.avg_bounce_return_pct, 1)],
     ['信用倍率', margin == null ? '—' : `${_boxNum(margin, 1, '倍')}${r.margin_date ? ' / ' + r.margin_date : ''}`],
     ['RSI', _boxNum(r.rsi14, 0, '')],
     ['ATR', _boxPct(r.atr_pct, 1)],
@@ -556,7 +565,10 @@ function openBoxDetail(r) {
       'current_price', 'close', 'box_position_pct', 'bounce_count',
       'rsi14', 'margin_ratio', 'box_score', 'watch_score', 'signal_box_score',
       'stop_loss_price', 'take_profit_price', 'atr_pct',
-      'ma5_gap_pct', 'ma25_gap_pct', 'ma75_gap_pct'
+      'ma5_gap_pct', 'ma25_gap_pct', 'ma75_gap_pct',
+      'strategy_type', 'support_line', 'support_zone_low', 'support_zone_high',
+      'support_touch_count', 'support_break_count', 'support_distance_pct',
+      'avg_bounce_return_pct'
     ].forEach(function(key) {
       if (r[key] !== null && r[key] !== undefined && r[key] !== '') params.set(key, r[key]);
     });

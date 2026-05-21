@@ -139,6 +139,14 @@ def render_chart(
     ma5_gap_pct: float | None = None,
     ma25_gap_pct: float | None = None,
     ma75_gap_pct: float | None = None,
+    strategy_type: str | None = None,
+    support_line: float | None = None,
+    support_zone_low: float | None = None,
+    support_zone_high: float | None = None,
+    support_touch_count: int | None = None,
+    support_break_count: int | None = None,
+    support_distance_pct: float | None = None,
+    avg_bounce_return_pct: float | None = None,
     width: int = 720,
     height: int = 260,
 ) -> str:
@@ -156,7 +164,18 @@ def render_chart(
 
     extra_lines = [
         v
-        for v in (box_high, box_low, entry_min, entry_max, current_price, stop_loss_price, take_profit_price)
+        for v in (
+            box_high,
+            box_low,
+            entry_min,
+            entry_max,
+            current_price,
+            stop_loss_price,
+            take_profit_price,
+            support_line,
+            support_zone_low,
+            support_zone_high,
+        )
         if v is not None
     ]
     all_y = list(close) + list(ma5) + list(ma25) + list(ma75) + [float(v) for v in extra_lines]
@@ -225,6 +244,26 @@ def render_chart(
             f'stroke="{ENTRY_EDGE}" stroke-width="1"/>'
         )
 
+    if support_line is not None:
+        if support_zone_low is not None and support_zone_high is not None:
+            y_sh, y_sl = y_of(support_zone_high), y_of(support_zone_low)
+            parts.append(
+                f'<rect x="{pad_l}" y="{y_sh:.1f}" width="{pw}" height="{max(1, y_sl-y_sh):.1f}" '
+                f'fill="rgba(94,230,168,0.07)" stroke="rgba(94,230,168,0.16)"/>'
+            )
+        _line_with_label(
+            parts,
+            y=y_of(support_line),
+            width=width,
+            pad_l=pad_l,
+            pad_r=pad_r,
+            color=ENTRY_EDGE,
+            text_color=ENTRY_TEXT,
+            label=f"支持 {support_line:,.0f}",
+            y_shift=-8,
+            dash="3 3",
+        )
+
     for arr, (color, sw, op) in ((ma75, MA75), (ma25, MA25), (ma5, MA5)):
         parts.append(
             f'<polyline points="{_poly(arr, x_of, y_of)}" fill="none" stroke="{color}" '
@@ -244,10 +283,14 @@ def render_chart(
             continue
         x = x_of(date_to_index[date])
         y = y_of(price)
-        parts.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="4" fill="{ENTRY_TEXT}" stroke="{BG}" stroke-width="1.4"/>')
+        label = f'{idx}'
+        rebound = _as_float(point.get("rebound_pct"))
+        if rebound is not None:
+            label = f'{idx} +{rebound:.1f}%'
+        parts.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="3.2" fill="{ENTRY_TEXT}" stroke="{BG}" stroke-width="1.4"/>')
         parts.append(
-            f'<text x="{x:.1f}" y="{y-7:.1f}" fill="{ENTRY_TEXT}" font-family="ui-monospace, monospace" '
-            f'font-size="9" text-anchor="middle">{idx}</text>'
+            f'<text x="{x+5:.1f}" y="{y-4:.1f}" fill="{ENTRY_TEXT}" font-family="ui-monospace, monospace" '
+            f'font-size="9" text-anchor="start">{_esc(label)}</text>'
         )
 
     y_cur = y_of(current_price)
@@ -282,7 +325,20 @@ def render_chart(
     )
     parts.append(f'<text x="{pad_l+64}" y="16" fill="{TEXT_SUB}" font-family="system-ui, sans-serif" font-size="11">{_esc(name)}</text>')
 
-    _info_box(parts, width, box_score, box_position_pct, bounce_count, rsi14, margin_ratio, atr_pct, ma25_gap_pct)
+    _info_box(
+        parts,
+        width,
+        box_score,
+        support_distance_pct if strategy_type == "support_bounce" else box_position_pct,
+        support_touch_count if strategy_type == "support_bounce" else bounce_count,
+        rsi14,
+        margin_ratio,
+        atr_pct,
+        ma25_gap_pct,
+        strategy_type=strategy_type,
+        support_break_count=support_break_count,
+        avg_bounce_return_pct=avg_bounce_return_pct,
+    )
 
     parts.append(f'<text x="{pad_l}" y="{height-10}" fill="{AXIS_TEXT}" font-family="ui-monospace, monospace" font-size="10">{_esc(trade_date[0])}</text>')
     parts.append(
@@ -314,9 +370,16 @@ def _info_box(
     margin_ratio: float | None,
     atr_pct: float | None,
     ma25_gap_pct: float | None,
+    *,
+    strategy_type: str | None = None,
+    support_break_count: int | None = None,
+    avg_bounce_return_pct: float | None = None,
 ) -> None:
-    x, y, w, h = width - 154, 30, 132, 110
-    parts.append(f'<rect x="{x}" y="{y}" width="{w}" height="{h}" rx="7" fill="rgba(10,12,16,0.78)" stroke="{BORDER}"/>')
+    x, y, w, h = 62, 30, 154, 118
+    parts.append(
+        f'<rect x="{x}" y="{y}" width="{w}" height="{h}" rx="8" '
+        f'fill="rgba(15,18,24,0.78)" stroke="rgba(255,255,255,0.06)"/>'
+    )
     rows = [
         ("Score", _fmt(box_score, 0, "")),
         ("下限距離", _fmt(box_position_pct, 0, "%")),

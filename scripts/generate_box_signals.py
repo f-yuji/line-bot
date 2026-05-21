@@ -28,6 +28,10 @@ from services.box_signal_logic import (
     _quality_warnings,
     _score,
     _signal_rejects,
+    _support_metrics,
+    _support_score,
+    _support_signal_rejects,
+    _support_watch_rejects,
     _to_bool,
     _to_float,
     _watch_rejects,
@@ -187,7 +191,7 @@ def _load_snapshots(sb, trade_date: str, lookback_days: int) -> tuple[list[dict]
         hist_rows = _fetch_all(
             lambda chunk=chunk: (
                 sb.table("stock_feature_snapshots")
-                .select("trade_date,code,high,low,close")
+                .select("trade_date,code,high,low,close,ma25,ma75")
                 .in_("code", chunk)
                 .gte("trade_date", start_date)
                 .lte("trade_date", trade_date)
@@ -227,6 +231,35 @@ def _load_margin_data(sb, trade_date: str, lookback_days: int = 60) -> dict[str,
                 "margin_sell_balance": row.get("short_margin_outstanding"),
             }
     return by_code
+
+
+def _load_financial_cache(sb) -> dict[str, dict]:
+    try:
+        rows = _fetch_all(lambda: sb.table("nikkei_financials").select("*"))
+        return {str(row.get("code")): row for row in rows if row.get("code")}
+    except Exception as e:
+        logger.warning("[box_lab] financial cache unavailable: %s", e)
+        return {}
+
+
+def _apply_financial_cache(row: dict, fin: dict | None) -> None:
+    if not fin:
+        return
+    aliases = {
+        "per": ("per", "PER"),
+        "pbr": ("pbr", "PBR"),
+        "equity_ratio": ("equity_ratio", "equity_ratio_pct", "self_capital_ratio"),
+        "roe": ("roe", "ROE"),
+        "dividend_yield_pct": ("dividend_yield_pct", "dividend_yield", "div_yield_pct"),
+        "is_deficit": ("is_deficit",),
+    }
+    for target, keys in aliases.items():
+        if row.get(target) not in (None, ""):
+            continue
+        for key in keys:
+            if fin.get(key) not in (None, ""):
+                row[target] = fin.get(key)
+                break
 
 
 def _base_payload(row: dict, metrics: dict, cfg: dict, short_regime: str | None, long_regime: str | None) -> dict:
@@ -270,6 +303,63 @@ def _base_payload(row: dict, metrics: dict, cfg: dict, short_regime: str | None,
             "ideal_box_width_pct": cfg["ideal_box_width_pct"],
             "box_width_min_pct": cfg["watch_box_width_min_pct"],
             "box_width_max_pct": cfg["watch_box_width_max_pct"],
+            "market_support_status": None,
+            "nikkei_trend_warning": None,
+            "relative_strength_vs_nikkei": None,
+            "margin_ratio": row.get("margin_ratio"),
+            "margin_date": str(row.get("margin_date")) if row.get("margin_date") else None,
+        },
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def _support_base_payload(row: dict, metrics: dict, cfg: dict, short_regime: str | None, long_regime: str | None) -> dict:
+    d = _derived(row)
+    equity_ratio = _equity_ratio(row)
+    return {
+        "trade_date": row.get("trade_date"),
+        "code": str(row.get("code")),
+        "name": row.get("name"),
+        "sector": row.get("sector"),
+        "strategy_type": "support_bounce",
+        "close": d["close"],
+        "box_high": metrics.get("recent_high_60d"),
+        "box_low": metrics.get("support_line"),
+        "box_width_pct": None,
+        "box_position_pct": metrics.get("support_distance_pct"),
+        "box_days": int(cfg.get("support_lookback_days", 120) or 120),
+        "bounce_count": metrics.get("support_touch_count"),
+        "support_line": metrics.get("support_line"),
+        "support_zone_low": metrics.get("support_zone_low"),
+        "support_zone_high": metrics.get("support_zone_high"),
+        "support_touch_count": metrics.get("support_touch_count"),
+        "support_break_count": metrics.get("support_break_count"),
+        "support_distance_pct": metrics.get("support_distance_pct"),
+        "avg_bounce_return_pct": metrics.get("avg_bounce_return_pct"),
+        "atr_pct": round(d["atr_pct"], 4) if d["atr_pct"] is not None else None,
+        "ma5_gap_pct": row.get("ma5_gap_pct"),
+        "ma25_gap_pct": row.get("ma25_gap_pct"),
+        "ma75_gap_pct": row.get("ma75_gap_pct"),
+        "rsi14": row.get("rsi14"),
+        "volume_ratio_20d": row.get("volume_ratio_20d"),
+        "turnover_value": d["turnover_value"],
+        "per": row.get("per"),
+        "pbr": row.get("pbr"),
+        "equity_ratio": equity_ratio,
+        "margin_ratio": row.get("margin_ratio"),
+        "margin_date": str(row.get("margin_date")) if row.get("margin_date") else None,
+        "margin_buy_balance": row.get("margin_buy_balance"),
+        "margin_sell_balance": row.get("margin_sell_balance"),
+        "raw": {
+            "snapshot_id": row.get("id"),
+            "short_market_regime": short_regime,
+            "long_market_regime": long_regime,
+            "ma75": row.get("ma75"),
+            "dividend_yield_pct": row.get("dividend_yield_pct"),
+            "roe": row.get("roe"),
+            "filter": "large_cap_support_bounce_v1",
+            "support_source": metrics.get("support_source"),
+            "support_points": metrics.get("support_points"),
             "market_support_status": None,
             "nikkei_trend_warning": None,
             "relative_strength_vs_nikkei": None,
@@ -326,6 +416,57 @@ def _signal_payload(row: dict, metrics: dict, cfg: dict, short_regime: str | Non
     return payload
 
 
+def _support_watch_payload(row: dict, metrics: dict, cfg: dict, short_regime: str | None, long_regime: str | None) -> dict:
+    score, reasons, warnings = _support_score(row, metrics, cfg, signal=False)
+    payload = _support_base_payload(row, metrics, cfg, short_regime, long_regime)
+    payload.update(
+        {
+            "status": "watching",
+            "signal_status": "watching",
+            "watch_score": round(score, 2),
+            "watch_reason": " / ".join(reasons),
+            "warnings": " / ".join(warnings) if warnings else None,
+        }
+    )
+    return payload
+
+
+def _support_signal_payload(row: dict, metrics: dict, cfg: dict, short_regime: str | None, long_regime: str | None) -> dict:
+    score, reasons, warnings = _support_score(row, metrics, cfg, signal=True)
+    support_line = float(metrics["support_line"])
+    recent_high = float(metrics.get("recent_high_60d") or support_line * 1.06)
+    take_profit = max(recent_high, support_line * 1.04)
+    payload = _support_base_payload(row, metrics, cfg, short_regime, long_regime)
+    payload.update(
+        {
+            "status": "signal_generated",
+            "entry_status": "entry_pending",
+            "entry_pending_at": datetime.now(timezone.utc).isoformat(),
+            "box_upper": take_profit,
+            "box_lower": support_line,
+            "box_score": round(score, 2),
+            "entry_target_price": round(support_line * 1.01, 4),
+            "entry_price_min": round(float(metrics["support_zone_low"]), 4),
+            "entry_price_max": round(float(metrics["support_zone_high"]), 4),
+            "stop_loss_price": round(support_line * 0.97, 4),
+            "take_profit_price": round(take_profit, 4),
+            "entry_skip_gu_pct": cfg["gu_skip_pct"],
+            "entry_skip_gd_pct": cfg["gd_skip_pct"],
+            "entry_reason": " / ".join(reasons),
+            "signal_reason": (
+                f"支持線反発{metrics.get('support_touch_count')}回 / "
+                f"支持線距離{float(metrics.get('support_distance_pct') or 0):.1f}% / "
+                f"支持線割れ{metrics.get('support_break_count')}回"
+            ),
+            "entry_mode": cfg["entry_mode"],
+            "short_market_regime": short_regime,
+            "long_market_regime": long_regime,
+            "warnings": " / ".join(warnings) if warnings else None,
+        }
+    )
+    return payload
+
+
 def _upsert_optional(sb, table: str, rows: list[dict], dry_run: bool, on_conflict: str = "trade_date,code") -> None:
     if dry_run or not rows:
         return
@@ -361,6 +502,7 @@ def run(args: argparse.Namespace) -> None:
     short_regime, long_regime = _load_market_context(sb)
     latest_rows, history_by_code = _load_snapshots(sb, trade_date, int(args.lookback_days))
     margin_by_code = _load_margin_data(sb, trade_date)
+    financial_by_code = _load_financial_cache(sb)
     for row in latest_rows:
         code = str(row.get("code") or "")
         m = margin_by_code.get(code, {})
@@ -368,6 +510,7 @@ def run(args: argparse.Namespace) -> None:
         row["margin_date"] = m.get("margin_date")
         row["margin_buy_balance"] = m.get("margin_buy_balance")
         row["margin_sell_balance"] = m.get("margin_sell_balance")
+        _apply_financial_cache(row, financial_by_code.get(code))
     margin_missing = sum(1 for r in latest_rows if r.get("margin_ratio") is None)
     margin_high = sum(1 for r in latest_rows if (_to_float(r.get("margin_ratio")) or 0) > cfg["margin_ratio_warning"])
     margin_overheated = sum(1 for r in latest_rows if (_to_float(r.get("margin_ratio")) or 0) > 50)
@@ -393,27 +536,54 @@ def run(args: argparse.Namespace) -> None:
     signal_rows: list[dict] = []
     watch_rejects: dict[str, int] = defaultdict(int)
     signal_rejects: dict[str, int] = defaultdict(int)
+    watch_by_strategy: dict[str, int] = defaultdict(int)
+    signal_by_strategy: dict[str, int] = defaultdict(int)
 
     for row in latest_rows:
         code = str(row.get("code") or "")
-        metrics = _box_metrics(history_by_code.get(code, []), window=int(args.window))
+        history = history_by_code.get(code, [])
+
+        metrics = _box_metrics(history, window=int(args.window))
         if not metrics:
-            watch_rejects["insufficient_box_history"] += 1
+            watch_rejects["box_pullback:insufficient_box_history"] += 1
+        else:
+            watch_reasons = _watch_rejects(row, metrics, cfg)
+            if watch_reasons:
+                for reason in watch_reasons:
+                    watch_rejects[f"box_pullback:{reason}"] += 1
+            else:
+                watch_rows.append(_watch_payload(row, metrics, cfg, short_regime, long_regime))
+                watch_by_strategy["box_pullback"] += 1
+
+                if not signals_paused:
+                    sig_reasons = _signal_rejects(row, metrics, cfg)
+                    if sig_reasons:
+                        for reason in sig_reasons:
+                            signal_rejects[f"box_pullback:{reason}"] += 1
+                    else:
+                        signal_rows.append(_signal_payload(row, metrics, cfg, short_regime, long_regime))
+                        signal_by_strategy["box_pullback"] += 1
+
+        support = _support_metrics(history, cfg)
+        if not support:
+            watch_rejects["support_bounce:support_no_valid_line"] += 1
             continue
-        watch_reasons = _watch_rejects(row, metrics, cfg)
-        if watch_reasons:
-            for reason in watch_reasons:
-                watch_rejects[reason] += 1
+        support_watch_reasons = _support_watch_rejects(row, support, cfg)
+        if support_watch_reasons:
+            for reason in support_watch_reasons:
+                watch_rejects[f"support_bounce:{reason}"] += 1
             continue
-        watch_rows.append(_watch_payload(row, metrics, cfg, short_regime, long_regime))
+        watch_rows.append(_support_watch_payload(row, support, cfg, short_regime, long_regime))
+        watch_by_strategy["support_bounce"] += 1
 
         if not signals_paused:
-            sig_reasons = _signal_rejects(row, metrics, cfg)
-            if sig_reasons:
-                for reason in sig_reasons:
-                    signal_rejects[reason] += 1
+            support_signal_reasons = _support_signal_rejects(row, support, cfg)
+            if support_signal_reasons:
+                for reason in support_signal_reasons:
+                    signal_rejects[f"support_bounce:{reason}"] += 1
                 continue
-            signal_rows.append(_signal_payload(row, metrics, cfg, short_regime, long_regime))
+            signal_rows.append(_support_signal_payload(row, support, cfg, short_regime, long_regime))
+            signal_by_strategy["support_bounce"] += 1
 
     watch_rows.sort(key=lambda r: (r.get("watch_score") or 0, -(r.get("box_position_pct") or 999)), reverse=True)
     signal_rows.sort(key=lambda r: (r.get("box_score") or 0, -(r.get("box_position_pct") or 999)), reverse=True)
@@ -422,10 +592,17 @@ def run(args: argparse.Namespace) -> None:
     if args.signal_limit:
         signal_rows = signal_rows[: int(args.signal_limit)]
 
-    logger.info("[box_watchlist] candidates=%d rejects=%s", len(watch_rows), dict(sorted(watch_rejects.items())))
+    logger.info(
+        "[box_watchlist] box_pullback=%d support_bounce=%d total=%d rejects=%s",
+        watch_by_strategy.get("box_pullback", 0),
+        watch_by_strategy.get("support_bounce", 0),
+        len(watch_rows),
+        dict(sorted(watch_rejects.items())),
+    )
     for row in watch_rows[:20]:
         logger.info(
-            "[box_watchlist] code=%s name=%s score=%.1f pos=%.1f width=%.1f bounce=%s",
+            "[box_watchlist] type=%s code=%s name=%s score=%.1f pos=%.1f width=%.1f bounce=%s",
+            row.get("strategy_type"),
             row.get("code"),
             row.get("name"),
             row.get("watch_score") or 0,
@@ -434,7 +611,13 @@ def run(args: argparse.Namespace) -> None:
             row.get("bounce_count") or 0,
         )
 
-    logger.info("[box_signals] entry_pending=%d rejects=%s", len(signal_rows), dict(sorted(signal_rejects.items())))
+    logger.info(
+        "[box_signals] box_pullback=%d support_bounce=%d total=%d rejects=%s",
+        signal_by_strategy.get("box_pullback", 0),
+        signal_by_strategy.get("support_bounce", 0),
+        len(signal_rows),
+        dict(sorted(signal_rejects.items())),
+    )
     margin_too_high_count = sum(1 for r in watch_rejects.items() if r[0] == "margin_ratio_too_high" for _ in range(r[1]))
     if margin_too_high_count:
         logger.info("[box_lab] reject margin_ratio_too_high=%d", watch_rejects.get("margin_ratio_too_high", 0))
@@ -442,7 +625,8 @@ def run(args: argparse.Namespace) -> None:
         mr = row.get("margin_ratio")
         margin_str = "%.1f" % mr if mr is not None else "—"
         logger.info(
-            "[box_signals] code=%s name=%s score=%.1f pos=%.1f entry=%.0f-%.0f margin=%s",
+            "[box_signals] type=%s code=%s name=%s score=%.1f pos=%.1f entry=%.0f-%.0f margin=%s",
+            row.get("strategy_type"),
             row.get("code"),
             row.get("name"),
             row.get("box_score") or 0,
@@ -452,8 +636,8 @@ def run(args: argparse.Namespace) -> None:
             margin_str,
         )
 
-    _upsert_optional(sb, "box_watchlist", watch_rows, bool(args.dry_run))
-    _upsert_optional(sb, "box_signals", signal_rows, bool(args.dry_run))
+    _upsert_optional(sb, "box_watchlist", watch_rows, bool(args.dry_run), on_conflict="trade_date,code,strategy_type")
+    _upsert_optional(sb, "box_signals", signal_rows, bool(args.dry_run), on_conflict="trade_date,code,strategy_type")
     if not args.dry_run:
         logger.info("[box_lab] saved watchlist=%d signals=%d", len(watch_rows), len(signal_rows))
 

@@ -56,6 +56,7 @@
         <tr>
           <th>コード</th>
           <th>銘柄</th>
+          <th>種類</th>
           <th>買付日</th>
           <th class="right">買値</th>
           <th class="right">現在値</th>
@@ -72,6 +73,7 @@
         <tr>
           <td class="code">{{ t.code }}</td>
           <td class="name">{{ t.name or '-' }}</td>
+          <td><span class="badge {% if t.strategy_type == 'support_bounce' %}notified{% else %}watching{% endif %}">{{ 'SUPPORT' if t.strategy_type == 'support_bounce' else 'BOX' }}</span></td>
           <td class="muted num">{{ (t.buy_date or '')[:10] }}</td>
           <td class="right num">{{ "{:,.0f}".format(t.buy_price) if t.buy_price is not none else '-' }}</td>
           <td class="right num">{{ "{:,.0f}".format(t.current_price) if t.current_price is not none else '-' }}</td>
@@ -85,7 +87,7 @@
           <td class="right num">{{ t.holding_days or '-' }}</td>
         </tr>
         {% else %}
-        <tr><td colspan="11" class="center muted" style="padding:28px">box仮想保有はありません</td></tr>
+        <tr><td colspan="12" class="center muted" style="padding:28px">box仮想保有はありません</td></tr>
         {% endfor %}
       </tbody>
     </table>
@@ -100,6 +102,7 @@
         <tr>
           <th>コード</th>
           <th>銘柄</th>
+          <th>種類</th>
           <th>買付日</th>
           <th>売却日</th>
           <th class="right">買値</th>
@@ -115,6 +118,7 @@
         <tr>
           <td class="code">{{ t.code }}</td>
           <td class="name">{{ t.name or '-' }}</td>
+          <td><span class="badge {% if t.strategy_type == 'support_bounce' %}notified{% else %}watching{% endif %}">{{ 'SUPPORT' if t.strategy_type == 'support_bounce' else 'BOX' }}</span></td>
           <td class="muted num">{{ (t.buy_date or '')[:10] }}</td>
           <td class="muted num">{{ (t.sell_date or t.exit_date or '')[:10] }}</td>
           <td class="right num">{{ "{:,.0f}".format(t.buy_price) if t.buy_price is not none else '-' }}</td>
@@ -124,7 +128,7 @@
           <td class="muted">{{ t.exit_reason or '-' }}</td>
         </tr>
         {% else %}
-        <tr><td colspan="9" class="center muted" style="padding:28px">決済済みboxトレードはありません</td></tr>
+        <tr><td colspan="10" class="center muted" style="padding:28px">決済済みboxトレードはありません</td></tr>
         {% endfor %}
       </tbody>
     </table>

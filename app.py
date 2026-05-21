@@ -169,6 +169,21 @@ def _current_market_adjustment() -> dict:
     _JST = _tz(_td(hours=9))
     today_jst = datetime.now(_JST).date()
 
+    regime_meta = {
+        "panic_selloff": ("パニック売り", 0.10, 0.0),
+        "panic_rebound": ("パニック反発", 0.10, 0.5),
+        "risk_off": ("弱地合い", 0.05, 1.0),
+        "strong_risk_on": ("強リスクオン", 0.05, 1.0),
+        "risk_on": ("リスクオン", 0.0, 1.0),
+        "normal": ("通常", 0.0, 1.0),
+    }
+
+    def _float_or_none(v):
+        try:
+            return float(v) if v is not None else None
+        except Exception:
+            return None
+
     result: dict = {
         "regime": "normal",
         "label": "通常",
@@ -183,7 +198,48 @@ def _current_market_adjustment() -> dict:
         "trade_date_stale": False,
     }
 
-    # nikkei/topix 実使用値は stock_drop_watchlist から
+    # UIの市場表示は market_regime を正にする。
+    # watchlist は銘柄判定時点のスナップショットなので、最新地合い表示に使うと日付と数値がズレる。
+    try:
+        mr_rows = (
+            supabase.table("market_regime")
+            .select(
+                "trade_date,mode,reason,nikkei_change_pct,topix_change_pct,"
+                "shock_score,created_at,updated_at"
+            )
+            .order("trade_date", desc=True)
+            .limit(1)
+            .execute()
+            .data or []
+        )
+        if mr_rows:
+            ctx = mr_rows[0]
+            regime = ctx.get("mode") or "normal"
+            label, threshold_adjust, size_multiplier = regime_meta.get(regime, (regime, 0.0, 1.0))
+            td_str = ctx.get("trade_date")
+            result.update({
+                "regime": regime,
+                "label": label,
+                "ai_threshold_adjust": threshold_adjust,
+                "entry_size_multiplier": size_multiplier,
+                "reason": ctx.get("reason") or "",
+                "nikkei_pct": _float_or_none(ctx.get("nikkei_change_pct")),
+                "topix_pct": _float_or_none(ctx.get("topix_change_pct")),
+                "nikkei_change_yen": None,
+                "updated_at": ctx.get("updated_at") or ctx.get("created_at"),
+                "trade_date": td_str,
+            })
+            if td_str:
+                try:
+                    delta = (today_jst - _date.fromisoformat(str(td_str))).days
+                    result["trade_date_stale"] = delta >= 2
+                except Exception:
+                    pass
+            return result
+    except Exception as e:
+        logger.warning("market_regime context lookup failed: %s", e)
+
+    # fallback: market_regime が未作成/未取得の場合だけ watchlist の判定時点情報を使う
     try:
         rows = (
             supabase.table("stock_drop_watchlist")
@@ -205,35 +261,13 @@ def _current_market_adjustment() -> dict:
                 "label": ctx.get("market_regime_label") or "通常",
                 "ai_threshold_adjust": float(ctx.get("market_threshold_adjust") or 0),
                 "reason": ctx.get("market_regime_reason") or "",
-                "nikkei_pct": ctx.get("market_nikkei_pct"),
-                "topix_pct": ctx.get("market_topix_pct"),
-                "nikkei_change_yen": ctx.get("market_nikkei_change_yen"),
+                "nikkei_pct": _float_or_none(ctx.get("market_nikkei_pct")),
+                "topix_pct": _float_or_none(ctx.get("market_topix_pct")),
+                "nikkei_change_yen": _float_or_none(ctx.get("market_nikkei_change_yen")),
                 "updated_at": ctx.get("updated_at"),
             })
     except Exception as e:
-        logger.warning("market context from DB failed: %s", e)
-
-    # trade_date は market_regime テーブルから
-    try:
-        mr_rows = (
-            supabase.table("market_regime")
-            .select("trade_date")
-            .order("trade_date", desc=True)
-            .limit(1)
-            .execute()
-            .data or []
-        )
-        if mr_rows:
-            td_str = mr_rows[0].get("trade_date")
-            result["trade_date"] = td_str
-            if td_str:
-                try:
-                    delta = (today_jst - _date.fromisoformat(str(td_str))).days
-                    result["trade_date_stale"] = delta >= 2
-                except Exception:
-                    pass
-    except Exception as e:
-        logger.warning("market_regime trade_date lookup failed: %s", e)
+        logger.warning("market context fallback from watchlist failed: %s", e)
 
     return result
 
@@ -2585,6 +2619,45 @@ def web_trade_assist_chart(code):
     return Response(svg, mimetype="image/svg+xml")
 
 
+def _extract_box_bounce_points(points: list[dict], box_low: float) -> list[dict]:
+    """Pick historical touches that actually rebounded after touching the box lower band.
+
+    This is display-only for the box detail chart. It intentionally looks forward up
+    to 5 sessions, so it must not be reused as a live signal condition.
+    """
+    if not points or box_low is None:
+        return []
+    bounces: list[dict] = []
+    last_index = -999
+    for i, row in enumerate(points):
+        close = row.get("close")
+        low = row.get("low", close)
+        if close in (None, 0) or low is None:
+            continue
+        if low > box_low * 1.03:
+            continue
+        if close < box_low * 0.99:
+            continue
+        future_window = [p.get("close") for p in points[i + 1 : i + 6] if p.get("close") is not None]
+        if not future_window:
+            continue
+        future_max_close = max(future_window)
+        rebound_pct = (future_max_close - close) / close * 100
+        if rebound_pct < 3.0:
+            continue
+        if i - last_index < 5:
+            continue
+        bounces.append(
+            {
+                "date": row.get("date"),
+                "price": low,
+                "rebound_pct": round(rebound_pct, 1),
+            }
+        )
+        last_index = i
+    return bounces[-10:]
+
+
 @app.route("/lab/box/chart/<code>.svg")
 def web_box_detail_chart(code):
     code = re.sub(r"[^0-9A-Za-z.]", "", str(code or ""))[:16]
@@ -2647,10 +2720,12 @@ def web_box_detail_chart(code):
         close = _to_float(row.get("close"))
         if close is None:
             continue
+        low = _to_float(row.get("low")) or close
         points.append(
             {
                 "date": str(row.get("trade_date") or ""),
                 "close": close,
+                "low": low,
                 "ma5": _to_float(row.get("ma5")) or close,
                 "ma25": _to_float(row.get("ma25")) or close,
                 "ma75": _to_float(row.get("ma75")) or close,
@@ -2671,6 +2746,10 @@ def web_box_detail_chart(code):
     entry_min = _first_float(context, "entry_price_min") or box_low
     entry_max = _first_float(context, "entry_price_max") or (box_low * 1.02)
     current_price = _first_float(context, "current_price", "close") or latest_close
+    strategy_type = str(context.get("strategy_type") or "box_pullback")
+    support_line = _first_float(context, "support_line")
+    bounce_base = support_line if strategy_type == "support_bounce" and support_line else box_low
+    bounce_points = _extract_box_bounce_points(points, bounce_base)
 
     try:
         from box_chart import render_chart
@@ -2690,7 +2769,7 @@ def web_box_detail_chart(code):
             current_price=current_price,
             box_position_pct=_first_float(context, "box_position_pct"),
             bounce_count=int(_first_float(context, "bounce_count") or 0) if _first_float(context, "bounce_count") is not None else None,
-            bounce_points=None,
+            bounce_points=bounce_points,
             rsi14=_first_float(context, "rsi14"),
             margin_ratio=_first_float(context, "margin_ratio"),
             box_score=_first_float(context, "box_score", "watch_score", "signal_box_score"),
@@ -2700,6 +2779,18 @@ def web_box_detail_chart(code):
             ma5_gap_pct=_first_float(context, "ma5_gap_pct"),
             ma25_gap_pct=_first_float(context, "ma25_gap_pct"),
             ma75_gap_pct=_first_float(context, "ma75_gap_pct"),
+            strategy_type=strategy_type,
+            support_line=support_line,
+            support_zone_low=_first_float(context, "support_zone_low"),
+            support_zone_high=_first_float(context, "support_zone_high"),
+            support_touch_count=int(_first_float(context, "support_touch_count") or 0)
+            if _first_float(context, "support_touch_count") is not None
+            else None,
+            support_break_count=int(_first_float(context, "support_break_count") or 0)
+            if _first_float(context, "support_break_count") is not None
+            else None,
+            support_distance_pct=_first_float(context, "support_distance_pct"),
+            avg_bounce_return_pct=_first_float(context, "avg_bounce_return_pct"),
         )
     except Exception as e:
         logger.warning("box detail chart render failed code=%s: %s", code, e)

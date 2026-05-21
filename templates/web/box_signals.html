@@ -90,6 +90,9 @@
           <td class="code">{{ r.code }}</td>
           <td class="name">{{ r.name or '-' }}</td>
           <td>
+            <span class="badge {% if r.strategy_type == 'support_bounce' %}notified{% else %}watching{% endif %}">
+              {{ 'SUPPORT' if r.strategy_type == 'support_bounce' else 'BOX' }}
+            </span><br>
             {% if r.entry_status == 'entry_pending' %}
               <span class="badge signal">押し目待ち</span><br><span class="muted" style="font-size:10px">指値待機中</span>
             {% elif r.entry_status == 'entered' %}
