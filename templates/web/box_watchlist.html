@@ -60,6 +60,17 @@
     background: var(--accent);
     border-radius: 2px;
   }
+  .risk-ok { color: var(--down); }
+  .risk-warn { color: var(--accent); font-weight: 700; }
+  .risk-danger { color: var(--up); font-weight: 800; }
+  .risk-note {
+    display: block;
+    margin-top: 2px;
+    font-family: var(--font-sans);
+    font-size: 9.5px;
+    line-height: 1.1;
+    color: var(--text-3);
+  }
   @media (max-width: 768px) {
     .box-watch-chart,
     .box-watch-chart img {
@@ -167,14 +178,50 @@
             {{ r.bounce_count if r.bounce_count is not none else '-' }}{% if r.bounce_count is not none %}回{% endif %}
             {% if r.bounce_count is not none and r.bounce_count >= 3 %}<span class="badge notified" style="margin-left:4px">下限意識</span>{% endif %}
           </td>
-          <td class="right num">{{ "%.0f"|format(r.rsi14) if r.rsi14 is not none else '-' }}</td>
-          <td class="right num {% if r.margin_ratio is not none and r.margin_ratio > 30 %}warn-text{% endif %}">
-            {{ "%.1f"|format(r.margin_ratio) ~ '倍' if r.margin_ratio is not none else '-' }}
+          <td class="right num {% if r.rsi14 is not none and (r.rsi14 >= 70 or r.rsi14 < 30) %}risk-danger{% elif r.rsi14 is not none and (r.rsi14 >= 65 or r.rsi14 < 35) %}risk-warn{% endif %}">
+            {% if r.rsi14 is not none %}
+              {{ "%.0f"|format(r.rsi14) }}
+              {% if r.rsi14 >= 70 %}<span class="risk-note">過熱</span>
+              {% elif r.rsi14 >= 65 %}<span class="risk-note">高め</span>
+              {% elif r.rsi14 < 30 %}<span class="risk-note">弱すぎ</span>
+              {% elif r.rsi14 < 35 %}<span class="risk-note">弱め</span>{% endif %}
+            {% else %}-{% endif %}
           </td>
-          <td class="right num">{% if r.per is not none %}{{ "%.1f"|format(r.per) }}倍{% else %}<span class="muted">未取得</span>{% endif %}</td>
-          <td class="right num">{% if r.pbr is not none %}{{ "%.1f"|format(r.pbr) }}倍{% else %}<span class="muted">未取得</span>{% endif %}</td>
-          <td class="right num">{% if r.equity_ratio is not none %}{{ "%.1f"|format(r.equity_ratio) }}%{% else %}<span class="muted">未取得</span>{% endif %}</td>
-          <td class="right num">{{ pct(r.atr_pct) }}</td>
+          <td class="right num {% if r.margin_ratio is not none and r.margin_ratio > 50 %}risk-danger{% elif r.margin_ratio is not none and r.margin_ratio > 30 %}risk-warn{% endif %}">
+            {% if r.margin_ratio is not none %}
+              {{ "%.1f"|format(r.margin_ratio) }}倍
+              {% if r.margin_ratio > 50 %}<span class="risk-note">重い</span>
+              {% elif r.margin_ratio > 30 %}<span class="risk-note">高め</span>{% endif %}
+            {% else %}-{% endif %}
+          </td>
+          <td class="right num {% if r.per is not none and (r.per <= 0 or r.per > 40) %}risk-danger{% elif r.per is not none and r.per > 30 %}risk-warn{% endif %}">
+            {% if r.per is not none %}
+              {{ "%.1f"|format(r.per) }}倍
+              {% if r.per <= 0 %}<span class="risk-note">異常</span>
+              {% elif r.per > 40 %}<span class="risk-note">高すぎ</span>
+              {% elif r.per > 30 %}<span class="risk-note">高め</span>{% endif %}
+            {% else %}<span class="muted">未取得</span>{% endif %}
+          </td>
+          <td class="right num {% if r.pbr is not none and (r.pbr <= 0 or r.pbr > 5) %}risk-danger{% elif r.pbr is not none and r.pbr > 3 %}risk-warn{% endif %}">
+            {% if r.pbr is not none %}
+              {{ "%.1f"|format(r.pbr) }}倍
+              {% if r.pbr <= 0 %}<span class="risk-note">異常</span>
+              {% elif r.pbr > 5 %}<span class="risk-note">高すぎ</span>
+              {% elif r.pbr > 3 %}<span class="risk-note">高め</span>{% endif %}
+            {% else %}<span class="muted">未取得</span>{% endif %}
+          </td>
+          <td class="right num {% if r.equity_ratio is not none and r.equity_ratio < 30 %}risk-danger{% elif r.equity_ratio is not none and r.equity_ratio < 40 %}risk-warn{% endif %}">
+            {% if r.equity_ratio is not none %}
+              {{ "%.1f"|format(r.equity_ratio) }}%
+              {% if r.equity_ratio < 30 %}<span class="risk-note">低い</span>
+              {% elif r.equity_ratio < 40 %}<span class="risk-note">注意</span>{% endif %}
+            {% else %}<span class="muted">未取得</span>{% endif %}
+          </td>
+          <td class="right num {% if r.atr_pct is not none and r.atr_pct > 5 %}risk-danger{% elif r.atr_pct is not none and r.atr_pct > 4 %}risk-warn{% endif %}">
+            {{ pct(r.atr_pct) }}
+            {% if r.atr_pct is not none and r.atr_pct > 5 %}<span class="risk-note">高ボラ</span>
+            {% elif r.atr_pct is not none and r.atr_pct > 4 %}<span class="risk-note">高め</span>{% endif %}
+          </td>
           <td class="right num">{{ "{:,.1f}".format((r.turnover_value or 0) / 100000000) if r.turnover_value is not none else '-' }}億</td>
           <td class="muted">{{ r.sector or '-' }}</td>
           <td class="muted">{{ r.watch_reason or '-' }}{% if r.warnings %}<br><span style="color:var(--warn)">警告: {{ r.warnings }}</span>{% endif %}</td>
