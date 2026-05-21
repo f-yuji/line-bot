@@ -375,7 +375,7 @@
     <div class="muted">現行本命設定: box下限から45%以内を押し目候補、指値待機5営業日、出口はMA25割れ/box上限型を基準にします。</div>
   </div>
 
-  <div class="ta-grid">
+  <div class="ta-grid" id="boxAssistGrid">
     {% for r in rows %}
       {% set strong = r.box_score and r.box_score >= 80 %}
       {%- set box_low = r.box_lower or r.box_low -%}
@@ -384,7 +384,7 @@
       {%- set pos_clamp = [[pos, 100]|min, 0]|max -%}
       {%- set pos_label = '下限接近 / 強候補' if pos <= 20 else ('下限圏 / 候補' if pos <= 35 else ('中段 / 待ち' if pos <= 70 else '上限寄り / 新規買い非推奨')) -%}
       {%- set pos_cls = 'is-strong' if pos <= 20 else ('is-mid' if pos <= 35 else ('is-wait' if pos <= 70 else 'is-high')) -%}
-      <article class="ta-card {{ 'is-strong' if strong else '' }}">
+      <article class="ta-card {{ 'is-strong' if strong else '' }}" data-box-idx="{{ loop.index0 }}" style="cursor:pointer">
         <div class="ta-card-head">
           <div class="ta-card-id">
             <div class="ta-card-meta">{{ r.code }}{% if r.sector %} / {{ r.sector }}{% endif %}</div>
@@ -468,6 +468,9 @@
               {%- if r.margin_date %}<span style="color:var(--ta-dim-2);font-size:10px;margin-left:2px">{{ r.margin_date }}</span>{% endif -%}
             {%- else -%}<b class="muted">—</b>{%- endif -%}
           </span>
+          <span>PER <b>{% if r.per is not none %}{{ "%.1f"|format(r.per) }}倍{% else %}<span class="muted">未取得</span>{% endif %}</b></span>
+          <span>PBR <b>{% if r.pbr is not none %}{{ "%.1f"|format(r.pbr) }}倍{% else %}<span class="muted">未取得</span>{% endif %}</b></span>
+          <span>自己資本 <b>{% if r.equity_ratio is not none %}{{ "%.1f"|format(r.equity_ratio) }}%{% else %}<span class="muted">未取得</span>{% endif %}</b></span>
         </div>
 
         <div class="ta-reason">
@@ -507,7 +510,7 @@
         </thead>
         <tbody>
           {% for r in watch_rows %}
-          <tr>
+          <tr data-box-watch-idx="{{ loop.index0 }}" style="cursor:pointer">
             <td class="code">{{ r.code }}</td>
             <td class="name">{{ r.name or '—' }}</td>
             <td class="right num">{{ "{:,.0f}".format(r.close) if r.close is not none else '—' }}</td>
@@ -556,4 +559,27 @@
   {% endif %}
 
 </div>
+<script>
+  const BOX_ASSIST_ROWS = {{ rows|tojson }};
+  const BOX_ASSIST_WATCH_ROWS = {{ watch_rows|tojson }};
+
+  const assistGrid = document.getElementById('boxAssistGrid');
+  if (assistGrid) {
+    assistGrid.addEventListener('click', function(e) {
+      if (e.target.closest('a, button, input, select, textarea')) return;
+      const card = e.target.closest('[data-box-idx]');
+      if (!card) return;
+      const item = BOX_ASSIST_ROWS[Number(card.dataset.boxIdx)];
+      if (item && window.openBoxDetail) openBoxDetail(item);
+    });
+  }
+
+  document.addEventListener('click', function(e) {
+    if (e.target.closest('a, button, input, select, textarea')) return;
+    const row = e.target.closest('tr[data-box-watch-idx]');
+    if (!row) return;
+    const item = BOX_ASSIST_WATCH_ROWS[Number(row.dataset.boxWatchIdx)];
+    if (item && window.openBoxDetail) openBoxDetail(item);
+  });
+</script>
 {% endblock %}

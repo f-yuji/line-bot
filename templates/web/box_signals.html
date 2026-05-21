@@ -3,14 +3,20 @@
 {% block page_label %}boxシグナル{% endblock %}
 
 {% macro pct(v, digits=1) -%}
-  {%- if v is none -%}<span class="muted">—</span>
+  {%- if v is none -%}<span class="muted">-</span>
   {%- else -%}{{ ("%." ~ digits ~ "f")|format(v) }}%
+  {%- endif -%}
+{%- endmacro %}
+
+{% macro num(v, digits=1, suffix='') -%}
+  {%- if v is none -%}<span class="muted">未取得</span>
+  {%- else -%}{{ ("%." ~ digits ~ "f")|format(v) }}{{ suffix }}
   {%- endif -%}
 {%- endmacro %}
 
 {% block content %}
 <div class="page-head">
-  <h1 class="page-title">boxシグナル<small>SIGNALS · {{ rows|length }}件</small></h1>
+  <h1 class="page-title">boxシグナル<small>SIGNALS / {{ rows|length }}件</small></h1>
   <div class="page-actions">
     <a class="btn primary sm" href="/lab/box/trade-assist">トレード補助</a>
     <a class="btn sm" href="/lab/box/dashboard">ダッシュボード</a>
@@ -26,7 +32,6 @@
 </div>
 {% endif %}
 
-{# ── 状態サマリー ── #}
 <div class="stat-grid" style="grid-template-columns:repeat(4,1fr)">
   <div class="stat-tile">
     <div class="label">全体</div>
@@ -34,7 +39,7 @@
     <div class="sub muted">TOTAL</div>
   </div>
   <div class="stat-tile accent">
-    <div class="label">購入待ち</div>
+    <div class="label">押し目待ち</div>
     <div class="value">{{ signal_stats.active if signal_stats else 0 }}</div>
     <div class="sub muted">ENTRY PENDING</div>
   </div>
@@ -52,33 +57,50 @@
 
 <div class="panel" style="margin-top:14px">
   <div class="panel-head">
-    <div class="panel-title">box購入候補一覧<span class="tag">ALL SIGNALS</span></div>
-    <div class="muted" style="font-size:10.5px;font-family:var(--font-mono)">box下限接近銘柄のみ</div>
+    <div class="panel-title">box購入候補一覧 <span class="tag">ALL SIGNALS</span></div>
+    <div class="muted" style="font-size:10.5px;font-family:var(--font-mono)">財務指標は表示のみ。抽出ロジックには使いません。</div>
   </div>
   <div class="table-wrap">
     <table class="tbl">
       <thead>
         <tr>
-          <th>コード</th><th>銘柄</th><th>状態</th>
-          <th class="right">score</th><th class="right">終値</th>
-          <th class="right">entry下限</th><th class="right">entry上限</th>
-          <th class="right">box位置</th><th class="right">box幅</th><th class="right">RSI</th>
+          <th>コード</th>
+          <th>銘柄</th>
+          <th>状態</th>
+          <th class="right">score</th>
+          <th class="right">終値</th>
+          <th class="right">entry下限</th>
+          <th class="right">entry上限</th>
+          <th class="right">下限距離</th>
+          <th class="right">box幅</th>
+          <th class="right">RSI</th>
           <th class="right">信用倍率</th>
-          <th class="right">損切</th><th class="right">利確</th>
-          <th>理由</th><th>基準日</th>
+          <th class="right">PER</th>
+          <th class="right">PBR</th>
+          <th class="right">自己資本</th>
+          <th class="right">損切</th>
+          <th class="right">利確</th>
+          <th>理由</th>
+          <th>基準日</th>
         </tr>
       </thead>
       <tbody>
         {% for r in rows %}
-        <tr class="{{ 'signal-row' if r.entry_status == 'entry_pending' else '' }}">
+        <tr class="{{ 'signal-row' if r.entry_status == 'entry_pending' else '' }}" data-box-idx="{{ loop.index0 }}" style="cursor:pointer">
           <td class="code">{{ r.code }}</td>
-          <td class="name">{{ r.name or '—' }}</td>
+          <td class="name">{{ r.name or '-' }}</td>
           <td>
-            {% if r.entry_status == 'entry_pending' %}<span class="badge signal">押し目待ち</span><br><span class="muted" style="font-size:10px">指値待機中</span>
-            {% elif r.entry_status == 'entered' %}<span class="badge notified">entered</span>
-            {% elif r.entry_status == 'skipped' %}<span class="badge closed">skipped</span>
-            {% elif r.entry_status == 'expired' %}<span class="badge closed">expired</span>
-            {% else %}<span class="badge watching">{{ r.entry_status or '—' }}</span>{% endif %}
+            {% if r.entry_status == 'entry_pending' %}
+              <span class="badge signal">押し目待ち</span><br><span class="muted" style="font-size:10px">指値待機中</span>
+            {% elif r.entry_status == 'entered' %}
+              <span class="badge notified">entered</span>
+            {% elif r.entry_status == 'skipped' %}
+              <span class="badge closed">skipped</span>
+            {% elif r.entry_status == 'expired' %}
+              <span class="badge closed">expired</span>
+            {% else %}
+              <span class="badge watching">{{ r.entry_status or '-' }}</span>
+            {% endif %}
           </td>
           <td class="right num">
             {% if r.box_score is not none -%}
@@ -87,28 +109,41 @@
                 <div class="track"><div class="fill" style="width:{{ r.box_score }}%"></div></div>
                 <span class="num">{{ "%.0f"|format(r.box_score) }}</span>
               </div>
-            {%- else %}<span class="muted">—</span>{% endif %}
+            {%- else %}<span class="muted">-</span>{% endif %}
           </td>
-          <td class="right num">{{ "{:,.0f}".format(r.close) if r.close is not none else '—' }}</td>
-          <td class="right num">{{ "{:,.0f}".format(r.entry_price_min) if r.entry_price_min is not none else '—' }}</td>
-          <td class="right num">{{ "{:,.0f}".format(r.entry_price_max) if r.entry_price_max is not none else '—' }}</td>
-          <td class="right num">{{ pct(r.box_position_pct) }}<br><span class="muted" style="font-size:10px">下限距離</span></td>
+          <td class="right num">{{ "{:,.0f}".format(r.close) if r.close is not none else '-' }}</td>
+          <td class="right num">{{ "{:,.0f}".format(r.entry_price_min) if r.entry_price_min is not none else '-' }}</td>
+          <td class="right num">{{ "{:,.0f}".format(r.entry_price_max) if r.entry_price_max is not none else '-' }}</td>
+          <td class="right num">{{ pct(r.box_position_pct) }}</td>
           <td class="right num">{{ pct(r.box_width_pct) }}</td>
-          <td class="right num">{{ "%.0f"|format(r.rsi14) if r.rsi14 is not none else '—' }}</td>
+          <td class="right num">{{ "%.0f"|format(r.rsi14) if r.rsi14 is not none else '-' }}</td>
           <td class="right num {% if r.margin_ratio is not none and r.margin_ratio > 30 %}warn-text{% endif %}">
-            {{ "%.1f"|format(r.margin_ratio) ~ '倍' if r.margin_ratio is not none else '—' }}
+            {{ "%.1f"|format(r.margin_ratio) ~ '倍' if r.margin_ratio is not none else '-' }}
             {%- if r.margin_ratio is not none and r.margin_date %}<br><span class="muted" style="font-size:10px">{{ r.margin_date }}</span>{% endif -%}
           </td>
-          <td class="right num down-text">{{ "{:,.0f}".format(r.stop_loss_price) if r.stop_loss_price is not none else '—' }}</td>
-          <td class="right num up-text">{{ "{:,.0f}".format(r.take_profit_price) if r.take_profit_price is not none else '—' }}</td>
-          <td class="muted">{{ r.entry_reason or r.signal_reason or r.warnings or '—' }}</td>
+          <td class="right num">{{ num(r.per, 1, '倍') }}</td>
+          <td class="right num">{{ num(r.pbr, 1, '倍') }}</td>
+          <td class="right num">{{ num(r.equity_ratio, 1, '%') }}</td>
+          <td class="right num down-text">{{ "{:,.0f}".format(r.stop_loss_price) if r.stop_loss_price is not none else '-' }}</td>
+          <td class="right num up-text">{{ "{:,.0f}".format(r.take_profit_price) if r.take_profit_price is not none else '-' }}</td>
+          <td class="muted">{{ r.entry_reason or r.signal_reason or r.warnings or '-' }}</td>
           <td class="muted num">{{ r.trade_date }}</td>
         </tr>
         {% else %}
-        <tr><td colspan="15" class="center muted" style="padding:28px">boxシグナルはまだありません</td></tr>
+        <tr><td colspan="18" class="center muted" style="padding:28px">boxシグナルはまだありません</td></tr>
         {% endfor %}
       </tbody>
     </table>
   </div>
 </div>
+<script>
+  const BOX_SIGNAL_ROWS = {{ rows|tojson }};
+  document.addEventListener('click', function(e) {
+    if (e.target.closest('a, button, input, select, textarea')) return;
+    const row = e.target.closest('tr[data-box-idx]');
+    if (!row) return;
+    const item = BOX_SIGNAL_ROWS[Number(row.dataset.boxIdx)];
+    if (item && window.openBoxDetail) openBoxDetail(item);
+  });
+</script>
 {% endblock %}

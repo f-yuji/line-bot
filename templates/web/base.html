@@ -259,6 +259,31 @@
   </div>
 </div>
 
+{# box_lab stock detail modal #}
+<div class="modal-overlay" id="boxDetailOverlay" style="display:none" onclick="if(event.target===this)closeBoxDetail()">
+  <div class="modal" style="width:640px">
+    <div class="modal-head">
+      <div class="title">
+        <span class="ticker" id="box-m-code"></span>
+        <span class="name" id="box-m-name"></span>
+      </div>
+      <div style="display:flex;align-items:center;gap:8px">
+        <span id="box-m-status-badge"></span>
+        <button onclick="closeBoxDetail()" style="background:transparent;border:none;color:var(--text-3);font-size:18px;cursor:pointer;line-height:1">x</button>
+      </div>
+    </div>
+    <div style="padding:14px 16px;overflow-y:auto;max-height:75vh">
+      <div class="kv-grid" id="box-m-kpi" style="border-top:none;margin-bottom:10px"></div>
+      <div class="kv-grid" id="box-m-detail" style="border-top:none;margin-top:10px"></div>
+      <div id="box-m-warning" style="display:none;background:rgba(255,204,102,.08);border:1px solid rgba(255,204,102,.28);border-radius:4px;padding:8px 12px;margin-top:10px;font-size:11px;color:var(--warn);line-height:1.6"></div>
+      <div style="margin-top:12px">
+        <div style="font-size:10px;color:var(--text-3);letter-spacing:.06em;text-transform:uppercase;margin-bottom:6px">チャート</div>
+        <div id="box-m-chart" style="background:var(--bg-0);border:1px solid var(--line);border-radius:4px;padding:8px;min-height:150px"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
 <script>
 const _BADGE_MAP = {
   watching: ['watching','監視中'],
@@ -425,6 +450,128 @@ function closeDetail() {
 }
 
 document.addEventListener('keydown', e => { if (e.key === 'Escape') closeDetail(); });
+
+function _boxVal(v, fallback) {
+  return (v === null || v === undefined || v === '') ? (fallback || '—') : v;
+}
+function _boxEsc(v) {
+  return String(_boxVal(v)).replace(/[&<>"']/g, function(c) {
+    return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];
+  });
+}
+function _boxNum(v, digits, suffix) {
+  if (v === null || v === undefined || v === '') return '—';
+  const n = Number(v);
+  if (!Number.isFinite(n)) return String(v);
+  return n.toFixed(digits ?? 1) + (suffix || '');
+}
+function _boxYen(v) {
+  if (v === null || v === undefined || v === '') return '—';
+  const n = Number(v);
+  if (!Number.isFinite(n)) return String(v);
+  return Math.round(n).toLocaleString('ja-JP') + '円';
+}
+function _boxPct(v, digits) {
+  return _boxNum(v, digits ?? 1, '%');
+}
+function _boxStatus(status) {
+  const map = {
+    entry_pending: ['signal', '押し目待ち'],
+    entered: ['notified', '仮想購入済み'],
+    open: ['notified', '保有中'],
+    closed: ['closed', '決済済み'],
+    skipped: ['closed', '見送り'],
+    expired: ['closed', '期限切れ'],
+    watching: ['watching', '監視中']
+  };
+  return map[status] || ['watching', status || '監視中'];
+}
+function _boxKv(items) {
+  return items.map(([k, v, cls]) => `<div class="kv"><span class="k">${_boxEsc(k)}</span><span class="v ${cls || ''}">${_boxEsc(v)}</span></div>`).join('');
+}
+function openBoxDetail(r) {
+  if (!r) return;
+  const status = r.entry_status || r.signal_entry_status || r.status || 'watching';
+  const badge = _boxStatus(status);
+  const code = r.code || '';
+  document.getElementById('box-m-code').textContent = code;
+  document.getElementById('box-m-name').textContent = r.name || code || '';
+  document.getElementById('box-m-status-badge').innerHTML = `<span class="badge ${badge[0]}">${badge[1]}</span>`;
+
+  const score = r.box_score ?? r.watch_score ?? r.signal_box_score;
+  const position = r.box_position_pct;
+  const margin = r.margin_ratio;
+  document.getElementById('box-m-kpi').innerHTML = _boxKv([
+    ['boxスコア', score == null ? '—' : Math.round(Number(score))],
+    ['下限距離', _boxPct(position, 1), position != null && Number(position) <= 20 ? 'up-text' : ''],
+    ['box幅', _boxPct(r.box_width_pct, 1)],
+    ['下限反発', r.bounce_count == null ? '—' : `${r.bounce_count}回`]
+  ]);
+
+  const entryMin = r.entry_price_min != null ? _boxYen(r.entry_price_min) : '—';
+  const entryMax = r.entry_price_max != null ? _boxYen(r.entry_price_max) : '—';
+  const entryTarget = r.entry_target_price != null ? _boxYen(r.entry_target_price) : '—';
+  const boxLow = r.box_low ?? r.box_lower;
+  const boxHigh = r.box_high ?? r.box_upper;
+  document.getElementById('box-m-detail').innerHTML = _boxKv([
+    ['セクター', r.sector || '—'],
+    ['基準日', r.trade_date || r.signal_trade_date || r.buy_date || '—'],
+    ['現在値', _boxYen(r.close ?? r.current_price)],
+    ['理想entry', entryMin === '—' && entryMax === '—' ? entryTarget : `${entryMin} - ${entryMax}`],
+    ['entry目標', entryTarget],
+    ['損切り目安', _boxYen(r.stop_loss_price), 'down-text'],
+    ['利確目安', _boxYen(r.take_profit_price ?? boxHigh), 'up-text'],
+    ['box下限', _boxYen(boxLow)],
+    ['box上限', _boxYen(boxHigh)],
+    ['信用倍率', margin == null ? '—' : `${_boxNum(margin, 1, '倍')}${r.margin_date ? ' / ' + r.margin_date : ''}`],
+    ['RSI', _boxNum(r.rsi14, 0, '')],
+    ['ATR', _boxPct(r.atr_pct, 1)],
+    ['出来高倍率', _boxNum(r.volume_ratio_20d, 1, '倍')],
+    ['MA5乖離', _boxPct(r.ma5_gap_pct, 1)],
+    ['MA25乖離', _boxPct(r.ma25_gap_pct, 1)],
+    ['PER', r.per == null ? '未取得' : _boxNum(r.per, 1, '倍')],
+    ['PBR', r.pbr == null ? '未取得' : _boxNum(r.pbr, 1, '倍')],
+    ['自己資本比率', r.equity_ratio == null ? '未取得' : _boxPct(r.equity_ratio, 1)],
+    ['入口状態', badge[1]],
+    ['見送り理由', r.skip_reason || '—'],
+    ['理由', r.entry_reason || r.signal_reason || r.watch_reason || '—']
+  ]);
+
+  const warning = r.warnings || '';
+  const warningEl = document.getElementById('box-m-warning');
+  if (warning) {
+    warningEl.style.display = '';
+    warningEl.textContent = warning;
+  } else {
+    warningEl.style.display = 'none';
+    warningEl.textContent = '';
+  }
+
+  const chartEl = document.getElementById('box-m-chart');
+  if (code) {
+    const params = new URLSearchParams();
+    [
+      'name', 'box_high', 'box_low', 'box_upper', 'box_lower',
+      'entry_price_min', 'entry_price_max', 'entry_target_price',
+      'current_price', 'close', 'box_position_pct', 'bounce_count',
+      'rsi14', 'margin_ratio', 'box_score', 'watch_score', 'signal_box_score',
+      'stop_loss_price', 'take_profit_price', 'atr_pct',
+      'ma5_gap_pct', 'ma25_gap_pct', 'ma75_gap_pct'
+    ].forEach(function(key) {
+      if (r[key] !== null && r[key] !== undefined && r[key] !== '') params.set(key, r[key]);
+    });
+    const url = `/lab/box/chart/${encodeURIComponent(code)}.svg?${params.toString()}`;
+    chartEl.innerHTML = `<img src="${url}" alt="${_boxEsc(code)} chart" style="width:100%;height:260px;object-fit:contain;display:block">`;
+  } else {
+    chartEl.innerHTML = '<span class="muted" style="font-size:11px">データなし</span>';
+  }
+  document.getElementById('boxDetailOverlay').style.display = 'grid';
+}
+function closeBoxDetail() {
+  const el = document.getElementById('boxDetailOverlay');
+  if (el) el.style.display = 'none';
+}
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeBoxDetail(); });
 
 function toggleSidebar() {
   document.querySelector('.sidebar').classList.toggle('open');

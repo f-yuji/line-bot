@@ -2585,6 +2585,129 @@ def web_trade_assist_chart(code):
     return Response(svg, mimetype="image/svg+xml")
 
 
+@app.route("/lab/box/chart/<code>.svg")
+def web_box_detail_chart(code):
+    code = re.sub(r"[^0-9A-Za-z.]", "", str(code or ""))[:16]
+    if not code:
+        return _trade_assist_chart_placeholder("code missing")
+
+    def _to_float(value):
+        try:
+            if value in (None, ""):
+                return None
+            return float(value)
+        except Exception:
+            return None
+
+    def _first_float(source: dict, *keys: str):
+        for key in keys:
+            value = _to_float(source.get(key))
+            if value is not None:
+                return value
+        return None
+
+    context = {k: v for k, v in request.args.items() if v not in (None, "")}
+    if not context:
+        for table, order in (("box_signals", "trade_date.desc,created_at.desc"), ("box_watchlist", "trade_date.desc,watch_score.desc")):
+            try:
+                rows = (
+                    supabase.table(table)
+                    .select("*")
+                    .eq("code", code)
+                    .order(order.split(",")[0].split(".")[0], desc=True)
+                    .limit(1)
+                    .execute()
+                    .data
+                    or []
+                )
+                if rows:
+                    context = rows[0]
+                    break
+            except Exception as e:
+                logger.debug("box detail chart context load failed table=%s code=%s: %s", table, code, e)
+
+    try:
+        rows = (
+            supabase.table("stock_feature_snapshots")
+            .select("trade_date,close,high,low,ma5,ma25,ma75")
+            .eq("code", code)
+            .order("trade_date", desc=True)
+            .limit(120)
+            .execute()
+            .data
+            or []
+        )
+    except Exception as e:
+        logger.warning("box detail chart load failed code=%s: %s", code, e)
+        return _trade_assist_chart_placeholder("chart data unavailable")
+
+    rows = list(reversed(rows))
+    points = []
+    for row in rows:
+        close = _to_float(row.get("close"))
+        if close is None:
+            continue
+        points.append(
+            {
+                "date": str(row.get("trade_date") or ""),
+                "close": close,
+                "ma5": _to_float(row.get("ma5")) or close,
+                "ma25": _to_float(row.get("ma25")) or close,
+                "ma75": _to_float(row.get("ma75")) or close,
+            }
+        )
+
+    if len(points) < 3:
+        return _trade_assist_chart_placeholder("not enough chart data")
+
+    recent = points[-60:] if len(points) >= 60 else points
+    recent_close = [p["close"] for p in recent]
+    latest_close = points[-1]["close"]
+    box_high = _first_float(context, "box_high", "box_upper") or max(recent_close)
+    box_low = _first_float(context, "box_low", "box_lower") or min(recent_close)
+    if box_high <= box_low:
+        box_high = max(recent_close)
+        box_low = min(recent_close)
+    entry_min = _first_float(context, "entry_price_min") or box_low
+    entry_max = _first_float(context, "entry_price_max") or (box_low * 1.02)
+    current_price = _first_float(context, "current_price", "close") or latest_close
+
+    try:
+        from box_chart import render_chart
+
+        svg = render_chart(
+            code=code,
+            name=str(context.get("name") or request.args.get("name") or ""),
+            trade_date=[p["date"] for p in points],
+            close=[p["close"] for p in points],
+            ma5=[p["ma5"] for p in points],
+            ma25=[p["ma25"] for p in points],
+            ma75=[p["ma75"] for p in points],
+            box_high=box_high,
+            box_low=box_low,
+            entry_min=entry_min,
+            entry_max=entry_max,
+            current_price=current_price,
+            box_position_pct=_first_float(context, "box_position_pct"),
+            bounce_count=int(_first_float(context, "bounce_count") or 0) if _first_float(context, "bounce_count") is not None else None,
+            bounce_points=None,
+            rsi14=_first_float(context, "rsi14"),
+            margin_ratio=_first_float(context, "margin_ratio"),
+            box_score=_first_float(context, "box_score", "watch_score", "signal_box_score"),
+            stop_loss_price=_first_float(context, "stop_loss_price"),
+            take_profit_price=_first_float(context, "take_profit_price") or box_high,
+            atr_pct=_first_float(context, "atr_pct"),
+            ma5_gap_pct=_first_float(context, "ma5_gap_pct"),
+            ma25_gap_pct=_first_float(context, "ma25_gap_pct"),
+            ma75_gap_pct=_first_float(context, "ma75_gap_pct"),
+        )
+    except Exception as e:
+        logger.warning("box detail chart render failed code=%s: %s", code, e)
+        return _trade_assist_chart_placeholder("chart render failed")
+
+    return Response(svg, mimetype="image/svg+xml")
+
+
 @app.route("/web/trade-assist")
 def web_trade_assist():
     market_adjustment = _current_market_adjustment()

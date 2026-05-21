@@ -107,6 +107,9 @@
           <th class="right">下限反発</th>
           <th class="right">RSI</th>
           <th class="right">信用倍率</th>
+          <th class="right">PER</th>
+          <th class="right">PBR</th>
+          <th class="right">自己資本</th>
           <th class="right">ATR</th>
           <th class="right">売買代金</th>
           <th>セクター</th>
@@ -118,7 +121,7 @@
         {% for r in rows %}
         {% set pos = r.box_position_pct %}
         {% set pos_left = 0 if pos is none else ([100, [0, pos]|max]|min) %}
-        <tr class="{% if r.signal_entry_status == 'entry_pending' %}row-accent{% endif %}">
+        <tr class="{% if r.signal_entry_status == 'entry_pending' %}row-accent{% endif %}" data-box-idx="{{ loop.index0 }}" style="cursor:pointer">
           <td class="code">{{ r.code }}</td>
           <td class="name">{{ r.name or '-' }}</td>
           <td>
@@ -165,6 +168,9 @@
           <td class="right num {% if r.margin_ratio is not none and r.margin_ratio > 30 %}warn-text{% endif %}">
             {{ "%.1f"|format(r.margin_ratio) ~ '倍' if r.margin_ratio is not none else '-' }}
           </td>
+          <td class="right num">{% if r.per is not none %}{{ "%.1f"|format(r.per) }}倍{% else %}<span class="muted">未取得</span>{% endif %}</td>
+          <td class="right num">{% if r.pbr is not none %}{{ "%.1f"|format(r.pbr) }}倍{% else %}<span class="muted">未取得</span>{% endif %}</td>
+          <td class="right num">{% if r.equity_ratio is not none %}{{ "%.1f"|format(r.equity_ratio) }}%{% else %}<span class="muted">未取得</span>{% endif %}</td>
           <td class="right num">{{ pct(r.atr_pct) }}</td>
           <td class="right num">{{ "{:,.1f}".format((r.turnover_value or 0) / 100000000) if r.turnover_value is not none else '-' }}億</td>
           <td class="muted">{{ r.sector or '-' }}</td>
@@ -172,10 +178,20 @@
           <td class="muted num">{{ r.trade_date }}</td>
         </tr>
         {% else %}
-        <tr><td colspan="16" class="center muted" style="padding:28px">boxウォッチリストはまだありません</td></tr>
+        <tr><td colspan="19" class="center muted" style="padding:28px">boxウォッチリストはまだありません</td></tr>
         {% endfor %}
       </tbody>
     </table>
   </div>
 </div>
+<script>
+  const BOX_WATCHLIST_ROWS = {{ rows|tojson }};
+  document.addEventListener('click', function(e) {
+    if (e.target.closest('a, button, input, select, textarea')) return;
+    const row = e.target.closest('tr[data-box-idx]');
+    if (!row) return;
+    const item = BOX_WATCHLIST_ROWS[Number(row.dataset.boxIdx)];
+    if (item && window.openBoxDetail) openBoxDetail(item);
+  });
+</script>
 {% endblock %}
