@@ -1903,6 +1903,36 @@ def get_watchlist_counts(rows: list[dict], open_trade_codes: set[str] | None = N
         except Exception:
             return True
 
+    def _dedupe_signal_rows(items):
+        status_score = {
+            "entered": 90,
+            "rebound_signal": 80,
+            "signal_skipped": 50,
+        }
+
+        def _key(row):
+            snapshot_id = row.get("feature_snapshot_id")
+            if snapshot_id:
+                return f"snapshot:{snapshot_id}"
+            return f"code-date:{row.get('code')}:{str(row.get('drop_detected_at') or '')[:10]}"
+
+        def _better(row):
+            return (
+                status_score.get(str(row.get("status") or ""), 0),
+                STAGE_RANK.get(row.get("signal_stage"), 0),
+                _num(row, "signal_probability", "ai_probability"),
+                _num(row, "expected_value"),
+                str(row.get("updated_at") or ""),
+            )
+
+        by_key = {}
+        for row in items:
+            key = _key(row)
+            current = by_key.get(key)
+            if current is None or _better(row) > _better(current):
+                by_key[key] = row
+        return list(by_key.values())
+
     watching = [r for r in rows if r.get("status") == "watching"]
     candidates = [
         r for r in rows
@@ -1972,6 +2002,36 @@ def web_dashboard():
             return dt > now_utc
         except Exception:
             return True
+
+    def _dedupe_signal_rows(items):
+        status_score = {
+            "entered": 90,
+            "rebound_signal": 80,
+            "signal_skipped": 50,
+        }
+
+        def _key(row):
+            snapshot_id = row.get("feature_snapshot_id")
+            if snapshot_id:
+                return f"snapshot:{snapshot_id}"
+            return f"code-date:{row.get('code')}:{str(row.get('drop_detected_at') or '')[:10]}"
+
+        def _better(row):
+            return (
+                status_score.get(str(row.get("status") or ""), 0),
+                STAGE_RANK.get(row.get("signal_stage"), 0),
+                _num(row, "signal_probability", "ai_probability"),
+                _num(row, "expected_value"),
+                str(row.get("updated_at") or ""),
+            )
+
+        by_key = {}
+        for row in items:
+            key = _key(row)
+            current = by_key.get(key)
+            if current is None or _better(row) > _better(current):
+                by_key[key] = row
+        return list(by_key.values())
 
     try:
         rows = (
@@ -2354,12 +2414,49 @@ def web_watchlist():
             return 8
         return 7
 
+    def _dedupe_current_rows(items):
+        status_score = {
+            "entered": 90,
+            "rebound_signal": 80,
+            "rebound_candidate": 70,
+            "watching": 60,
+            "signal_skipped": 50,
+            "closed": 20,
+            "expired": 15,
+            "ai_dropped": 10,
+            "excluded": 5,
+        }
+
+        def _key(row):
+            snapshot_id = row.get("feature_snapshot_id")
+            if snapshot_id:
+                return f"snapshot:{snapshot_id}"
+            return f"code-date:{row.get('code')}:{str(row.get('drop_detected_at') or '')[:10]}"
+
+        def _better(row):
+            return (
+                status_score.get(str(row.get("status") or ""), 0),
+                STAGE_RANK.get(row.get("signal_stage"), 0),
+                _num(row, "signal_probability", "ai_probability"),
+                _num(row, "expected_value"),
+                _row_dt(row),
+            )
+
+        by_key = {}
+        for row in items:
+            key = _key(row)
+            current = by_key.get(key)
+            if current is None or _better(row) > _better(current):
+                by_key[key] = row
+        return list(by_key.values())
+
     try:
         q = supabase.table("stock_drop_watchlist").select("*").order("updated_at", desc=True)
         if status_filter != "all":
             q = q.eq("status", status_filter)
         rows = q.limit(1000).execute().data or []
         rows = [_with_ai_priority_stage(r, market_adjustment) for r in rows]
+        rows = _dedupe_current_rows(rows)
         if status_filter == "all":
             cutoff = datetime.now(timezone.utc) - timedelta(days=30)
             rows = [
@@ -2404,6 +2501,47 @@ def web_watchlist_close(item_id):
     except Exception as e:
         flash(f"エラー: {e}", "danger")
     return redirect(url_for("web_watchlist", status=request.args.get("status", "all")))
+
+
+def _dedupe_signal_rows(items):
+    status_score = {
+        "entered": 90,
+        "rebound_signal": 80,
+        "signal_skipped": 50,
+    }
+
+    def _num_value(row, *keys):
+        for key in keys:
+            try:
+                value = row.get(key)
+                if value is not None:
+                    return float(value)
+            except Exception:
+                continue
+        return 0.0
+
+    def _key(row):
+        snapshot_id = row.get("feature_snapshot_id")
+        if snapshot_id:
+            return f"snapshot:{snapshot_id}"
+        return f"code-date:{row.get('code')}:{str(row.get('drop_detected_at') or '')[:10]}"
+
+    def _better(row):
+        return (
+            status_score.get(str(row.get("status") or ""), 0),
+            STAGE_RANK.get(row.get("signal_stage"), 0),
+            _num_value(row, "signal_probability", "ai_probability"),
+            _num_value(row, "expected_value"),
+            str(row.get("updated_at") or ""),
+        )
+
+    by_key = {}
+    for row in items:
+        key = _key(row)
+        current = by_key.get(key)
+        if current is None or _better(row) > _better(current):
+            by_key[key] = row
+    return list(by_key.values())
 
 
 @app.route("/web/signals")
@@ -2453,6 +2591,7 @@ def web_signals():
         and not r.get("is_excluded")
         and (r.get("status") != "rebound_signal" or _not_expired(r))
     ]
+    rows = _dedupe_signal_rows(rows)
     status_rank = {"rebound_signal": 3, "entered": 2, "signal_skipped": 1}
     rows.sort(
         key=lambda r: (

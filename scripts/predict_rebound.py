@@ -568,6 +568,22 @@ def _find_watchlist(sb, code: str) -> dict | None:
     return rows[0] if rows else None
 
 
+def _find_watchlist_by_snapshot(sb, code: str, snapshot_id: Any) -> dict | None:
+    if not snapshot_id:
+        return None
+    rows = (
+        sb.table("stock_drop_watchlist")
+        .select("id,code,status,signal_stage,signal_count,feature_snapshot_id,virtual_trade_id")
+        .eq("code", code)
+        .eq("feature_snapshot_id", snapshot_id)
+        .order("updated_at", desc=True)
+        .limit(1)
+        .execute()
+        .data or []
+    )
+    return rows[0] if rows else None
+
+
 def _status_for_stage(stage: str, is_excluded: bool) -> str:
     if is_excluded:
         return "excluded"
@@ -594,7 +610,18 @@ def _signal_lifecycle_log(code: Any, watchlist_id: Any, old_status: Any, new_sta
 
 def _persist_watchlist(sb, row: dict, result: dict, *, dry_run: bool, force: bool) -> dict | None:
     now = datetime.now(timezone.utc).isoformat()
-    existing = _find_watchlist(sb, str(row["code"]))
+    exact_existing = _find_watchlist_by_snapshot(sb, str(row["code"]), row.get("id"))
+    terminal_statuses = {"entered", "signal_skipped", "closed", "expired", "ai_dropped", "excluded"}
+    if exact_existing and exact_existing.get("status") in terminal_statuses and not force:
+        result["skip_entry_candidate"] = True
+        logger.info(
+            "watchlist exact snapshot already terminal: code=%s snapshot_id=%s status=%s",
+            row.get("code"),
+            row.get("id"),
+            exact_existing.get("status"),
+        )
+        return exact_existing
+    existing = exact_existing or _find_watchlist(sb, str(row["code"]))
     prev_count = int((existing or {}).get("signal_count") or 0)
     prev_stage = (existing or {}).get("signal_stage")
     prev_status = (existing or {}).get("status")
@@ -1183,7 +1210,7 @@ def run(args: argparse.Namespace) -> None:
             result.get("market_nikkei_pct"),
             result.get("market_topix_pct"),
         )
-        if result["signal_stage"] in ENTRY_SIGNAL_STAGES:
+        if result["signal_stage"] in ENTRY_SIGNAL_STAGES and not result.get("skip_entry_candidate"):
             entry_candidates.append((row, watch or {}, result))
         if args.notify and not args.dry_run and _notification_allowed(row, result, cfg):
             notify_items.append((row, result))

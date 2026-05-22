@@ -18,7 +18,8 @@ logger = logging.getLogger(__name__)
 # exit_reason values added after the DB sell_reason CHECK constraint was frozen.
 # sell_reason must use the legacy value that the constraint allows.
 _LEGACY_SELL_REASON: dict[str, str] = {
-    "close_stop_loss_4pct": "close_stop_loss",
+    "close_stop_loss_4pct": "stop_loss_4pct",
+    "gap_down_stop_loss": "stop_loss_4pct",
 }
 
 DEFAULT_EXIT_SETTINGS = {
