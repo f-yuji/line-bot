@@ -15,6 +15,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 from dotenv import load_dotenv
 from supabase import create_client
 
+from services.trading_calendar import today_jst
+
 load_dotenv()
 JST = timezone(timedelta(hours=9))
 
@@ -29,6 +31,11 @@ except Exception:
 
 def _opt(name: str) -> str:
     return os.getenv(name, "").strip()
+
+
+def _clear_proxy_env() -> None:
+    for key in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "GIT_HTTP_PROXY", "GIT_HTTPS_PROXY"):
+        os.environ[key] = ""
 
 
 def _build_supabase():
@@ -338,12 +345,30 @@ def build_summary(sb) -> dict[str, Any]:
 
 
 def main() -> None:
+    _clear_proxy_env()
     parser = argparse.ArgumentParser(description="Log rebound AI daily cron summary")
     parser.add_argument("--status", default="completed")
     parser.add_argument("--error-message")
+    parser.add_argument("--allow-non-trading-day", action="store_true")
     args = parser.parse_args()
 
     sb = _build_supabase()
+    today = today_jst().isoformat()
+    latest_date = _latest_feature_date(sb)
+    if (
+        not args.allow_non_trading_day
+        and args.status == "completed"
+        and latest_date
+        and latest_date != today
+    ):
+        result = {
+            "skipped": True,
+            "reason": f"latest_feature_date_is_not_today:{latest_date}!={today}",
+            "latest_feature_date": latest_date,
+            "today": today,
+        }
+        print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
+        return
     summary = build_summary(sb)
     status = args.status or "completed"
     if args.error_message and status == "completed":

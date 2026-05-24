@@ -36,6 +36,7 @@ from services.box_signal_logic import (
     _to_float,
     _watch_rejects,
 )
+from services.trading_calendar import latest_feature_matches_today, should_skip_today_cron
 
 load_dotenv()
 
@@ -54,6 +55,11 @@ SNAPSHOT_COLUMNS = (
 
 def _opt(name: str) -> str:
     return os.getenv(name) or ""
+
+
+def _clear_proxy_env() -> None:
+    for key in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "GIT_HTTP_PROXY", "GIT_HTTPS_PROXY"):
+        os.environ[key] = ""
 
 
 def _build_supabase():
@@ -496,8 +502,23 @@ def _upsert_optional(sb, table: str, rows: list[dict], dry_run: bool, on_conflic
 
 
 def run(args: argparse.Namespace) -> None:
+    _clear_proxy_env()
+    if not args.trade_date and not args.allow_non_trading_day:
+        skip, reason = should_skip_today_cron()
+        if skip:
+            logger.info("[box_lab] skip run reason=%s", reason)
+            return
     sb = _build_supabase()
     trade_date = _latest_trade_date(sb, args.trade_date)
+    if not args.trade_date and not args.allow_non_trading_day:
+        matches_today, latest, today = latest_feature_matches_today(sb)
+        if not matches_today:
+            logger.info(
+                "[box_lab] skip non-trading-day run latest_feature_date=%s today=%s",
+                latest,
+                today,
+            )
+            return
     cfg = _load_settings(sb)
     short_regime, long_regime = _load_market_context(sb)
     latest_rows, history_by_code = _load_snapshots(sb, trade_date, int(args.lookback_days))
@@ -650,6 +671,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--watch-limit", type=int, default=150)
     parser.add_argument("--signal-limit", type=int, default=100)
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--allow-non-trading-day", action="store_true")
     return parser.parse_args()
 
 

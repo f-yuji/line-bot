@@ -16,6 +16,12 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+
+from supabase import create_client
+
+from services.trading_calendar import latest_feature_matches_today, should_skip_today_cron
+
 JST = timezone(timedelta(hours=9))
 
 
@@ -28,6 +34,20 @@ class Step:
 def _clear_proxy_env() -> None:
     for key in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "GIT_HTTP_PROXY", "GIT_HTTPS_PROXY"):
         os.environ[key] = ""
+
+
+def _opt(name: str) -> str:
+    return os.getenv(name, "").strip()
+
+
+def _build_supabase():
+    mode = _opt("SUPABASE_MODE") or _opt("ENV")
+    mode_upper = (mode or "").upper()
+    url = (_opt(f"SUPABASE_URL_{mode_upper}") if mode_upper else "") or _opt("SUPABASE_URL")
+    key = (_opt(f"SUPABASE_KEY_{mode_upper}") if mode_upper else "") or _opt("SUPABASE_KEY")
+    if not url or not key:
+        raise KeyError("SUPABASE_URL / SUPABASE_KEY is not set")
+    return create_client(url, key)
 
 
 def _ts() -> str:
@@ -77,6 +97,27 @@ def _run_log(status: str, *, error_message: str | None = None, dry_run: bool = F
             print(f"[rebound_ai_daily] log command failed cmd={' '.join(cmd[1:])} error={e}", flush=True)
 
 
+def _run_cron_log_only(status: str, *, error_message: str | None = None, dry_run: bool = False) -> None:
+    if dry_run:
+        print(f"[rebound_ai_daily] DRYRUN skip cron log status={status} error={error_message or ''}", flush=True)
+        return
+    cmd = [
+        sys.executable,
+        "scripts/log_cron_run.py",
+        "--job",
+        "rebound-ai-daily",
+        "--status",
+        status,
+        "--schedule",
+        "Render Cron / end-of-day JST",
+        *(["--error-message", error_message] if error_message else []),
+    ]
+    try:
+        subprocess.run(cmd, check=True)
+    except Exception as e:
+        print(f"[rebound_ai_daily] cron log command failed cmd={' '.join(cmd[1:])} error={e}", flush=True)
+
+
 def _steps(args: argparse.Namespace) -> list[Step]:
     feature_args = [
         "scripts/generate_feature_snapshots.py",
@@ -120,12 +161,30 @@ def run(args: argparse.Namespace) -> int:
     os.environ.setdefault("SUPABASE_MODE", "prod")
 
     print(f"[rebound_ai_daily] pipeline started at={_ts()} dry_run={args.dry_run}", flush=True)
+    if args.date == "today" and not args.allow_non_trading_day:
+        skip, reason = should_skip_today_cron()
+        if skip:
+            print(f"[rebound_ai_daily] skip pipeline reason={reason}", flush=True)
+            _run_cron_log_only("skipped", error_message=reason, dry_run=args.dry_run)
+            return 0
     try:
         for step in _steps(args):
             if step.name in set(args.skip_step or []):
                 print(f"[rebound_ai_daily] skip step={step.name}", flush=True)
                 continue
             _run_step(step, dry_run=args.dry_run)
+            if (
+                step.name == "generate_feature_snapshots"
+                and args.date == "today"
+                and not args.allow_non_trading_day
+                and not args.dry_run
+            ):
+                matches_today, latest, today = latest_feature_matches_today(_build_supabase())
+                if not matches_today:
+                    reason = f"latest_feature_date_is_not_today:{latest}!={today}"
+                    print(f"[rebound_ai_daily] skip remaining steps reason={reason}", flush=True)
+                    _run_cron_log_only("skipped", error_message=reason, dry_run=args.dry_run)
+                    return 0
     except subprocess.CalledProcessError as e:
         message = f"step failed: returncode={e.returncode} cmd={' '.join(e.cmd if isinstance(e.cmd, list) else [str(e.cmd)])}"
         print(f"[rebound_ai_daily] failed {message}", flush=True)
@@ -162,6 +221,7 @@ def _parse_args() -> argparse.Namespace:
         "save_trade_assist_candidate_history",
     ])
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--allow-non-trading-day", action="store_true")
     return parser.parse_args()
 
 

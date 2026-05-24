@@ -166,6 +166,7 @@ def _with_ai_priority_stage(row: dict, fallback_market_adjustment: dict | None =
 def _current_market_adjustment() -> dict:
     """DB保存値から market_adjustment を生成する (表示・stage計算共通ソース)."""
     from datetime import date as _date, timezone as _tz, timedelta as _td
+    from services.trading_calendar import trading_day_distance
     _JST = _tz(_td(hours=9))
     today_jst = datetime.now(_JST).date()
 
@@ -231,8 +232,21 @@ def _current_market_adjustment() -> dict:
             })
             if td_str:
                 try:
-                    delta = (today_jst - _date.fromisoformat(str(td_str))).days
-                    result["trade_date_stale"] = delta >= 2
+                    latest_rows = (
+                        supabase.table("stock_feature_snapshots")
+                        .select("trade_date")
+                        .order("trade_date", desc=True)
+                        .limit(1)
+                        .execute()
+                        .data or []
+                    )
+                    latest_feature_date = str(latest_rows[0].get("trade_date")) if latest_rows else today_jst.isoformat()
+                    distance = trading_day_distance(supabase, str(td_str), latest_feature_date)
+                    if distance is None:
+                        delta = (today_jst - _date.fromisoformat(str(td_str))).days
+                        result["trade_date_stale"] = delta >= 4
+                    else:
+                        result["trade_date_stale"] = distance >= 2
                 except Exception:
                     pass
             return result

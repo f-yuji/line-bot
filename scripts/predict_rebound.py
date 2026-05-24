@@ -38,6 +38,7 @@ from services.entry_mode import classify_entry_case, entry_mode_filter, resolve_
 from services.model_storage import download_model_artifact
 from services.signal_stage import SIGNAL_STAGES, evaluate_signal_stage
 from services.signal_history import record_rebound_signal
+from services.trading_calendar import latest_feature_matches_today, should_skip_today_cron
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -1107,10 +1108,24 @@ def run(args: argparse.Namespace) -> None:
         logger.info("ai_predict_enabled=False; exit")
         return
 
+    target_date = _target_date(sb, args)
+    if not args.date and not args.allow_non_trading_day:
+        skip, reason = should_skip_today_cron()
+        if skip:
+            logger.info("skip prediction: %s target_date=%s", reason, target_date)
+            return
+        matches_today, latest, today = latest_feature_matches_today(sb)
+        if not matches_today:
+            logger.info(
+                "skip prediction: latest_feature_date_is_not_today latest=%s today=%s target_date=%s",
+                latest,
+                today,
+                target_date,
+            )
+            return
+
     from services.market_regime_updater import update_market_regime_for_latest_trade_date
     update_market_regime_for_latest_trade_date(sb)
-
-    target_date = _target_date(sb, args)
     if not args.date and not args.code:
         _close_stale_watchlist_rows(sb, target_date, dry_run=args.dry_run)
     regime = _current_mode(sb, target_date)
@@ -1232,6 +1247,7 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--force", action="store_true")
     p.add_argument("--limit", type=int)
     p.add_argument("--fallback-rule", action="store_true")
+    p.add_argument("--allow-non-trading-day", action="store_true", help="Allow processing latest data on weekends/holidays.")
     return p.parse_args()
 
 

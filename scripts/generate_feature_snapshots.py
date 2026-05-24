@@ -31,6 +31,7 @@ from supabase import create_client
 from jquants_client import get_daily_quotes, normalize_code
 from prime_stocks import fetch_prime_from_jquants, get_prime_tickers
 from settings_loader import get_settings
+from services.trading_calendar import is_weekend, today_jst
 
 load_dotenv()
 
@@ -633,6 +634,15 @@ def run(args: argparse.Namespace) -> None:
     if not HAS_DEPS:
         raise RuntimeError("pandas and yfinance are required")
 
+    if (
+        args.date
+        and str(args.date).lower() == "today"
+        and not args.allow_non_trading_day
+        and is_weekend(today_jst())
+    ):
+        logger.info("skip feature generation: non-trading-day weekend=%s", today_jst().isoformat())
+        return
+
     sb = _build_supabase()
     cfg = get_settings(force_reload=True)
     start, end, fetch_start = _date_range(args)
@@ -813,6 +823,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--code-to")
     parser.add_argument("--stop-on-429", action="store_true")
     parser.add_argument("--progress-every", type=int, default=10)
+    parser.add_argument("--allow-non-trading-day", action="store_true")
     return parser.parse_args()
 
 

@@ -17,6 +17,7 @@ from dotenv import load_dotenv
 from supabase import create_client
 
 from services.box_signal_logic import _to_float
+from services.trading_calendar import latest_feature_matches_today, should_skip_today_cron
 
 load_dotenv()
 
@@ -30,6 +31,11 @@ MISSING_COLUMN_RE = re.compile(r"Could not find the '([^']+)' column")
 
 def _opt(name: str) -> str:
     return os.getenv(name, "").strip()
+
+
+def _clear_proxy_env() -> None:
+    for key in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "GIT_HTTP_PROXY", "GIT_HTTPS_PROXY"):
+        os.environ[key] = ""
 
 
 def _build_supabase():
@@ -185,8 +191,23 @@ def _pnl(trade: dict, price: float) -> tuple[float, float]:
 
 
 def run(args: argparse.Namespace) -> None:
+    _clear_proxy_env()
+    if not args.trade_date and not args.allow_non_trading_day:
+        skip, reason = should_skip_today_cron()
+        if skip:
+            logger.info("[box_monitor] skip run reason=%s", reason)
+            return
     sb = _build_supabase()
     target_date = _latest_trade_date(sb, args.trade_date)
+    if not args.trade_date and not args.allow_non_trading_day:
+        matches_today, latest, today = latest_feature_matches_today(sb)
+        if not matches_today:
+            logger.info(
+                "[box_monitor] skip non-trading-day run latest_feature_date=%s today=%s",
+                latest,
+                today,
+            )
+            return
     rows = (
         sb.table("box_virtual_trades")
         .select("*")
@@ -300,6 +321,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--max-holding-days", type=int, default=20)
     parser.add_argument("--limit", type=int, default=500)
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--allow-non-trading-day", action="store_true")
     return parser.parse_args()
 
 

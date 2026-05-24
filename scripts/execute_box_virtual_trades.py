@@ -22,6 +22,7 @@ from dotenv import load_dotenv
 from supabase import create_client
 
 from services.box_signal_logic import DEFAULTS, _to_float
+from services.trading_calendar import latest_feature_matches_today, should_skip_today_cron
 
 load_dotenv()
 
@@ -35,6 +36,11 @@ MISSING_COLUMN_RE = re.compile(r"Could not find the '([^']+)' column")
 
 def _opt(name: str) -> str:
     return os.getenv(name, "").strip()
+
+
+def _clear_proxy_env() -> None:
+    for key in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "GIT_HTTP_PROXY", "GIT_HTTPS_PROXY"):
+        os.environ[key] = ""
 
 
 def _build_supabase():
@@ -280,9 +286,24 @@ def _trade_payload(signal: dict, snap: dict, entry_price: float, trade_date: str
 
 
 def run(args: argparse.Namespace) -> None:
+    _clear_proxy_env()
+    if not args.trade_date and not args.allow_non_trading_day:
+        skip, reason = should_skip_today_cron()
+        if skip:
+            logger.info("[box_execute] skip run reason=%s", reason)
+            return
     sb = _build_supabase()
     cfg = _load_settings(sb)
     target_date = _latest_trade_date(sb, args.trade_date)
+    if not args.trade_date and not args.allow_non_trading_day:
+        matches_today, latest, today = latest_feature_matches_today(sb)
+        if not matches_today:
+            logger.info(
+                "[box_execute] skip non-trading-day run latest_feature_date=%s today=%s",
+                latest,
+                today,
+            )
+            return
     pending = (
         sb.table("box_signals")
         .select("*")
@@ -470,6 +491,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--trade-date", default=None, help="Execution trade_date. Defaults to latest snapshot date.")
     parser.add_argument("--limit", type=int, default=500)
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--allow-non-trading-day", action="store_true")
     return parser.parse_args()
 
 
