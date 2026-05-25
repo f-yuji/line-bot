@@ -530,6 +530,11 @@
           <span>出来高 <b>{{ num(r.volume_ratio_20d, 1, '倍') }}</b></span>
           <span>RSI <b class="{% if r.rsi14 and r.rsi14 > 70 %}warn-text{% endif %}">{{ num(r.rsi14, 0) }}</b></span>
           <span>信用倍率 <b>{{ num(r.margin_ratio, 1, '倍') }}</b>{% if r.margin_date %}<small class="muted"> {{ r.margin_date }}</small>{% endif %}</span>
+          <span>日経相関度
+            {% if r.nikkei_link_score is not none %}
+            <b class="{% if r.nikkei_link_level == '高' %}warn-text{% endif %}">{{ r.nikkei_link_level }} {{ r.nikkei_link_score }}</b>
+            {% else %}<b>-</b>{% endif %}
+          </span>
         </div>
 
         <div class="ta-stats">

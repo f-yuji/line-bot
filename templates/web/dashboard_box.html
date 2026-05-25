@@ -161,7 +161,7 @@
       <thead>
         <tr>
           <th>コード</th><th>銘柄</th><th>状態</th>
-          <th class="right">box score</th><th class="right">下限距離</th>
+          <th class="right">box score</th><th class="right">日経相関度</th><th class="right">下限距離</th>
           <th class="right">box幅</th><th class="right">下限反発</th>
           <th class="right">信用</th>
           <th class="right">box下限</th><th class="right">box上限</th>
@@ -183,6 +183,11 @@
             {% else %}<span class="badge watching">{{ row.entry_status or '—' }}</span>{% endif %}
           </td>
           <td class="right num">{{ "%.0f"|format(row.box_score) if row.box_score is not none else '—' }}</td>
+          <td class="right num">
+            {% if row.nikkei_link_score is not none %}
+              <span class="{% if row.nikkei_link_level == '高' %}down-text{% elif row.nikkei_link_level == '中' %}warn-text{% else %}up-text{% endif %}">{{ row.nikkei_link_level }} {{ row.nikkei_link_score }}</span>
+            {% else %}<span class="muted">—</span>{% endif %}
+          </td>
           <td class="right num">{{ "%.1f"|format(row.box_position_pct) if row.box_position_pct is not none else '—' }}%</td>
           <td class="right num">{{ "%.1f"|format(row.box_width_pct) if row.box_width_pct is not none else '—' }}%</td>
           <td class="right num">{{ row.bounce_count if row.bounce_count is not none else '—' }}回</td>
@@ -195,7 +200,7 @@
           <td class="muted num">{{ row.trade_date }}</td>
         </tr>
         {% else %}
-        <tr><td colspan="12" class="center muted" style="padding:28px">boxシグナルはまだありません</td></tr>
+        <tr><td colspan="13" class="center muted" style="padding:28px">boxシグナルはまだありません</td></tr>
         {% endfor %}
       </tbody>
     </table>

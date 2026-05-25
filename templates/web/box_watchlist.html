@@ -112,6 +112,7 @@
           <th>状態</th>
           <th>チャート</th>
           <th class="right">score</th>
+          <th class="right">日経相関度</th>
           <th class="right">終値</th>
           <th class="center">下限距離</th>
           <th class="right">box幅</th>
@@ -163,6 +164,11 @@
                 <span class="num">{{ "%.0f"|format(r.watch_score) }}</span>
               </div>
             {%- else %}<span class="muted">-</span>{% endif %}
+          </td>
+          <td class="right num">
+            {% if r.nikkei_link_score is not none %}
+              <span class="{% if r.nikkei_link_level == '高' %}risk-danger{% elif r.nikkei_link_level == '中' %}risk-warn{% else %}risk-ok{% endif %}">{{ r.nikkei_link_level }} {{ r.nikkei_link_score }}</span>
+            {% else %}<span class="muted">-</span>{% endif %}
           </td>
           <td class="right num">{{ "{:,.0f}".format(r.close) if r.close is not none else '-' }}</td>
           <td class="center">
@@ -228,7 +234,7 @@
           <td class="muted num">{{ r.trade_date }}</td>
         </tr>
         {% else %}
-        <tr><td colspan="19" class="center muted" style="padding:28px">boxウォッチリストはまだありません</td></tr>
+        <tr><td colspan="20" class="center muted" style="padding:28px">boxウォッチリストはまだありません</td></tr>
         {% endfor %}
       </tbody>
     </table>

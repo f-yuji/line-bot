@@ -16,6 +16,7 @@ from supabase import create_client
 from services.signal_stage import SIGNAL_STAGES, STAGE_RANK, evaluate_signal_stage
 from services.entry_mode import ENTRY_MODE_LABELS, classify_entry_case, ma_gap_pct, regime_scores, resolve_entry_mode
 from services.trade_assist_history import decorate_history_rows
+from services.nikkei_correlation import decorate_nikkei_correlation
 
 from linebot.v3 import WebhookHandler
 from linebot.v3.exceptions import InvalidSignatureError
@@ -2161,6 +2162,19 @@ def _box_fetch_rows(table: str, query_fn=None) -> tuple[list[dict], bool, str | 
         return [], False, str(e)
 
 
+def _with_nikkei_link(rows: list[dict]) -> list[dict]:
+    """Add display-only Nikkei correlation values without affecting strategy logic."""
+    try:
+        return decorate_nikkei_correlation(supabase, rows)
+    except Exception as e:
+        logger.warning("nikkei correlation display lookup failed: %s", e)
+        for row in rows:
+            row.setdefault("nikkei_correlation_60d", None)
+            row.setdefault("nikkei_link_score", None)
+            row.setdefault("nikkei_link_level", "-")
+        return rows
+
+
 def _box_counts() -> dict:
     rows, ok, _ = _box_fetch_rows("box_signals", lambda q: q.order("trade_date", desc=True).limit(500))
     watch_rows, watch_ok, _ = _box_fetch_rows("box_watchlist", lambda q: q.order("trade_date", desc=True).limit(500))
@@ -2191,6 +2205,7 @@ def web_box_dashboard():
         "box_signals",
         lambda q: q.order("trade_date", desc=True).order("created_at", desc=True).limit(20),
     )
+    latest_signals = _with_nikkei_link(latest_signals)
     schema_ok = settings_ok and signals_ok and counts.get("schema_ok", False)
     schema_error = settings_error or signals_error
     return render_template(
@@ -2618,6 +2633,7 @@ def web_signals():
         ),
         reverse=True,
     )
+    rows = _with_nikkei_link(rows)
     signal_stats = {
         "total": len(rows),
         "active": sum(1 for r in rows if r.get("status") == "rebound_signal"),
@@ -3308,6 +3324,7 @@ def web_trade_assist():
         reverse=True,
     )
     cards = cards[:30]
+    cards = _with_nikkei_link(cards)
     try:
         history_rows = (
             supabase.table("trade_assist_candidate_history")
@@ -3371,6 +3388,7 @@ def web_box_trade_assist():
     )
     schema_ok = settings_ok and pending_ok and watch_ok and history_ok
     schema_error = settings_error or pending_error or watch_error or history_error
+    _with_nikkei_link(pending_rows + watch_rows)
     summary = {
         "pending": len(pending_rows),
         "watchlist": len(watch_rows),
@@ -3421,6 +3439,7 @@ def web_box_watchlist():
             row["signal_box_score"] = sig.get("box_score")
             row["signal_trade_date"] = sig.get("trade_date")
             row["signal_id"] = sig.get("id")
+    rows = _with_nikkei_link(rows)
     schema_ok = ok and signal_ok
     schema_error = error or signal_error
     return render_template(
@@ -3446,6 +3465,7 @@ def web_box_signals():
         "entered": sum(1 for r in rows if r.get("entry_status") == "entered"),
         "skipped": sum(1 for r in rows if r.get("entry_status") == "skipped"),
     }
+    rows = _with_nikkei_link(rows)
     return render_template(
         "web/box_signals.html",
         rows=rows,

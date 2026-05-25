@@ -83,7 +83,7 @@
       <thead>
         <tr>
           <th>コード</th><th>名称</th><th>ステータス</th>
-          <th class="right">AIスコア</th><th class="right">期待値</th>
+          <th class="right">AIスコア</th><th class="right">日経相関度</th><th class="right">期待値</th>
           <th class="right">急落率</th><th class="right">急落時株価</th>
           <th class="right">ルールスコア</th><th class="right">条件数</th><th class="right">悪材料</th>
           <th>セクター</th><th>処理理由</th><th>最終シグナル</th><th>通知日時</th><th>急落日</th>
@@ -96,6 +96,11 @@
           <td class="name">{{ r.name or "" }}</td>
           <td>{{ signal_badge(r) }}</td>
           <td class="right num">{{ ai_score(r.signal_probability) }}</td>
+          <td class="right num">
+            {% if r.nikkei_link_score is not none %}
+            <span class="{% if r.nikkei_link_level == '高' %}down-text{% elif r.nikkei_link_level == '中' %}warn-text{% else %}up-text{% endif %}">{{ r.nikkei_link_level }} {{ r.nikkei_link_score }}</span>
+            {% else %}<span class="muted">-</span>{% endif %}
+          </td>
           <td class="right num">{{ delta(r.expected_value) }}</td>
           <td class="right num">{{ delta(r.drop_pct) }}</td>
           <td class="right num">{{ "%.0f"|format(r.price_at_drop) if r.price_at_drop is not none else "" }}</td>
@@ -109,7 +114,7 @@
           <td class="muted num">{{ r.drop_detected_at | jst("%Y-%m-%d") }}</td>
         </tr>
         {% else %}
-        <tr><td colspan="15" class="center muted" style="padding:28px">本命以上のシグナルはありません</td></tr>
+        <tr><td colspan="16" class="center muted" style="padding:28px">本命以上のシグナルはありません</td></tr>
         {% endfor %}
       </tbody>
     </table>
