@@ -415,6 +415,17 @@ function openDetail(r) {
   document.getElementById('m-div').textContent = r.div_yield_pct != null ? r.div_yield_pct.toFixed(2) + '%' : '—';
 
   const extra = [
+    ['判定方式', r.diagnostic_engine_label || '—'],
+    ['AI閾値照合', r.diagnostic_threshold_text || '—'],
+    ['判定理由', r.diagnostic_stage_reason || r.stage_reason || '—'],
+    ['当日終値騰落', r.diagnostic_day_change_pct != null ? _fmt(r.diagnostic_day_change_pct) : '—'],
+    ['急落判定値', r.diagnostic_drop_pct != null ? _fmt(r.diagnostic_drop_pct) : '—'],
+    ['RSI / 直近安値', r.diagnostic_rsi14 != null ? `${Number(r.diagnostic_rsi14).toFixed(0)} / ${r.diagnostic_rsi_min_5d != null ? Number(r.diagnostic_rsi_min_5d).toFixed(0) : '—'}` : '—'],
+    ['出来高倍率', r.diagnostic_volume_ratio_20d != null ? `${Number(r.diagnostic_volume_ratio_20d).toFixed(1)}倍` : '—'],
+    ['反発設定との関係', r.diagnostic_rule_note || '—'],
+    ['仮想購入方式', r.diagnostic_entry_timing_label || '—'],
+    ['購入価格根拠', r.diagnostic_entry_price_text || '—'],
+    ['設定照合メモ', r.diagnostic_settings_note || '—'],
     ['段階', _STAGE_MAP[r.signal_stage || 'none'] || 'シグナルなし'],
     ['AIスコア', aiScore != null ? Math.round(aiScore) : '—'],
     ['期待値', r.expected_value != null ? _fmt(r.expected_value) : '—'],

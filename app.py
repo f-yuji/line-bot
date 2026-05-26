@@ -17,6 +17,7 @@ from services.signal_stage import SIGNAL_STAGES, STAGE_RANK, evaluate_signal_sta
 from services.entry_mode import ENTRY_MODE_LABELS, classify_entry_case, ma_gap_pct, regime_scores, resolve_entry_mode
 from services.trade_assist_history import decorate_history_rows
 from services.nikkei_correlation import decorate_nikkei_correlation
+from services.rebound_diagnostics import decorate_rebound_diagnostics
 
 from linebot.v3 import WebhookHandler
 from linebot.v3.exceptions import InvalidSignatureError
@@ -2101,6 +2102,7 @@ def web_dashboard():
         and r.get("signal_stage") == "early"
         and not r.get("is_excluded")
     ]
+    _with_rebound_diagnostics(signal_rows + candidate_rows, market_adjustment, cfg)
     watching_rows = [r for r in rows if r.get("status") == "watching"]
     stats = get_watchlist_counts(rows, open_trade_codes)
     stats["holding"] = holding_count
@@ -2172,6 +2174,27 @@ def _with_nikkei_link(rows: list[dict]) -> list[dict]:
             row.setdefault("nikkei_correlation_60d", None)
             row.setdefault("nikkei_link_score", None)
             row.setdefault("nikkei_link_level", "-")
+        return rows
+
+
+def _with_rebound_diagnostics(
+    rows: list[dict],
+    market_adjustment: dict | None = None,
+    settings: dict | None = None,
+) -> list[dict]:
+    """Add display-only evidence for the existing rebound AI decision path."""
+    try:
+        return decorate_rebound_diagnostics(
+            supabase,
+            rows,
+            settings or _settings_loader.get_settings(),
+            market_adjustment,
+        )
+    except Exception as e:
+        logger.warning("rebound diagnostic display lookup failed: %s", e)
+        for row in rows:
+            row.setdefault("diagnostic_engine_label", "引け後AIモデル判定")
+            row.setdefault("diagnostic_rule_note", "判定詳細を取得できませんでした。")
         return rows
 
 
@@ -2634,6 +2657,7 @@ def web_signals():
         reverse=True,
     )
     rows = _with_nikkei_link(rows)
+    rows = _with_rebound_diagnostics(rows, market_adjustment)
     signal_stats = {
         "total": len(rows),
         "active": sum(1 for r in rows if r.get("status") == "rebound_signal"),
@@ -3325,6 +3349,7 @@ def web_trade_assist():
     )
     cards = cards[:30]
     cards = _with_nikkei_link(cards)
+    cards = _with_rebound_diagnostics(cards, market_adjustment, settings)
     try:
         history_rows = (
             supabase.table("trade_assist_candidate_history")
@@ -3753,6 +3778,8 @@ def web_virtual_trades():
         if (t.get("exit_reason") or "") not in cleanup_reasons
     ]
     cleanup_closed_count = len(closed_trades) - len(performance_closed_trades)
+    market_adjustment = _current_market_adjustment()
+    _with_rebound_diagnostics(open_trades + performance_closed_trades, market_adjustment)
     total_pnl = sum(t.get("profit_loss") or 0 for t in performance_closed_trades)
     win_count = sum(1 for t in performance_closed_trades if (t.get("profit_loss") or 0) > 0)
     open_unrealized_pct_total = (
@@ -3772,7 +3799,7 @@ def web_virtual_trades():
         open_value_total=open_value_total,
         open_unrealized_pnl_total=open_unrealized_pnl_total,
         open_unrealized_pct_total=open_unrealized_pct_total,
-        market_adjustment=_current_market_adjustment(),
+        market_adjustment=market_adjustment,
     )
 
 

@@ -58,6 +58,11 @@
           <input type="checkbox" name="ma5_cross_enabled" {% if cfg.ma5_cross_enabled %}checked{% endif %} style="accent-color:var(--accent)">
         </label>
       </div>
+      <p class="muted" style="font-size:12px;line-height:1.65;margin:10px 0 0">
+        この反発ルールは monitor_rebound の観測判定用です。日次の仮想購入は
+        <code>predict_rebound.py</code> のAIスコアと入口フィルタで判定され、
+        前日比反発率やRSI回復ラインを必須条件にはしていません。
+      </p>
     </div>
 
     <div class="form-card">

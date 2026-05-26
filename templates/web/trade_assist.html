@@ -351,6 +351,32 @@
     font-weight: 600;
   }
   .ta-stats .warn-text { color: var(--ta-warn); }
+  .ta-decision {
+    display: grid;
+    gap: 7px;
+    padding: 10px 12px;
+    border: 1px solid var(--ta-border);
+    border-radius: 6px;
+    background: #11141b;
+  }
+  .ta-decision-head {
+    color: var(--ta-dim-2);
+    font-size: 11px;
+  }
+  .ta-decision-main {
+    color: var(--ta-fg);
+    font-size: 12px;
+    line-height: 1.55;
+  }
+  .ta-decision-grid {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 14px;
+    color: var(--ta-dim);
+    font-size: 11px;
+  }
+  .ta-decision-grid b { color: var(--ta-fg); font-family: var(--font-mono); }
+  .ta-decision-note { color: var(--ta-dim-2); font-size: 11px; line-height: 1.55; }
   .ta-exits {
     display: flex;
     flex-wrap: wrap;
@@ -544,6 +570,18 @@
           <span>MA75乖離 <b>{{ pct(r.entry_ma75_gap_pct) }}</b></span>
           <span>入口モード <b>{{ r.entry_mode_label or '-' }}</b></span>
           <span>推奨 <b>{{ r.recommended_entry_mode_label or '-' }}</b></span>
+        </div>
+
+        <div class="ta-decision">
+          <div class="ta-decision-head">判定検証</div>
+          <div class="ta-decision-main">{{ r.diagnostic_engine_label or '-' }} / {{ r.diagnostic_entry_timing_label or '-' }}</div>
+          <div class="ta-decision-grid">
+            <span>閾値 <b>{{ r.diagnostic_threshold_text or '-' }}</b></span>
+            <span>当日終値騰落 <b>{{ pct(r.diagnostic_day_change_pct) }}</b></span>
+            <span>RSI <b>{{ num(r.diagnostic_rsi14, 0) }}</b></span>
+            <span>出来高 <b>{{ num(r.diagnostic_volume_ratio_20d, 1, '倍') }}</b></span>
+          </div>
+          <div class="ta-decision-note">{{ r.diagnostic_rule_note or '-' }}</div>
         </div>
 
         <div class="ta-exits">

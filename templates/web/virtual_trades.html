@@ -21,6 +21,13 @@
   </div>
 </div>
 
+<div class="panel" style="margin-bottom:12px;border-color:var(--accent-dim)">
+  <div style="padding:12px 16px;line-height:1.65;font-size:13px">
+    <strong>仮想購入の価格根拠</strong>
+    <span class="muted"> 現行の rebound 日次AIは、AI本命以上が入口フィルタを通過した場合、シグナル発生日の終値で仮想購入として記録します。反発率・RSI回復ラインは、このAI入口の必須条件ではありません。</span>
+  </div>
+</div>
+
 {% set _mc = market_adjustment %}
 <div class="panel" style="margin-bottom:12px;{% if _mc and _mc.regime and _mc.regime != 'normal' %}border-color:var(--accent-dim);{% endif %}">
   <div class="panel-head">

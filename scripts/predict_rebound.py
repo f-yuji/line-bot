@@ -609,6 +609,28 @@ def _signal_lifecycle_log(code: Any, watchlist_id: Any, old_status: Any, new_sta
     )
 
 
+def _virtual_entry_check_log(snapshot: dict, result: dict, decision: str, reason: str) -> None:
+    """Log the existing AI-entry decision without changing its behavior."""
+    logger.info(
+        "[virtual_entry_check] code=%s decision=%s reason=%s stage=%s ai_pct=%.1f "
+        "signal_close=%s buy_price_basis=signal_date_close day_change_pct=%s rsi14=%s "
+        "volume_ratio_20d=%s entry_mode=%s entry_case=%s ma5_gap_pct=%s margin_ratio=%s",
+        snapshot.get("code"),
+        decision,
+        reason,
+        result.get("signal_stage"),
+        float(result.get("probability") or 0.0) * 100.0,
+        snapshot.get("close"),
+        snapshot.get("day_change_pct"),
+        snapshot.get("rsi14"),
+        snapshot.get("volume_ratio_20d"),
+        result.get("entry_mode_used"),
+        result.get("entry_case"),
+        result.get("entry_ma5_gap_pct"),
+        snapshot.get("margin_ratio"),
+    )
+
+
 def _persist_watchlist(sb, row: dict, result: dict, *, dry_run: bool, force: bool) -> dict | None:
     now = datetime.now(timezone.utc).isoformat()
     exact_existing = _find_watchlist_by_snapshot(sb, str(row["code"]), row.get("id"))
@@ -768,6 +790,7 @@ def _create_virtual_trade(sb, snapshot: dict, watch: dict, result: dict, *, dry_
         return False
     if result.get("market_regime") == "panic_selloff":
         logger.info("virtual_trade skipped by market regime: code=%s regime=panic_selloff", snapshot.get("code"))
+        _virtual_entry_check_log(snapshot, result, "skip", "panic_selloff")
         _mark_watchlist_status(sb, watch, snapshot, "signal_skipped", "panic_selloff", dry_run=dry_run)
         return False
     try:
@@ -782,10 +805,12 @@ def _create_virtual_trade(sb, snapshot: dict, watch: dict, result: dict, *, dry_
             .data or []
         )
         if existing:
+            _virtual_entry_check_log(snapshot, result, "skip", "already_open_virtual_trade")
             _mark_watchlist_status(sb, watch, snapshot, "signal_skipped", "already_open_virtual_trade", dry_run=dry_run)
             return False
         duplicate_reason = _same_signal_trade_exists(sb, snapshot, watch)
         if duplicate_reason:
+            _virtual_entry_check_log(snapshot, result, "skip", str(duplicate_reason))
             _mark_watchlist_status(sb, watch, snapshot, "signal_skipped", duplicate_reason, dry_run=dry_run)
             return False
         recent = _recent_closed_trade(sb, str(snapshot["code"]))
@@ -796,6 +821,7 @@ def _create_virtual_trade(sb, snapshot: dict, watch: dict, result: dict, *, dry_
                 recent.get("exit_reason") or recent.get("sell_reason"),
                 recent.get("days_since_exit"),
             )
+            _virtual_entry_check_log(snapshot, result, "skip", "reentry_cooldown")
             _mark_watchlist_status(sb, watch, snapshot, "signal_skipped", "reentry_cooldown", dry_run=dry_run)
             return False
         now = datetime.now(timezone.utc).isoformat()
@@ -836,6 +862,7 @@ def _create_virtual_trade(sb, snapshot: dict, watch: dict, result: dict, *, dry_
             "entry_case": result.get("entry_case"),
             "status": "open",
         }
+        _virtual_entry_check_log(snapshot, result, "enter", "confirmed_signal_passed_filters")
         if dry_run:
             logger.info("DRYRUN virtual_trade insert: %s", row)
             return True
@@ -911,6 +938,7 @@ def _create_ranked_virtual_trades(
                 mode_meta.get("entry_case"),
                 row.get("drop_pct"),
             )
+            _virtual_entry_check_log(row, result, "skip", str(mode_reason or "entry_mode_filter"))
             _mark_watchlist_status(sb, watch, row, "signal_skipped", str(mode_reason or "entry_mode_filter"), dry_run=dry_run)
             continue
         credit = evaluate_entry_credit_filter(sb, row, cfg)
@@ -923,6 +951,7 @@ def _create_ranked_virtual_trades(
                 credit.margin_date,
                 cfg.get("entry_max_margin_ratio"),
             )
+            _virtual_entry_check_log(row, result, "skip", str(credit.reason or "margin_ratio_filter"))
             _mark_watchlist_status(sb, watch, row, "signal_skipped", str(credit.reason or "margin_ratio_filter"), dry_run=dry_run)
             continue
         if credit.margin_ratio is not None:
@@ -938,6 +967,7 @@ def _create_ranked_virtual_trades(
     for row, watch, result in ranked_all:
         watch_id = (watch or {}).get("id")
         if watch_id and watch_id not in ranked_ids:
+            _virtual_entry_check_log(row, result, "skip", "entry_rank_limit")
             _mark_watchlist_status(sb, watch, row, "signal_skipped", "entry_rank_limit", dry_run=dry_run)
     open_count, today_entries, sector_counts = _entry_limit_state(sb)
     for row, watch, result in ranked:
@@ -945,15 +975,18 @@ def _create_ranked_virtual_trades(
         sector = str(row.get("sector") or "unknown")
         if max_open and open_count >= max_open:
             logger.info("[position_limit] skip code=%s open_positions=%d limit=%d", code, open_count, max_open)
+            _virtual_entry_check_log(row, result, "skip", "max_open_positions")
             _mark_watchlist_status(sb, watch, row, "signal_skipped", "max_open_positions", dry_run=dry_run)
             continue
         if max_daily and today_entries >= max_daily:
             logger.info("[daily_entry_limit] skip code=%s today_entries=%d limit=%d", code, today_entries, max_daily)
+            _virtual_entry_check_log(row, result, "skip", "max_daily_entries")
             _mark_watchlist_status(sb, watch, row, "signal_skipped", "max_daily_entries", dry_run=dry_run)
             continue
         current_sector = sector_counts.get(sector, 0)
         if max_sector and current_sector >= max_sector:
             logger.info("[sector_limit] skip code=%s sector=%s current=%d limit=%d", code, sector, current_sector, max_sector)
+            _virtual_entry_check_log(row, result, "skip", "max_sector_positions")
             _mark_watchlist_status(sb, watch, row, "signal_skipped", "max_sector_positions", dry_run=dry_run)
             continue
         if _create_virtual_trade(sb, row, watch, result, dry_run=dry_run):
@@ -1107,6 +1140,26 @@ def run(args: argparse.Namespace) -> None:
     if not cfg.get("ai_predict_enabled", True):
         logger.info("ai_predict_enabled=False; exit")
         return
+    logger.info(
+        "[entry_settings_check] engine=predict_rebound_ai_snapshot ai_early=%s ai_confirmed=%s "
+        "ai_strong=%s entry_mode=%s margin_enabled=%s max_margin_ratio=%s "
+        "max_open_positions=%s max_daily_entries=%s entry_rank_limit=%s max_sector_positions=%s "
+        "monitor_rebound_only_daily_rebound=%s monitor_rebound_only_rsi_low=%s "
+        "monitor_rebound_only_rsi_recover=%s",
+        cfg.get("ai_probability_early"),
+        cfg.get("ai_probability_confirmed"),
+        cfg.get("ai_probability_strong"),
+        cfg.get("entry_mode"),
+        cfg.get("entry_margin_filter_enabled"),
+        cfg.get("entry_max_margin_ratio"),
+        cfg.get("max_open_positions"),
+        cfg.get("max_daily_entries"),
+        cfg.get("entry_rank_limit"),
+        cfg.get("max_sector_positions"),
+        cfg.get("daily_rebound_threshold"),
+        cfg.get("rsi_low_threshold"),
+        cfg.get("rsi_recover_threshold"),
+    )
 
     target_date = _target_date(sb, args)
     if not args.date and not args.allow_non_trading_day:
@@ -1181,6 +1234,7 @@ def run(args: argparse.Namespace) -> None:
         ev = _expected_value(prob, target["take_profit_pct"], target["stop_loss_pct"])
         signal_score = round(_score_like(row, prob), 2)
         stage, is_excluded, exclude_reason = _determine_stage(row, prob, ev, cfg, signal_score)
+        stage_check = evaluate_signal_stage(prob, signal_score, ev, cfg, market_adjustment)
         result = {
             "probability": round(prob, 6),
             "expected_value": round(ev, 4),
@@ -1210,6 +1264,28 @@ def run(args: argparse.Namespace) -> None:
         result["recommended_entry_mode"] = entry_mode_ctx["recommended"]
         if stage in SIGNAL_STAGES:
             signal_count += 1
+            thresholds = stage_check.get("thresholds") or {}
+            logger.info(
+                "[signal_check] code=%s engine=predict_rebound_ai_snapshot stage=%s ai_pct=%.1f "
+                "confirmed_pct=%.1f strong_pct=%.1f rule_score=%.1f rule_strong_min=60 "
+                "day_change_pct=%s drop20_pct=%s close=%s rsi14=%s rsi_min_5d=%s "
+                "rsi_recover_flag=%s volume_ratio_20d=%s entry_basis=signal_date_close "
+                "rebound_rule_gate=not_applied_in_predict_rebound reason=%s",
+                row.get("code"),
+                stage,
+                prob * 100.0,
+                float(thresholds.get("confirmed") or 0.0) * 100.0,
+                float(thresholds.get("strong") or 0.0) * 100.0,
+                signal_score,
+                row.get("day_change_pct"),
+                row.get("drop_from_20d_high_pct"),
+                row.get("close"),
+                row.get("rsi14"),
+                row.get("rsi_min_5d"),
+                row.get("rsi_recover_flag"),
+                row.get("volume_ratio_20d"),
+                stage_check.get("reason"),
+            )
         logger.info(
             "%spredict: %s %s prob=%.3f ev=%.2f stage=%s bad=%.0f mode=%s",
             "DRYRUN " if args.dry_run else "",
