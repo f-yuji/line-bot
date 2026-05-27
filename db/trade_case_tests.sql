@@ -699,4 +699,248 @@ SET is_enabled = true,
     updated_at = now()
 WHERE case_key LIKE 'combo\_%' ESCAPE '\';
 
+-- H5 forward-test cases (H5 rebound strategy with peak_pullback_exit)
+INSERT INTO trade_case_definitions (case_key, case_name, description, rules)
+VALUES
+(
+    'h5_ai65_pb20_hd3_est8_cm_mr20',
+    'H5 AI65 PB20d HD3 EST8 CM MR20',
+    'H5 primary: AI>=0.65, 20d-high drawdown>=-8%, no panic_selloff, overheat cool/mild only, emergency stop -8%, hold max 3 days, margin_ratio<=20.',
+    '{
+      "entry_sort": "signal_probability_desc",
+      "entry_rank_limit": 999,
+      "max_open_positions": 999,
+      "max_daily_entries": 999,
+      "max_sector_positions": 99,
+      "min_ai_score": 0.65,
+      "allowed_stages": ["confirmed", "strong_confirmed"],
+      "min_drop_from_20d_high": -8.0,
+      "excluded_regimes": ["panic_selloff"],
+      "exit_type": "peak_pullback_exit",
+      "peak_pullback_pct": -0.02,
+      "initial_sl_pct": -0.08,
+      "max_holding_days": 3,
+      "max_overheat_score": 1,
+      "use_margin_filter": true,
+      "require_margin_data": false,
+      "max_margin_ratio": 20
+    }'::jsonb
+),
+(
+    'h5_ai65_pb20_hd3_est8_cm',
+    'H5 AI65 PB20d HD3 EST8 CM',
+    'H5 compare-1: same as primary but no margin ratio filter.',
+    '{
+      "entry_sort": "signal_probability_desc",
+      "entry_rank_limit": 999,
+      "max_open_positions": 999,
+      "max_daily_entries": 999,
+      "max_sector_positions": 99,
+      "min_ai_score": 0.65,
+      "allowed_stages": ["confirmed", "strong_confirmed"],
+      "min_drop_from_20d_high": -8.0,
+      "excluded_regimes": ["panic_selloff"],
+      "exit_type": "peak_pullback_exit",
+      "peak_pullback_pct": -0.02,
+      "initial_sl_pct": -0.08,
+      "max_holding_days": 3,
+      "max_overheat_score": 1
+    }'::jsonb
+),
+(
+    'h5_ai65_pb20_hd3_nostop_cm',
+    'H5 AI65 PB20d HD3 NoStop CM',
+    'H5 compare-2: no emergency stop, rely on peak pullback exit and time stop only.',
+    '{
+      "entry_sort": "signal_probability_desc",
+      "entry_rank_limit": 999,
+      "max_open_positions": 999,
+      "max_daily_entries": 999,
+      "max_sector_positions": 99,
+      "min_ai_score": 0.65,
+      "allowed_stages": ["confirmed", "strong_confirmed"],
+      "min_drop_from_20d_high": -8.0,
+      "excluded_regimes": ["panic_selloff"],
+      "exit_type": "peak_pullback_exit",
+      "peak_pullback_pct": -0.02,
+      "initial_sl_pct": -0.50,
+      "max_holding_days": 3,
+      "max_overheat_score": 1
+    }'::jsonb
+),
+(
+    'h5_ai60_pb20_hd3_est8_cm_mr20',
+    'H5 AI60 PB20d HD3 EST8 CM MR20',
+    'H5 compare-3: looser AI threshold (>=0.60), same H5 filters + emergency stop -8% + margin_ratio<=20.',
+    '{
+      "entry_sort": "signal_probability_desc",
+      "entry_rank_limit": 999,
+      "max_open_positions": 999,
+      "max_daily_entries": 999,
+      "max_sector_positions": 99,
+      "min_ai_score": 0.60,
+      "allowed_stages": ["confirmed", "strong_confirmed"],
+      "min_drop_from_20d_high": -8.0,
+      "excluded_regimes": ["panic_selloff"],
+      "exit_type": "peak_pullback_exit",
+      "peak_pullback_pct": -0.02,
+      "initial_sl_pct": -0.08,
+      "max_holding_days": 3,
+      "max_overheat_score": 1,
+      "use_margin_filter": true,
+      "require_margin_data": false,
+      "max_margin_ratio": 20
+    }'::jsonb
+)
+ON CONFLICT (case_key) DO UPDATE
+SET
+    case_name = EXCLUDED.case_name,
+    description = EXCLUDED.description,
+    rules = EXCLUDED.rules,
+    updated_at = now();
+
+-- H5 formal Primary and comparison cases. Older H5 rows above remain as benchmarks.
+INSERT INTO trade_case_definitions (case_key, case_name, description, rules)
+VALUES
+(
+    'h5_ai65_pb20_hd3_est12_cm_range330',
+    'H5 Primary: AI65 / PB2 / HD3 / EST12 / Credit 3-30',
+    'Formal H5 Primary with -12% emergency stop and margin ratio range 3-30.',
+    '{
+      "entry_sort": "expected_value_desc",
+      "max_open_positions": 999,
+      "max_daily_entries": 999,
+      "max_sector_positions": 999,
+      "min_ai_score": 0.65,
+      "allowed_stages": ["confirmed", "strong_confirmed"],
+      "min_drop_from_20d_high": -8.0,
+      "excluded_regimes": ["panic_selloff"],
+      "exit_type": "peak_pullback_exit",
+      "peak_pullback_pct": -0.02,
+      "initial_sl_pct": -0.12,
+      "max_holding_days": 3,
+      "max_overheat_score": 1,
+      "use_margin_filter": true,
+      "require_margin_data": false,
+      "min_margin_ratio": 3,
+      "max_margin_ratio": 30,
+      "credit_profile": "margin_range_3_30",
+      "is_primary_h5": true,
+      "entry_execution_note": "同日終値付近のentry前提。翌日寄りは期待値が低下するため、+2%超GUは飛びつき警戒。"
+    }'::jsonb
+),
+(
+    'h5_ai65_pb20_hd3_nostop_cm_range330',
+    'H5 Compare: NOSTOP / Credit 3-30',
+    'Theoretical comparison without initial stop; not an execution Primary.',
+    '{
+      "entry_sort": "expected_value_desc",
+      "max_open_positions": 999,
+      "max_daily_entries": 999,
+      "max_sector_positions": 999,
+      "min_ai_score": 0.65,
+      "allowed_stages": ["confirmed", "strong_confirmed"],
+      "min_drop_from_20d_high": -8.0,
+      "excluded_regimes": ["panic_selloff"],
+      "exit_type": "peak_pullback_exit",
+      "peak_pullback_pct": -0.02,
+      "initial_sl_pct": null,
+      "max_holding_days": 3,
+      "max_overheat_score": 1,
+      "use_margin_filter": true,
+      "require_margin_data": false,
+      "min_margin_ratio": 3,
+      "max_margin_ratio": 30,
+      "credit_profile": "margin_range_3_30",
+      "is_primary_h5": false,
+      "h5_comparison": true
+    }'::jsonb
+),
+(
+    'h5_ai65_pb20_hd3_est12_cm_mr20',
+    'H5 Compare: EST12 / Credit <=20',
+    'Comparison using the old maximum credit ratio cap.',
+    '{
+      "entry_sort": "expected_value_desc",
+      "max_open_positions": 999,
+      "max_daily_entries": 999,
+      "max_sector_positions": 999,
+      "min_ai_score": 0.65,
+      "allowed_stages": ["confirmed", "strong_confirmed"],
+      "min_drop_from_20d_high": -8.0,
+      "excluded_regimes": ["panic_selloff"],
+      "exit_type": "peak_pullback_exit",
+      "peak_pullback_pct": -0.02,
+      "initial_sl_pct": -0.12,
+      "max_holding_days": 3,
+      "max_overheat_score": 1,
+      "use_margin_filter": true,
+      "require_margin_data": false,
+      "max_margin_ratio": 20,
+      "credit_profile": "margin_le20",
+      "is_primary_h5": false,
+      "h5_comparison": true
+    }'::jsonb
+),
+(
+    'h5_ai65_pb20_hd3_est8_cm_range330',
+    'H5 Compare: EST8 / Credit 3-30',
+    'Comparison for the earlier -8% emergency stop.',
+    '{
+      "entry_sort": "expected_value_desc",
+      "max_open_positions": 999,
+      "max_daily_entries": 999,
+      "max_sector_positions": 999,
+      "min_ai_score": 0.65,
+      "allowed_stages": ["confirmed", "strong_confirmed"],
+      "min_drop_from_20d_high": -8.0,
+      "excluded_regimes": ["panic_selloff"],
+      "exit_type": "peak_pullback_exit",
+      "peak_pullback_pct": -0.02,
+      "initial_sl_pct": -0.08,
+      "max_holding_days": 3,
+      "max_overheat_score": 1,
+      "use_margin_filter": true,
+      "require_margin_data": false,
+      "min_margin_ratio": 3,
+      "max_margin_ratio": 30,
+      "credit_profile": "margin_range_3_30",
+      "is_primary_h5": false,
+      "h5_comparison": true
+    }'::jsonb
+),
+(
+    'h5_ai60_pb20_hd3_est12_cm_range330',
+    'H5 Compare: AI60 / EST12 / Credit 3-30',
+    'Broader AI threshold comparison; not an execution Primary.',
+    '{
+      "entry_sort": "expected_value_desc",
+      "max_open_positions": 999,
+      "max_daily_entries": 999,
+      "max_sector_positions": 999,
+      "min_ai_score": 0.60,
+      "allowed_stages": ["confirmed", "strong_confirmed"],
+      "min_drop_from_20d_high": -8.0,
+      "excluded_regimes": ["panic_selloff"],
+      "exit_type": "peak_pullback_exit",
+      "peak_pullback_pct": -0.02,
+      "initial_sl_pct": -0.12,
+      "max_holding_days": 3,
+      "max_overheat_score": 1,
+      "use_margin_filter": true,
+      "require_margin_data": false,
+      "min_margin_ratio": 3,
+      "max_margin_ratio": 30,
+      "credit_profile": "margin_range_3_30",
+      "is_primary_h5": false,
+      "h5_comparison": true
+    }'::jsonb
+)
+ON CONFLICT (case_key) DO UPDATE
+SET
+    case_name = EXCLUDED.case_name,
+    description = EXCLUDED.description,
+    rules = EXCLUDED.rules,
+    updated_at = now();
+
 NOTIFY pgrst, 'reload schema';

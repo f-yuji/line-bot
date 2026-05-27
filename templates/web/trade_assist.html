@@ -100,6 +100,79 @@
     line-height: 1.65;
   }
   .ta-note .muted { font-size: 12px; margin-top: 4px; }
+  .ta-h5-note {
+    background: rgba(94, 230, 168, 0.06);
+    border: 1px solid rgba(94, 230, 168, 0.32);
+    border-radius: 10px;
+    padding: 12px 16px;
+    margin: -8px 0 18px;
+    font-size: 13px;
+    line-height: 1.65;
+  }
+  .ta-h5-note strong, .ta-h5-tag { color: var(--ta-up); }
+  .ta-h5-tag {
+    display: inline-flex;
+    border: 1px solid rgba(94, 230, 168, 0.36);
+    border-radius: 4px;
+    padding: 2px 7px;
+    margin-bottom: 6px;
+    font-size: 11px;
+    font-weight: 700;
+  }
+  .ta-entry-check {
+    display: grid;
+    gap: 10px;
+    background: var(--ta-panel-2);
+    border: 1px solid var(--ta-border);
+    border-radius: 10px;
+    padding: 12px 14px;
+  }
+  .ta-entry-check-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px 14px;
+  }
+  .ta-entry-check-grid > div {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+  }
+  .ta-entry-check-grid span {
+    color: var(--ta-dim-2);
+    font-size: 11px;
+  }
+  .ta-entry-check-grid b {
+    color: var(--ta-fg);
+    font-family: var(--font-mono);
+    font-size: 14px;
+    font-weight: 600;
+    overflow-wrap: anywhere;
+  }
+  .ta-entry-verdict {
+    border-left: 3px solid var(--ta-warn);
+    background: rgba(230, 200, 96, 0.08);
+    border-radius: 5px;
+    padding: 8px 10px;
+    color: var(--ta-fg);
+    font-size: 12px;
+    line-height: 1.55;
+  }
+  .ta-entry-verdict.is-entry_favorable,
+  .ta-entry-verdict.is-entry_ok {
+    border-color: var(--ta-up);
+    background: rgba(94, 230, 168, 0.08);
+  }
+  .ta-entry-verdict.is-entry_ng,
+  .ta-entry-verdict.is-price_fetch_suspect {
+    border-color: var(--ta-dn);
+    background: rgba(255, 122, 133, 0.08);
+  }
+  .ta-entry-source {
+    color: var(--ta-dim-2);
+    font-size: 11px;
+    line-height: 1.55;
+  }
   .ta-grid {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(420px, 1fr));
@@ -418,7 +491,8 @@
   }
   @media (max-width: 420px) {
     .ta-bands,
-    .ta-risk { grid-template-columns: 1fr; }
+    .ta-risk,
+    .ta-entry-check-grid { grid-template-columns: 1fr; }
   }
 </style>
 
@@ -493,6 +567,14 @@
     {% endif %}
   </div>
 
+  {% if h5_primary %}
+  <div class="ta-h5-note">
+    <strong>H5 Primary 実弾候補の判定を開始</strong>
+    <div>AI 65%以上 / 20日高値比 -8%以上 / panic_selloff除外 / 過熱 cool・mild / 信用倍率3〜30倍 / ピーク反落-2% / 最大3営業日 / -12%事故停止</div>
+    <div class="muted">{{ h5_primary.entry_execution_note }} 翌日終値でのentryは非推奨です。yfinance現在値は遅延・欠損のあり得る参考値なので、発注判断は証券口座の現在値・板で確認してください。</div>
+  </div>
+  {% endif %}
+
   <div class="ta-grid">
     {% for r in rows %}
       {% set ai_score = ((r.display_probability or r.signal_probability or r.entry_probability or 0) * 100) | round(0) | int %}
@@ -506,20 +588,62 @@
           </div>
           <div>
             {% if r.source_label %}<div class="ta-source">{{ r.source_label }}</div>{% endif %}
+            {% if r.h5_primary_match %}<div class="ta-h5-tag">H5 PRIMARY</div>{% endif %}
             <div class="ta-status {{ 'is-strong' if strong else '' }}">{{ r.display_status }}</div>
           </div>
         </div>
 
+        {% if r.h5_primary_match %}
+        <div class="ta-h5-note" style="margin:0">
+          <strong>実弾候補 / 同日終値付近entry前提</strong>
+          <div>20日高値比 {{ pct(r.drop_from_20d_high_pct) }} / 過熱 {{ r.h5_overheat_score }} / 出口 ピーク反落-2%・3営業日・事故停止-12%</div>
+          <div class="muted">翌日寄りが前日終値比 +2% を超える場合は飛びつき警戒。</div>
+        </div>
+        {% elif r.h5_skip_reason %}
+        <div class="muted" style="font-size:12px">H5対象外: {{ r.h5_skip_reason }}</div>
+        {% endif %}
+
         <div class="ta-hero">
           <div class="ta-hero-block">
-            <span>購入想定価格</span>
-            <b>{{ yen(r.entry_price) }}</b>
+            <span>{% if r.h5_primary_match %}シグナル価格 / 仮想entry{% else %}購入想定価格{% endif %}</span>
+            <b>{{ yen(r.signal_price if r.h5_primary_match else r.entry_price) }}</b>
           </div>
           <div class="ta-hero-block is-right">
             <span>{{ r.ai_score_label or 'AIスコア' }}</span>
             <b class="ta-ai {{ ai_cls }}">{{ ai_score }}<i>%</i></b>
           </div>
         </div>
+
+        {% if r.h5_primary_match %}
+        <div class="ta-entry-check">
+          <div class="ta-section-label" style="margin:0">実弾エントリー価格チェック</div>
+          <div class="ta-entry-check-grid">
+            <div>
+              <span>yfinance現在値</span>
+              <b>{{ yen(r.current_price_yf) }}</b>
+            </div>
+            <div>
+              <span>シグナル価格からの乖離</span>
+              <b>{{ pct(r.entry_gap_pct, 2) }}</b>
+            </div>
+            <div>
+              <span>買い許容上限 / +2%</span>
+              <b>{{ yen(r.entry_limit_2pct) }}</b>
+            </div>
+            <div>
+              <span>飛びつき警戒 / +3%</span>
+              <b>{{ yen(r.entry_limit_3pct) }}</b>
+            </div>
+          </div>
+          <div class="ta-entry-verdict is-{{ r.entry_status }}">{{ r.entry_status_label }}</div>
+          <div class="ta-entry-source">
+            価格ソース: {{ r.price_source or 'yfinance' }}
+            {% if r.current_price_fetched_at %} / 取得 {{ r.current_price_fetched_at|jst }}{% endif %}
+            {% if r.price_fetch_error %} / 取得エラー{% endif %}
+            <br>参考価格のみです。仮想売買のentry価格はシグナル価格で固定されます。
+          </div>
+        </div>
+        {% endif %}
 
         <div class="ta-chart">
           <img src="{{ url_for('web_trade_assist_chart', code=r.code) }}" alt="{{ r.code }} 日足チャート" loading="lazy">
@@ -586,11 +710,17 @@
 
         <div class="ta-exits">
           <span class="ta-exits-label">出口</span>
+          {% if r.h5_primary_match %}
+          <b>ピーク反落-2%</b>
+          <b>事故停止-12%</b>
+          <b>最大3営業日</b>
+          {% else %}
           <b>反落{{ num(exit_display.pullback_pct, 1, '%') }}</b>
           <b>RSI{{ num(exit_display.rsi_level, 0) }}後 反落{{ num(exit_display.rsi_pullback_pct, 1, '%') }}</b>
           <b>終値損切り{{ num(exit_display.stop_loss_pct, 1, '%') }}</b>
           <b>MA5回復後 -{{ num(exit_display.ma5_failure_pct, 1, '%') }}</b>
           <b>{{ exit_display.holding_days }}日{% if exit_display.extend_high_update_days %} / 高値{{ exit_display.extend_high_update_days }}日延長{% endif %}</b>
+          {% endif %}
         </div>
 
         <div class="ta-company">

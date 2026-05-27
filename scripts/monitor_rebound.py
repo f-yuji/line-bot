@@ -30,7 +30,8 @@ from supabase import create_client
 from bad_news_filter import analyze_bad_news
 from scoring import calculate_score
 from services.market_regime import evaluate_market_regime
-from services.entry_credit_filter import attach_entry_margin_data, evaluate_entry_credit_filter
+from services.entry_credit_filter import attach_entry_margin_data
+from services.h5_primary import H5_PRIMARY_CASE_KEY, evaluate_h5_primary_entry
 from services.signal_stage import SIGNAL_STAGES, evaluate_signal_stage
 from services.signal_history import record_rebound_signal
 from services.virtual_trade_exit import close_related_watchlist, evaluate_virtual_trade_exit, fetch_snapshot_price_rows_since_entry
@@ -682,7 +683,7 @@ def _create_virtual_trade(
             )
             _mark_watchlist_status(item, "signal_skipped", "reentry_cooldown", now_utc)
             return False
-        inserted = supabase.table("virtual_trades").insert({
+        inserted = _insert_virtual_trade_with_optional_columns({
             "watchlist_id": item.get("id"),
             "code": code,
             "name": item.get("name", ""),
@@ -708,10 +709,24 @@ def _create_virtual_trade(
             "market_nikkei_pct": item.get("market_nikkei_pct"),
             "market_topix_pct": item.get("market_topix_pct"),
             "market_nikkei_change_yen": item.get("market_nikkei_change_yen"),
+            "case_key": item.get("case_key"),
+            "case_label": item.get("case_label"),
+            "is_primary_h5": item.get("is_primary_h5"),
+            "exit_rule": item.get("exit_rule"),
+            "peak_pullback_pct": item.get("peak_pullback_pct"),
+            "initial_sl_pct": item.get("initial_sl_pct"),
+            "max_holding_days": item.get("max_holding_days"),
+            "entry_drop_from_20d_high_pct": item.get("entry_drop_from_20d_high_pct"),
+            "entry_overheat_score": item.get("entry_overheat_score"),
+            "margin_ratio": item.get("margin_ratio"),
+            "margin_date": item.get("margin_date"),
+            "virtual_entry_price": price,
+            "virtual_entry_model": "monitor_close_entry",
+            "virtual_entry_date": now_utc.isoformat(),
             "status": "open",
             "created_at": now_utc.isoformat(),
             "updated_at": now_utc.isoformat(),
-        }).execute().data or []
+        })
         trade = inserted[0] if inserted else {}
         _mark_watchlist_status(item, "entered", "virtual_trade_created", now_utc, trade_id=trade.get("id"))
         logger.info("virtual buy: %s price=%.0f score=%.1f stage=%s", code, price, score, stage)
@@ -719,6 +734,28 @@ def _create_virtual_trade(
     except Exception as e:
         logger.error("virtual_trade create error: %s %s", code, e)
         return False
+
+
+def _insert_virtual_trade_with_optional_columns(row: dict) -> list[dict]:
+    remaining = dict(row)
+    h5_required = {"case_key", "is_primary_h5", "exit_rule", "peak_pullback_pct", "initial_sl_pct", "max_holding_days"}
+    for _ in range(30):
+        try:
+            return supabase.table("virtual_trades").insert(remaining).execute().data or []
+        except Exception as e:
+            message = str(e)
+            marker = "Could not find the '"
+            missing = message.split(marker, 1)[1].split("'", 1)[0] if marker in message else None
+            if missing and missing in remaining:
+                if row.get("is_primary_h5") and missing in h5_required:
+                    raise RuntimeError(
+                        f"H5 Primary requires DB column '{missing}'. Apply db/h5_primary_virtual_trades.sql first."
+                    ) from e
+                logger.warning("virtual_trades column missing; skip optional field for insert: %s", missing)
+                remaining.pop(missing, None)
+                continue
+            raise
+    return supabase.table("virtual_trades").insert(remaining).execute().data or []
 
 
 def _int_setting(cfg: dict, key: str, default: int) -> int:
@@ -785,6 +822,11 @@ def _create_ranked_virtual_trades(
 ) -> None:
     if not candidates:
         return
+    if str(cfg.get("entry_mode") or "normal") == "paused":
+        for candidate in candidates:
+            _mark_watchlist_status(candidate["item"], "signal_skipped", "entry_mode_paused", now_utc)
+        logger.info("[h5_primary_entry] entry_mode=paused candidates_skipped=%d", len(candidates))
+        return
 
     max_open = _int_setting(cfg, "max_open_positions", 20)
     max_daily = _int_setting(cfg, "max_daily_entries", 5)
@@ -799,21 +841,23 @@ def _create_ranked_virtual_trades(
     filtered_candidates: list[dict] = []
     for candidate in candidates:
         item = candidate["item"]
-        credit = evaluate_entry_credit_filter(supabase, item, cfg)
-        if not credit.passed:
+        passed_h5, reasons, h5_meta = evaluate_h5_primary_entry(item)
+        item.update(h5_meta)
+        if not passed_h5:
+            reason = reasons[0] if reasons else "h5_primary_filter"
             logger.info(
-                "[entry_margin_filter] skip code=%s reason=%s margin_ratio=%s margin_date=%s limit=%s",
+                "[h5_primary_filter] skip code=%s reasons=%s ai=%s drop20=%s regime=%s overheat=%s margin_ratio=%s",
                 item.get("code"),
-                credit.reason,
-                credit.margin_ratio,
-                credit.margin_date,
-                cfg.get("entry_max_margin_ratio"),
+                ",".join(reasons),
+                item.get("signal_probability"),
+                item.get("drop_from_20d_high_pct"),
+                item.get("market_regime"),
+                h5_meta.get("entry_overheat_score"),
+                item.get("margin_ratio"),
             )
-            _mark_watchlist_status(item, "signal_skipped", str(credit.reason or "margin_ratio_filter"), now_utc)
+            _mark_watchlist_status(item, "signal_skipped", reason, now_utc)
             continue
-        if credit.margin_ratio is not None:
-            item["margin_ratio"] = credit.margin_ratio
-            item["margin_date"] = credit.margin_date
+        logger.info("[h5_primary_entry] code=%s case=%s price=%s", item.get("code"), H5_PRIMARY_CASE_KEY, candidate.get("current"))
         filtered_candidates.append(candidate)
     if not filtered_candidates:
         return

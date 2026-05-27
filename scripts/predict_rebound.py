@@ -33,8 +33,13 @@ from supabase import create_client
 
 from settings_loader import get_settings
 from services.market_regime import evaluate_market_regime
-from services.entry_credit_filter import attach_entry_margin_data, evaluate_entry_credit_filter
+from services.entry_credit_filter import attach_entry_margin_data
 from services.entry_mode import classify_entry_case, entry_mode_filter, resolve_entry_mode
+from services.h5_primary import (
+    H5_PRIMARY_CASE_KEY,
+    H5_PRIMARY_DISPLAY_NAME,
+    evaluate_h5_primary_entry,
+)
 from services.model_storage import download_model_artifact
 from services.signal_stage import SIGNAL_STAGES, evaluate_signal_stage
 from services.signal_history import record_rebound_signal
@@ -468,7 +473,8 @@ def _mark_watchlist_status(sb, watch: dict, snapshot: dict, status: str, reason:
 
 def _insert_virtual_trade_with_optional_columns(sb, row: dict) -> list[dict]:
     remaining = dict(row)
-    for _ in range(10):
+    h5_required = {"case_key", "is_primary_h5", "exit_rule", "peak_pullback_pct", "initial_sl_pct", "max_holding_days"}
+    for _ in range(30):
         try:
             return sb.table("virtual_trades").insert(remaining).execute().data or []
         except Exception as e:
@@ -478,6 +484,10 @@ def _insert_virtual_trade_with_optional_columns(sb, row: dict) -> list[dict]:
             if marker in msg:
                 missing = msg.split(marker, 1)[1].split("'", 1)[0]
             if missing and missing in remaining:
+                if row.get("is_primary_h5") and missing in h5_required:
+                    raise RuntimeError(
+                        f"H5 Primary requires DB column '{missing}'. Apply db/h5_primary_virtual_trades.sql first."
+                    ) from e
                 logger.warning("virtual_trades column missing; skip optional field for insert: %s", missing)
                 remaining.pop(missing, None)
                 continue
@@ -521,6 +531,23 @@ def _insert_watchlist_with_optional_columns(sb, update: dict) -> list[dict]:
                 continue
             raise
     return sb.table("stock_drop_watchlist").insert(remaining).execute().data or []
+
+
+def _save_h5_watchlist_meta(sb, watch: dict, passed: bool, meta: dict, *, dry_run: bool) -> None:
+    watchlist_id = (watch or {}).get("id")
+    if not watchlist_id:
+        return
+    update = {
+        "h5_case_key": H5_PRIMARY_CASE_KEY,
+        "h5_primary_match": passed,
+        "h5_skip_reason": meta.get("h5_skip_reason"),
+        "h5_overheat_score": meta.get("entry_overheat_score"),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    if dry_run:
+        logger.info("DRYRUN watchlist H5 metadata: id=%s update=%s", watchlist_id, update)
+        return
+    _update_watchlist_with_optional_columns(sb, watchlist_id, update)
 
 
 def _current_mode(sb, target_date: str) -> dict:
@@ -860,9 +887,23 @@ def _create_virtual_trade(sb, snapshot: dict, watch: dict, result: dict, *, dry_
             "entry_ma25_gap_pct": result.get("entry_ma25_gap_pct"),
             "entry_ma75_gap_pct": result.get("entry_ma75_gap_pct"),
             "entry_case": result.get("entry_case"),
+            "case_key": result.get("case_key"),
+            "case_label": result.get("case_label"),
+            "is_primary_h5": result.get("is_primary_h5"),
+            "exit_rule": result.get("exit_rule"),
+            "peak_pullback_pct": result.get("peak_pullback_pct"),
+            "initial_sl_pct": result.get("initial_sl_pct"),
+            "max_holding_days": result.get("max_holding_days"),
+            "entry_drop_from_20d_high_pct": result.get("entry_drop_from_20d_high_pct"),
+            "entry_overheat_score": result.get("entry_overheat_score"),
+            "margin_ratio": snapshot.get("margin_ratio"),
+            "margin_date": snapshot.get("margin_date"),
+            "virtual_entry_price": snapshot.get("close"),
+            "virtual_entry_model": result.get("virtual_entry_model") or "close_entry",
+            "virtual_entry_date": f"{snapshot.get('trade_date')}T00:00:00+09:00",
             "status": "open",
         }
-        _virtual_entry_check_log(snapshot, result, "enter", "confirmed_signal_passed_filters")
+        _virtual_entry_check_log(snapshot, result, "enter", "h5_primary_passed")
         if dry_run:
             logger.info("DRYRUN virtual_trade insert: %s", row)
             return True
@@ -923,40 +964,51 @@ def _create_ranked_virtual_trades(
     attach_entry_margin_data(sb, candidate_rows)
     filtered_candidates: list[tuple[dict, dict, dict]] = []
     for row, watch, result in candidates:
-        passed_mode, mode_reason, mode_meta = entry_mode_filter(row, effective_entry_mode)
+        _passed_mode, mode_reason, mode_meta = entry_mode_filter(row, effective_entry_mode)
         result.update(mode_meta)
-        result["entry_mode_used"] = effective_entry_mode
-        result["entry_mode_reason"] = mode_reason or "entry_mode_passed"
+        result["entry_mode_used"] = "h5_primary"
+        result["entry_mode_reason"] = "h5_primary_rules"
         result["recommended_entry_mode"] = entry_mode_ctx["recommended"]
-        if not passed_mode:
-            logger.info(
-                "[entry_mode_filter] skip code=%s mode=%s reason=%s ma5_gap=%s case=%s drop=%s",
-                row.get("code"),
-                effective_entry_mode,
-                mode_reason,
-                mode_meta.get("entry_ma5_gap_pct"),
-                mode_meta.get("entry_case"),
-                row.get("drop_pct"),
-            )
-            _virtual_entry_check_log(row, result, "skip", str(mode_reason or "entry_mode_filter"))
-            _mark_watchlist_status(sb, watch, row, "signal_skipped", str(mode_reason or "entry_mode_filter"), dry_run=dry_run)
+        if effective_entry_mode == "paused":
+            reason = "entry_mode_paused"
+            _virtual_entry_check_log(row, result, "skip", reason)
+            _mark_watchlist_status(sb, watch, row, "signal_skipped", reason, dry_run=dry_run)
             continue
-        credit = evaluate_entry_credit_filter(sb, row, cfg)
-        if not credit.passed:
+        h5_row = {
+            **row,
+            "signal_probability": result.get("probability"),
+            "signal_stage": result.get("signal_stage"),
+            "market_regime": result.get("market_regime"),
+            "entry_ma5_gap_pct": result.get("entry_ma5_gap_pct"),
+        }
+        passed_h5, h5_reasons, h5_meta = evaluate_h5_primary_entry(h5_row)
+        result.update(h5_meta)
+        _save_h5_watchlist_meta(sb, watch, passed_h5, h5_meta, dry_run=dry_run)
+        if not passed_h5:
+            reason = h5_reasons[0] if h5_reasons else "h5_primary_filter"
             logger.info(
-                "[entry_margin_filter] skip code=%s reason=%s margin_ratio=%s margin_date=%s limit=%s",
+                "[h5_primary_filter] skip code=%s reasons=%s ai=%s drop20=%s regime=%s overheat=%s margin_ratio=%s",
                 row.get("code"),
-                credit.reason,
-                credit.margin_ratio,
-                credit.margin_date,
-                cfg.get("entry_max_margin_ratio"),
+                ",".join(h5_reasons),
+                result.get("probability"),
+                row.get("drop_from_20d_high_pct"),
+                result.get("market_regime"),
+                h5_meta.get("entry_overheat_score"),
+                row.get("margin_ratio"),
             )
-            _virtual_entry_check_log(row, result, "skip", str(credit.reason or "margin_ratio_filter"))
-            _mark_watchlist_status(sb, watch, row, "signal_skipped", str(credit.reason or "margin_ratio_filter"), dry_run=dry_run)
+            _virtual_entry_check_log(row, result, "skip", reason)
+            _mark_watchlist_status(sb, watch, row, "signal_skipped", reason, dry_run=dry_run)
             continue
-        if credit.margin_ratio is not None:
-            row["margin_ratio"] = credit.margin_ratio
-            row["margin_date"] = credit.margin_date
+        logger.info(
+            "[h5_primary_entry] code=%s case=%s ai=%s drop20=%s overheat=%s margin_ratio=%s entry_price=%s",
+            row.get("code"),
+            H5_PRIMARY_CASE_KEY,
+            result.get("probability"),
+            row.get("drop_from_20d_high_pct"),
+            h5_meta.get("entry_overheat_score"),
+            row.get("margin_ratio"),
+            row.get("close"),
+        )
         filtered_candidates.append((row, watch, result))
     if not filtered_candidates:
         return

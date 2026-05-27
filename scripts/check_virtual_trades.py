@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check open virtual_trades with pullback/RSI/MA5 exit rules."""
+"""Check open virtual_trades with legacy exits or the tagged H5 Primary exit."""
 
 from __future__ import annotations
 
@@ -69,6 +69,15 @@ def _log_exit(code: str, update: dict) -> None:
             reason,
             update.get("exit_trigger_value"),
             update.get("sell_price"),
+        )
+    elif reason in {"peak_pullback_exit", "emergency_stop_12pct", "h5_timeout"}:
+        logger.info(
+            "[virtual_exit] code=%s strategy=H5_PRIMARY reason=%s trigger=%s sell_price=%s pnl_pct=%s",
+            code,
+            reason,
+            update.get("exit_trigger_value"),
+            update.get("sell_price"),
+            update.get("profit_loss_pct"),
         )
     else:
         logger.info(

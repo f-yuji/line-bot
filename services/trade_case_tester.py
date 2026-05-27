@@ -241,6 +241,36 @@ def _load_weekly_margin_rows(sb, period_start: date, period_end: date) -> list[d
         return []
 
 
+def _load_market_regime_rows(sb, period_start: date, period_end: date) -> list[dict]:
+    start_s = period_start.isoformat()
+    end_s = period_end.isoformat()
+    try:
+        rows = (
+            sb.table("market_regime")
+            .select("trade_date,mode")
+            .gte("trade_date", start_s)
+            .lte("trade_date", end_s)
+            .execute()
+            .data or []
+        )
+        logger.info("[case_test] loaded market_regime rows=%d", len(rows))
+        return rows
+    except Exception as e:
+        logger.warning("[case_test] market_regime load failed: %s", e)
+        return []
+
+
+def _attach_market_regime(candidates: list[dict], regime_rows: list[dict]) -> None:
+    """Attach market_regime (mode) to each candidate row by trade_date."""
+    regime_by_date: dict[str, str] = {
+        str(r.get("trade_date")): str(r.get("mode") or "normal")
+        for r in regime_rows
+    }
+    for row in candidates:
+        td = str(row.get("trade_date") or "")
+        row["market_regime"] = regime_by_date.get(td)
+
+
 def _load_strategy_settings(sb) -> dict:
     from settings_loader import DEFAULTS
     try:
@@ -387,6 +417,7 @@ def _load_candidates(sb, period_start: date, period_end: date) -> list[dict]:
         rows.append(merged)
     logger.info("[case_test] loaded candidate rows=%d", len(rows))
     _attach_weekly_margin(rows, _load_weekly_margin_rows(sb, period_start, period_end))
+    _attach_market_regime(rows, _load_market_regime_rows(sb, period_start, period_end))
     return _score_candidates(rows, _active_model_bundle(sb))
 
 
@@ -477,6 +508,20 @@ def _passes_credit_rules(row: dict, rules: dict) -> bool:
         if short_long_ratio is not None and short_long_ratio > float(rules["max_short_long_ratio"]):
             return False
     return True
+
+
+def _overheat_score(row: dict) -> int:
+    """Compute 0-4 overheat score from RSI / MA5 gap / 5d return / volume signals."""
+    score = 0
+    if (_to_float(row.get("rsi14"), 0) or 0) >= 65:
+        score += 1
+    if (_to_float(row.get("ma5_gap_pct"), 0) or 0) >= 5:
+        score += 1
+    if (_to_float(row.get("return_5d_pct"), 0) or 0) >= 8:
+        score += 1
+    if (_to_float(row.get("volume_ratio_20d"), 0) or 0) >= 3.0:
+        score += 1
+    return score
 
 
 def _price_path(row: dict, rules: dict) -> tuple[float | None, date | None, list[dict]]:
@@ -639,6 +684,49 @@ def simulate_pullback_exit(row: dict, rules: dict) -> dict:
     return _timeout_or_open(entry, days, _to_int(rules.get("max_holding_days"), 5))
 
 
+def simulate_peak_pullback_exit(row: dict, rules: dict) -> dict:
+    """Exit when close pulls back from post-entry peak by peak_pullback_pct.
+
+    Trigger condition: close <= peak * (1 + peak_pullback_pct)
+    The peak must be meaningfully above entry (> entry * 1.005) to avoid premature
+    triggers on the first flat day. Also checks initial_sl_pct as emergency stop.
+    Matches H5 backtest semantics: peak measured from entry, not from any prior high.
+    """
+    entry, _entry_date, days = _price_path(row, rules)
+    if not entry:
+        return {"status": "open", "exit_reason": "invalid_entry"}
+    _raw_sl = rules.get("initial_sl_pct") if rules.get("initial_sl_pct") is not None else rules.get("sl_pct")
+    _sl_pct = float(_raw_sl) if _raw_sl is not None else None
+    use_sl = _sl_pct is not None and _sl_pct > -0.49
+    initial_sl = entry * (1 + _sl_pct) if use_sl else None
+    peak_pullback_pct = float(rules.get("peak_pullback_pct", -0.02))
+    min_peak_ratio = float(rules.get("min_peak_ratio", 1.005))
+    peak_price = entry
+    for d in days:
+        high = _to_float(d.get("high"), None)
+        low = _to_float(d.get("low"), None)
+        close = _to_float(d.get("close"), None)
+        if high is not None:
+            peak_price = max(peak_price, high)
+        if use_sl and initial_sl is not None and low is not None and low <= initial_sl:
+            return _close_trade(
+                entry, d["date"], initial_sl, "sl", d["day"],
+                days=days,
+                exit_signal_value=(initial_sl - entry) / entry * 100,
+                exit_indicator="initial_sl",
+            )
+        if close is not None and peak_price > entry * min_peak_ratio:
+            trigger = peak_price * (1 + peak_pullback_pct)
+            if close <= trigger:
+                return _close_trade(
+                    entry, d["date"], close, "peak_pullback_exit", d["day"],
+                    days=days,
+                    exit_signal_value=(close - entry) / entry * 100,
+                    exit_indicator="peak_pullback",
+                )
+    return _timeout_or_open(entry, days, _to_int(rules.get("max_holding_days"), 3))
+
+
 def simulate_ma_break_exit(row: dict, rules: dict) -> dict:
     entry, _entry_date, days = _price_path(row, rules)
     if not entry:
@@ -752,6 +840,8 @@ def _exit_for_candidate(row: dict, rules: dict) -> dict:
         return simulate_trailing_stop(row, rules)
     if exit_type == "pullback_exit":
         return simulate_pullback_exit(row, rules)
+    if exit_type == "peak_pullback_exit":
+        return simulate_peak_pullback_exit(row, rules)
     if exit_type == "ma_break_exit":
         return simulate_ma_break_exit(row, rules)
     if exit_type == "rsi_reversal_exit":
@@ -828,6 +918,26 @@ def _simulate_case(run_id: str, case: dict, candidates: list[dict]) -> tuple[lis
             continue
         if not _passes_credit_rules(row, rules):
             continue
+
+        # excluded_regimes: only active when rules specify it; no-op for existing cases
+        excluded_regimes = rules.get("excluded_regimes")
+        if excluded_regimes:
+            regime = row.get("market_regime")
+            if regime in excluded_regimes:
+                continue
+
+        # min_drop_from_20d_high: e.g. -8.0 means drop_from_20d_high_pct <= -8.0
+        min_drop = rules.get("min_drop_from_20d_high")
+        if min_drop is not None:
+            drop_val = _to_float(row.get("drop_from_20d_high_pct"), None)
+            if drop_val is None or drop_val > float(min_drop):
+                continue
+
+        # max_overheat_score: e.g. 1 = cool(0) + mild(1) only; hot(2+) excluded
+        max_oh = rules.get("max_overheat_score")
+        if max_oh is not None and _overheat_score(row) > int(max_oh):
+            continue
+
         by_date[str(row.get("trade_date"))].append(row)
 
     open_positions: list[dict] = []
@@ -1067,6 +1177,7 @@ def _load_candidates_v2(sb, period_start: date, period_end: date) -> list[dict]:
 
     logger.info("[case_test] v2 merged candidate rows=%d", len(rows))
     _attach_weekly_margin(rows, _load_weekly_margin_rows(sb, period_start, period_end))
+    _attach_market_regime(rows, _load_market_regime_rows(sb, period_start, period_end))
     return _score_candidates(rows, _active_model_bundle(sb))
 
 

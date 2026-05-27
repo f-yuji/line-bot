@@ -13,6 +13,8 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from services.h5_primary import H5_PRIMARY_CASE_KEY, H5_PRIMARY_RULES
+
 logger = logging.getLogger(__name__)
 
 # exit_reason values added after the DB sell_reason CHECK constraint was frozen.
@@ -223,6 +225,133 @@ class ExitEvaluation:
     dry_log: dict[str, Any] | None = None
 
 
+def _is_h5_primary_trade(trade: dict) -> bool:
+    return bool(trade.get("is_primary_h5")) or str(trade.get("case_key") or "") == H5_PRIMARY_CASE_KEY
+
+
+def evaluate_h5_primary_exit(
+    trade: dict,
+    price_rows: list[dict],
+    *,
+    now: datetime | None = None,
+) -> ExitEvaluation | None:
+    """Apply the deployed H5 Primary exit without changing legacy open trades."""
+    buy = _to_float(trade.get("buy_price"))
+    buy_dt = _parse_dt(trade.get("buy_date"))
+    if buy is None or buy <= 0 or not buy_dt or not price_rows:
+        return None
+    now_utc = now or datetime.now(timezone.utc)
+    buy_date = buy_dt.date().isoformat()
+    future_rows = [
+        row for row in price_rows
+        if str(row.get("date") or "") > buy_date and _to_float(row.get("close")) is not None
+    ]
+    if not future_rows:
+        return ExitEvaluation(
+            update={"exit_checked_at": now_utc.isoformat(), "updated_at": now_utc.isoformat()},
+            dry_log={"case_key": H5_PRIMARY_CASE_KEY, "message": "no post-entry close yet"},
+        )
+
+    peak_pullback_pct = _to_float(trade.get("peak_pullback_pct"), H5_PRIMARY_RULES["peak_pullback_pct"])
+    initial_sl_pct = _to_float(trade.get("initial_sl_pct"), H5_PRIMARY_RULES["initial_sl_pct"])
+    max_holding_days = int(_to_float(trade.get("max_holding_days"), H5_PRIMARY_RULES["max_holding_days"]) or 3)
+    use_sl = initial_sl_pct is not None and initial_sl_pct > -0.49
+    stop_price = buy * (1.0 + initial_sl_pct) if use_sl else None
+    min_peak_ratio = 1.005
+    peak_price = _to_float(trade.get("peak_price"), buy) or buy
+    peak_price_at = trade.get("peak_price_at") or buy_dt.isoformat()
+    qty = int(trade.get("quantity") or 100)
+    max_return_pct = _to_float(trade.get("max_return_pct"), None)
+    max_drawdown_pct = _to_float(trade.get("max_drawdown_pct"), None)
+    exit_reason = None
+    exit_mode = None
+    exit_price = None
+    exit_date = None
+    exit_trigger_value = None
+
+    for day_number, row in enumerate(future_rows, start=1):
+        date = str(row.get("date"))
+        close = _to_float(row.get("close"))
+        high = _to_float(row.get("high"), close)
+        low = _to_float(row.get("low"), close)
+        if close is None:
+            continue
+        close_ret = (close / buy - 1.0) * 100.0
+        max_return_pct = close_ret if max_return_pct is None else max(max_return_pct, close_ret)
+        max_drawdown_pct = close_ret if max_drawdown_pct is None else min(max_drawdown_pct, close_ret)
+        if high is not None and high > peak_price:
+            peak_price = high
+            peak_price_at = date
+
+        if use_sl and stop_price is not None and low is not None and low <= stop_price:
+            exit_reason = "emergency_stop_12pct"
+            exit_mode = "h5_emergency_stop"
+            exit_price = stop_price
+            exit_trigger_value = initial_sl_pct * 100.0 if initial_sl_pct is not None else None
+        elif peak_price > buy * min_peak_ratio and close <= peak_price * (1.0 + float(peak_pullback_pct or -0.02)):
+            exit_reason = "peak_pullback_exit"
+            exit_mode = "h5_peak_pullback"
+            exit_price = close
+            exit_trigger_value = (close / peak_price - 1.0) * 100.0
+        elif day_number >= max_holding_days:
+            exit_reason = "h5_timeout"
+            exit_mode = "h5_timeout"
+            exit_price = close
+            exit_trigger_value = float(day_number)
+
+        if exit_reason:
+            exit_date = date
+            break
+
+    latest_close = _to_float(future_rows[-1].get("close"))
+    update: dict[str, Any] = {
+        "peak_price": round(peak_price, 4),
+        "peak_price_at": peak_price_at,
+        "highest_close": round(peak_price, 4),
+        "highest_close_at": peak_price_at,
+        "last_high_update_at": peak_price_at,
+        "current_price": latest_close,
+        "max_return_pct": round(max_return_pct or 0.0, 2),
+        "max_drawdown_pct": round(max_drawdown_pct or 0.0, 2),
+        "exit_checked_at": now_utc.isoformat(),
+        "updated_at": now_utc.isoformat(),
+    }
+    if latest_close is not None:
+        update["unrealized_pnl"] = round((latest_close - buy) * qty, 0)
+        update["unrealized_pnl_pct"] = round((latest_close / buy - 1.0) * 100.0, 2)
+    dry_log = {
+        "case_key": H5_PRIMARY_CASE_KEY,
+        "peak_price": round(peak_price, 4),
+        "peak_pullback_pct": peak_pullback_pct,
+        "initial_sl_pct": initial_sl_pct,
+        "stop_price": round(stop_price, 4) if stop_price is not None else None,
+        "max_holding_days": max_holding_days,
+    }
+    if exit_reason and exit_price is not None and exit_date:
+        pnl_pct = (exit_price / buy - 1.0) * 100.0
+        pnl = (exit_price - buy) * qty
+        sell_reason = {
+            "peak_pullback_exit": "take_profit",
+            "emergency_stop_12pct": "stop_loss",
+            "h5_timeout": "expired",
+        }[exit_reason]
+        update.update({
+            "sell_price": round(exit_price, 4),
+            "sell_date": exit_date,
+            "sell_reason": sell_reason,
+            "exit_reason": exit_reason,
+            "exit_mode": exit_mode,
+            "exit_trigger_value": round(exit_trigger_value, 4) if exit_trigger_value is not None else None,
+            "profit_loss": round(pnl, 0),
+            "profit_loss_pct": round(pnl_pct, 2),
+            "virtual_exit_price": round(exit_price, 4),
+            "virtual_pnl_pct": round(pnl_pct, 2),
+            "status": "closed",
+        })
+        dry_log.update({"exit_reason": exit_reason, "sell_price": round(exit_price, 4), "profit_loss_pct": round(pnl_pct, 2)})
+    return ExitEvaluation(update=update, exit_reason=exit_reason, dry_log=dry_log)
+
+
 def evaluate_virtual_trade_exit(
     trade: dict,
     price_rows: list[dict] | None = None,
@@ -238,6 +367,8 @@ def evaluate_virtual_trade_exit(
     rows = price_rows if price_rows is not None else fetch_price_rows_since_entry(trade)
     if not rows:
         return None
+    if _is_h5_primary_trade(trade):
+        return evaluate_h5_primary_exit(trade, rows, now=now)
 
     exit_cfg = _exit_settings(settings)
     pullback_pct = float(exit_cfg["virtual_exit_pullback_pct"])

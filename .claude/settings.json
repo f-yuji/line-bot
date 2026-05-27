@@ -58,7 +58,13 @@
       "Bash(python -c \"import ast; ast.parse\\(open\\('scripts/generate_box_signals.py'\\).read\\(\\)\\); print\\('OK'\\)\")",
       "Bash(python -c \"import ast; ast.parse\\(open\\('scripts/generate_box_signals.py', encoding='utf-8'\\).read\\(\\)\\); print\\('OK'\\)\")",
       "Bash(python -c \"import ast; ast.parse\\(open\\('scripts/backtest_box_pullback.py', encoding='utf-8'\\).read\\(\\)\\); print\\('OK'\\)\")",
-      "Bash(python -c \"import sys; sys.path.insert\\(0,'..'\\); from services.box_signal_logic import DEFAULTS, _box_metrics, _score; print\\('import OK'\\)\")"
+      "Bash(python -c \"import sys; sys.path.insert\\(0,'..'\\); from services.box_signal_logic import DEFAULTS, _box_metrics, _score; print\\('import OK'\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('scripts/grid_search_rebound.py'\\).read\\(\\)\\); print\\('OK'\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('scripts/grid_search_rebound.py', encoding='utf-8'\\).read\\(\\)\\); print\\('OK'\\)\")",
+      "Bash(cd /d \"c:\\\\Users\\\\f-yuj\\\\dev\\\\line_bot\")",
+      "Bash(python -c \"import sys; sys.path.insert\\(0, '.'\\); from scripts.grid_search_rebound import PARAM_SPACE, _strategy_id, _score, _build_exit_rules, _all_combos, _random_combos; total = 1; [total := total * len\\(v\\) for v in PARAM_SPACE.values\\(\\)]; print\\(f'total_combos={total}'\\); combos = _random_combos\\(PARAM_SPACE, 5, seed=1\\); [print\\(_strategy_id\\(c\\)\\) for c in combos]; print\\('import OK'\\)\")",
+      "Bash(python -c \"import sys; sys.path.insert\\(0, 'c:/Users/f-yuj/dev/line_bot'\\); from scripts.grid_search_rebound import PARAM_SPACE, _strategy_id, _score, _build_exit_rules, _all_combos, _random_combos; total = 1; [total.__class__ for v in PARAM_SPACE.values\\(\\)]; from functools import reduce; t = reduce\\(lambda a, v: a * len\\(v\\), PARAM_SPACE.values\\(\\), 1\\); print\\(f'total_combos={t}'\\); combos = _random_combos\\(PARAM_SPACE, 5, seed=1\\); [print\\(_strategy_id\\(c\\)\\) for c in combos]; print\\('import OK'\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('c:/Users/f-yuj/dev/line_bot/scripts/grid_search_rebound.py', encoding='utf-8'\\).read\\(\\)\\); print\\('OK'\\)\")"
     ]
   }
 }

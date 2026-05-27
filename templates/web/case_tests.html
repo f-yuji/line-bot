@@ -93,6 +93,7 @@
         <tr>
           <td>
             <div class="name">{{ case.display_name or row.case_id }}</div>
+            {% if case.is_primary_h5 %}<span class="tag">H5 PRIMARY</span>{% endif %}
           </td>
           <td><span class="pill">{{ row.exit_label or row.exit_type or "固定利確/損切" }}</span></td>
           <td class="right num">{{ row.entry_count or 0 }}</td>

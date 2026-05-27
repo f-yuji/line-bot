@@ -15,6 +15,14 @@ from openai import OpenAI
 from supabase import create_client
 from services.signal_stage import SIGNAL_STAGES, STAGE_RANK, evaluate_signal_stage
 from services.entry_mode import ENTRY_MODE_LABELS, classify_entry_case, ma_gap_pct, regime_scores, resolve_entry_mode
+from services.h5_primary import (
+    H5_ENTRY_EXECUTION_NOTE,
+    H5_PRIMARY_CASE_KEY,
+    H5_PRIMARY_DISPLAY_NAME,
+    H5_PRIMARY_RULES,
+    evaluate_h5_primary_entry,
+)
+from services.price_fetcher import H5_ENTRY_STATUS_PRIORITY, decorate_h5_price_assist_cards
 from services.trade_assist_history import decorate_history_rows
 from services.nikkei_correlation import decorate_nikkei_correlation
 from services.rebound_diagnostics import decorate_rebound_diagnostics
@@ -3001,6 +3009,14 @@ def web_trade_assist():
     entry_mode_context = resolve_entry_mode(settings, market_adjustment, long_term_market)
     entry_mode_context["scores"] = regime_scores(market_adjustment)
     stop_loss_pct = float(settings.get("virtual_exit_stop_loss_pct") or 4.0)
+    h5_exit_display = {
+        "case_key": H5_PRIMARY_CASE_KEY,
+        "case_label": H5_PRIMARY_DISPLAY_NAME,
+        "peak_pullback_pct": abs(float(H5_PRIMARY_RULES["peak_pullback_pct"])) * 100,
+        "stop_loss_pct": abs(float(H5_PRIMARY_RULES["initial_sl_pct"])) * 100,
+        "holding_days": int(H5_PRIMARY_RULES["max_holding_days"]),
+        "entry_execution_note": H5_ENTRY_EXECUTION_NOTE,
+    }
     exit_display = {
         "pullback_pct": float(settings.get("virtual_exit_pullback_pct") or 2.0),
         "rsi_level": float(settings.get("virtual_exit_rsi_level") or 75.0),
@@ -3291,6 +3307,23 @@ def web_trade_assist():
             str(row.get("recommended_entry_mode") or ""),
             row.get("recommended_entry_mode") or "-",
         )
+        h5_input = {
+            **row,
+            "signal_probability": row.get("display_probability") or row.get("signal_probability"),
+        }
+        h5_passed, h5_reasons, h5_meta = evaluate_h5_primary_entry(h5_input)
+        persisted_h5 = str((trade or {}).get("case_key") or row.get("case_key") or "") == H5_PRIMARY_CASE_KEY
+        # An already-created legacy virtual trade must not be relabeled as H5,
+        # because its stored exit rule remains the legacy one.
+        row["h5_primary_match"] = persisted_h5 if trade else h5_passed
+        row["h5_case_key"] = H5_PRIMARY_CASE_KEY
+        row["h5_case_label"] = H5_PRIMARY_DISPLAY_NAME
+        row["h5_skip_reason"] = None if row["h5_primary_match"] or trade else " / ".join(h5_reasons)
+        row["h5_overheat_score"] = h5_meta.get("entry_overheat_score")
+        if row["h5_primary_match"]:
+            row["stop_loss_pct"] = h5_exit_display["stop_loss_pct"]
+            row["stop_loss_price"] = entry_price * (1.0 - row["stop_loss_pct"] / 100.0) if entry_price > 0 else None
+            row["risk_100"] = (entry_price - row["stop_loss_price"]) * 100 if row["stop_loss_price"] is not None else None
         if trade:
             row["virtual_trade_id"] = trade.get("id") or row.get("virtual_trade_id")
             row["trade_created_at"] = trade.get("created_at")
@@ -3338,10 +3371,16 @@ def web_trade_assist():
         cards.append(_build_card(row, source_label="未エントリー"))
         seen_codes.add(str(row.get("code") or ""))
 
+    decorate_h5_price_assist_cards(cards)
     cards.sort(
         key=lambda r: (
-            STAGE_RANK.get(r.get("signal_stage"), 0),
-            _num(r, "signal_probability", "ai_probability"),
+            bool(r.get("h5_primary_match")),
+            H5_ENTRY_STATUS_PRIORITY.get(str(r.get("entry_status") or ""), -1)
+            if r.get("h5_primary_match") else -1,
+            _num(r, "signal_probability", "ai_probability")
+            if r.get("h5_primary_match") else STAGE_RANK.get(r.get("signal_stage"), 0),
+            -_num(r, "entry_gap_pct", default=999.0)
+            if r.get("h5_primary_match") else _num(r, "signal_probability", "ai_probability"),
             _num(r, "expected_value"),
             _num(r, "signal_score", "rebound_score", "score"),
         ),
@@ -3390,6 +3429,7 @@ def web_trade_assist():
         market_adjustment=market_adjustment,
         long_term_market=long_term_market,
         entry_mode_context=entry_mode_context,
+        h5_primary=h5_exit_display,
     )
 
 
@@ -3559,6 +3599,17 @@ def _entry_mode_migration_status() -> bool:
         return False
 
 
+def _h5_primary_migration_status() -> bool:
+    try:
+        supabase.table("virtual_trades").select(
+            "case_key,is_primary_h5,exit_rule,peak_pullback_pct,initial_sl_pct,max_holding_days"
+        ).limit(1).execute()
+        return True
+    except Exception as e:
+        logger.warning("H5 Primary migration check failed: %s", e)
+        return False
+
+
 @app.route("/web/settings", methods=["GET", "POST"])
 def web_settings():
     if request.method == "POST":
@@ -3628,11 +3679,19 @@ def web_settings():
         return redirect(request.path)
     cfg = _settings_loader.get_settings()
     entry_mode_migration_ok = _entry_mode_migration_status()
+    h5_primary_migration_ok = _h5_primary_migration_status()
     return render_template(
         "web/settings.html",
         cfg=cfg,
         entry_mode_labels=ENTRY_MODE_LABELS,
         entry_mode_migration_ok=entry_mode_migration_ok,
+        h5_primary_migration_ok=h5_primary_migration_ok,
+        h5_primary={
+            "case_key": H5_PRIMARY_CASE_KEY,
+            "label": H5_PRIMARY_DISPLAY_NAME,
+            "rules": H5_PRIMARY_RULES,
+            "entry_execution_note": H5_ENTRY_EXECUTION_NOTE,
+        },
     )
 
 
@@ -4076,6 +4135,11 @@ CASE_TEST_LABELS = {
     "rsi70_exit": "RSI70反落利確",
     "volume_fade": "出来高減衰利確",
     "atr_trailing_15": "ATRトレーリングx1.5",
+    "h5_ai65_pb20_hd3_est12_cm_range330": "H5 Primary：AI65 / PB2 / HD3 / EST12 / 信用3-30",
+    "h5_ai65_pb20_hd3_nostop_cm_range330": "H5比較：NOSTOP / 信用3-30",
+    "h5_ai65_pb20_hd3_est12_cm_mr20": "H5比較：EST12 / 信用20以下",
+    "h5_ai65_pb20_hd3_est8_cm_range330": "H5比較：EST8 / 信用3-30",
+    "h5_ai60_pb20_hd3_est12_cm_range330": "H5比較：AI60 / EST12 / 信用3-30",
 }
 
 ENTRY_PROFILE_LABELS = {
@@ -4107,6 +4171,7 @@ EXIT_TYPE_LABELS = {
     "rsi_reversal_exit": "RSI反落",
     "volume_fade_exit": "出来高減衰",
     "atr_trailing": "ATRトレーリング",
+    "peak_pullback_exit": "ピーク反落利確",
 }
 
 CREDIT_PROFILE_LABELS = {
@@ -4115,6 +4180,7 @@ CREDIT_PROFILE_LABELS = {
     "margin_le10": "信用倍率10倍以下",
     "margin_le5": "信用倍率5倍以下",
     "short_pressure": "売り残比率10%以上",
+    "margin_range_3_30": "信用倍率3〜30倍",
 }
 
 
@@ -4144,9 +4210,14 @@ def _case_rule_summary(rules: dict) -> str:
     if rules.get("max_sector_positions") not in (None, 99):
         parts.append(f"同一セクターは最大 {int(rules.get('max_sector_positions') or 0)} 件。")
     if rules.get("use_margin_filter"):
-        if rules.get("max_margin_ratio") is not None:
+        if rules.get("min_margin_ratio") is not None and rules.get("max_margin_ratio") is not None:
+            parts.append(
+                f"信用倍率は {float(rules.get('min_margin_ratio') or 0):.0f}〜"
+                f"{float(rules.get('max_margin_ratio') or 0):.0f} 倍。"
+            )
+        elif rules.get("max_margin_ratio") is not None:
             parts.append(f"信用倍率は {float(rules.get('max_margin_ratio') or 0):.0f} 倍以下。")
-        if rules.get("min_margin_ratio") is not None:
+        elif rules.get("min_margin_ratio") is not None:
             parts.append(f"信用倍率は {float(rules.get('min_margin_ratio') or 0):.1f} 倍以上。")
         if rules.get("min_short_long_ratio") is not None:
             parts.append(f"信用売残/買残は {float(rules.get('min_short_long_ratio') or 0) * 100:.0f}% 以上。")
@@ -4190,6 +4261,17 @@ def _case_rule_summary(rules: dict) -> str:
             f"初期損切りは {float(rules.get('initial_sl_pct') or 0) * 100:.0f}%、"
             f"最大 {int(rules.get('max_holding_days') or 0)} 日保有。"
         )
+    elif exit_type == "peak_pullback_exit":
+        initial_sl = rules.get("initial_sl_pct")
+        stop_text = (
+            "初期損切りなし"
+            if initial_sl is None or float(initial_sl) <= -0.49
+            else f"事故停止 {float(initial_sl) * 100:.0f}%"
+        )
+        parts.append(
+            f"出口はピーク反落で、entry後高値から {abs(float(rules.get('peak_pullback_pct') or -0.02)) * 100:.0f}% 反落で決済。"
+            f"{stop_text}、最大 {int(rules.get('max_holding_days') or 0)} 営業日保有。"
+        )
     elif exit_profile:
         parts.append(f"出口は「{exit_profile}」。")
     return "".join(parts)
@@ -4232,6 +4314,7 @@ def _decorate_case_test_case(case):
     case["exit_type"] = exit_type
     case["exit_label"] = EXIT_PROFILE_LABELS.get(exit_profile) or EXIT_TYPE_LABELS.get(exit_type, exit_type)
     case["display_description"] = _case_rule_summary(rules)
+    case["is_primary_h5"] = bool(rules.get("is_primary_h5"))
     return case
 
 
@@ -4243,6 +4326,7 @@ PROFIT_EXIT_REASONS = {
     "rsi_reversal_exit",
     "volume_fade_exit",
     "atr_trailing",
+    "peak_pullback_exit",
 }
 
 
@@ -4323,6 +4407,7 @@ def web_case_tests():
                 row["profit_exit_count"] = profit_exit_counts.get(str(row.get("case_id")), row.get("tp_count") or 0)
             results.sort(
                 key=lambda r: (
+                    1 if (r.get("case") or {}).get("is_primary_h5") else 0,
                     float(r.get("total_profit_pct") or -999999),
                     float(r.get("expected_value_pct") or -999999),
                 ),

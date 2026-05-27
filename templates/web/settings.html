@@ -15,6 +15,36 @@
 </div>
 {% endif %}
 
+{% if h5_primary_migration_ok is defined and not h5_primary_migration_ok %}
+<div class="panel" style="border-color:var(--warn);margin-bottom:12px">
+  <div style="padding:14px 16px;color:var(--warn);line-height:1.6">
+    H5 Primary用DB列が未適用です。<code>db/h5_primary_virtual_trades.sql</code> をSupabase SQL Editorで実行するまで、新規H5仮想購入は作成されません。
+  </div>
+</div>
+{% endif %}
+
+{% if h5_primary %}
+<div class="panel" style="border-color:var(--accent-dim);margin-bottom:12px">
+  <div class="panel-head"><div class="panel-title">H5 Primary Strategy <span class="tag">READ ONLY</span></div></div>
+  <div style="padding:0 16px 16px;display:grid;gap:10px;font-size:13px;line-height:1.65">
+    <strong>{{ h5_primary.label }}</strong>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      <span class="pill">AI 65%以上</span>
+      <span class="pill">20日高値比 -8%以上</span>
+      <span class="pill">panic_selloff 除外</span>
+      <span class="pill">過熱 cool / mild</span>
+      <span class="pill">信用倍率 3〜30倍</span>
+      <span class="pill">データなしは通過</span>
+    </div>
+    <div>出口: entry後ピークから -2% 反落 / 最大3営業日 / -12%事故停止</div>
+    <div class="muted">{{ h5_primary.entry_execution_note }} 翌日終値entryは非推奨です。シグナル価格から+2%超は飛びつき警戒、+3%超は原則見送り目安です。</div>
+    <div class="muted">購入候補画面のyfinance現在値は参考値であり、遅延・欠損・異常値の可能性があります。最終判断は証券口座の現在値・板で確認してください。</div>
+    <div class="muted">新規のH5仮想売買はこの固定条件で動きます。下の従来出口設定は既存の非H5トレード用です。</div>
+    <code>{{ h5_primary.case_key }}</code>
+  </div>
+</div>
+{% endif %}
+
 <form method="post">
   <div class="form-grid">
 
@@ -105,12 +135,13 @@
       </div>
       <p class="muted" style="font-size:12px;line-height:1.6;margin:8px 0 0">
         入口モードは実験機能です。過去データ上の傾向をもとにしていますが、現在相場への適合を保証するものではありません。
+        H5 Primary の新規仮想購入では、新規停止（paused）のみ安全停止として適用し、銘柄選別はH5固定条件を優先します。
       </p>
     </div>
 
     {# ── 出口系 ── #}
     <div class="form-card">
-      <h3>仮想売買の出口</h3>
+      <h3>従来トレードの出口（非H5）</h3>
       {% for key, label, unit, step in [
         ("virtual_exit_pullback_pct", "通常反落利確", "%", "0.1"),
         ("virtual_exit_rsi_level", "RSI引き締めライン", "", "0.1"),
@@ -138,6 +169,9 @@
         </div>
       </div>
       {% endfor %}
+      <p class="muted" style="font-size:12px;line-height:1.6;margin:8px 0 0">
+        H5 Primary として作成された新規トレードは、この設定ではなくピーク反落-2% / 3営業日 / -12%事故停止で管理されます。
+      </p>
     </div>
 
     {# ── フィルタ系 ── #}
@@ -158,6 +192,9 @@
           <span class="unit">倍以下</span>
         </div>
       </div>
+      <p class="muted" style="font-size:12px;line-height:1.6;margin:8px 0 0">
+        このフィルタは従来入口用です。H5 Primary は信用倍率3〜30倍（未取得は通過）を固定条件として使用します。
+      </p>
     </div>
 
     {# ── ルールスコア ── #}
