@@ -206,28 +206,6 @@
   </div>
 </div>
 
-<div class="stat-grid">
-  <div class="stat-tile info">
-    <div class="label">監視中銘柄</div>
-    <div class="value">{{ stats.watching if stats else 0 }}</div>
-    <div class="sub muted">WATCHING</div>
-  </div>
-  <div class="stat-tile accent">
-    <div class="label">未エントリー有効シグナル</div>
-    <div class="value">{{ stats.active_signal if stats else 0 }}</div>
-    <div class="sub muted">SIGNAL ACTIVE</div>
-  </div>
-  <div class="stat-tile up">
-    <div class="label">保有中</div>
-    <div class="value">{{ stats.holding if stats else 0 }}</div>
-    <div class="sub muted">HOLDING</div>
-  </div>
-  <div class="stat-tile">
-    <div class="label">合計</div>
-    <div class="value">{{ stats.total if stats else 0 }}</div>
-    <div class="sub muted">TOTAL</div>
-  </div>
-</div>
 
 {# ── シグナル：国内 ── #}
 {% if jp_signal %}
