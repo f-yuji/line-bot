@@ -1,19 +1,30 @@
-"""Shared definition and entry qualification for the rebound H5 Primary."""
+"""Shared definition and entry qualification for rebound H5."""
 
 from __future__ import annotations
 
 import math
 from typing import Any
 
-H5_PRIMARY_CASE_KEY = "h5_ai65_pb20_hd3_est12_cm_range330"
-H5_PRIMARY_LABEL = "H5 Primary: AI65 / PB2 / HD3 / EST12 / Credit 3-30"
-H5_PRIMARY_DISPLAY_NAME = "H5 Primary: AI65 / PB2 / HD3 / EST12 / 信用3-30"
+H5_LEGACY_PRIMARY_CASE_KEY = "h5_ai65_pb20_hd3_est12_cm_range330"
+H5_RESEARCH_CASE_KEY = "h5_ai65_pb20_hd3_est12_cm_range330_research"
+H5_LIVE_LIMITED_CASE_KEY = "h5_ai65_pb20_hd3_est12_cm_range330_live_limited"
+H5_PRIMARY_CASE_KEY = H5_LIVE_LIMITED_CASE_KEY
+H5_ACTIVE_CASE_KEYS = {
+    H5_LEGACY_PRIMARY_CASE_KEY,
+    H5_RESEARCH_CASE_KEY,
+    H5_LIVE_LIMITED_CASE_KEY,
+}
+
+H5_PRIMARY_LABEL = "H5 Live Limited: AI65 / PB2 / HD3 / EST12 / Credit 3-30"
+H5_RESEARCH_LABEL = "H5 Research: AI65 / PB2 / HD3 / EST12 / Credit 3-30"
+H5_PRIMARY_DISPLAY_NAME = "H5 Live Limited: AI65 / PB2 / HD3 / EST12 / 信用3-30"
+H5_RESEARCH_DISPLAY_NAME = "H5 Research: AI65 / PB2 / HD3 / EST12 / 信用3-30 / 制限なし"
 H5_ENTRY_EXECUTION_NOTE = (
     "同日終値付近のentry前提。翌日寄りは期待値が低下するため、"
     "+2%超GUは飛びつき警戒。"
 )
 
-H5_PRIMARY_RULES: dict[str, Any] = {
+H5_BASE_RULES: dict[str, Any] = {
     "min_ai_score": 0.65,
     "allowed_stages": ["confirmed", "strong_confirmed"],
     "min_drop_from_20d_high": -8.0,
@@ -27,9 +38,39 @@ H5_PRIMARY_RULES: dict[str, Any] = {
     "require_margin_data": False,
     "min_margin_ratio": 3.0,
     "max_margin_ratio": 30.0,
-    "is_primary_h5": True,
     "entry_execution_note": H5_ENTRY_EXECUTION_NOTE,
 }
+
+H5_RESEARCH_RULES: dict[str, Any] = {
+    **H5_BASE_RULES,
+    "position_limit_mode": "research",
+    "ignore_global_position_limits": True,
+    "is_primary_h5": False,
+    "is_h5_research": True,
+    "is_h5_live_limited": False,
+    "is_live_candidate": False,
+}
+
+H5_LIVE_LIMITED_RULES: dict[str, Any] = {
+    **H5_BASE_RULES,
+    "position_limit_mode": "live_limited",
+    "max_open_positions": 2,
+    "max_daily_entries": 2,
+    "max_sector_positions": 2,
+    "entry_rank_limit": 10,
+    "entry_sort": [
+        "signal_probability_desc",
+        "overheat_score_asc",
+        "volume_ratio_desc",
+    ],
+    "is_primary_h5": True,
+    "is_h5_research": False,
+    "is_h5_live_limited": True,
+    "is_live_candidate": True,
+}
+
+# Backwards-compatible name used by existing code paths.
+H5_PRIMARY_RULES = H5_LIVE_LIMITED_RULES
 
 
 def _float(value: Any) -> float | None:
@@ -62,9 +103,14 @@ def h5_overheat_score(row: dict[str, Any]) -> int:
     return score
 
 
-def evaluate_h5_primary_entry(row: dict[str, Any]) -> tuple[bool, list[str], dict[str, Any]]:
-    """Return whether a signal qualifies for H5 Primary and stored metadata."""
-    rules = H5_PRIMARY_RULES
+def evaluate_h5_primary_entry(
+    row: dict[str, Any],
+    *,
+    case_key: str = H5_LIVE_LIMITED_CASE_KEY,
+    case_label: str = H5_PRIMARY_DISPLAY_NAME,
+) -> tuple[bool, list[str], dict[str, Any]]:
+    """Return whether a signal qualifies for H5 and stored metadata."""
+    rules = H5_BASE_RULES
     probability = _float(row.get("signal_probability"))
     if probability is None:
         probability = _float(row.get("probability"))
@@ -93,10 +139,15 @@ def evaluate_h5_primary_entry(row: dict[str, Any]) -> tuple[bool, list[str], dic
         if margin > rules["max_margin_ratio"]:
             reasons.append("h5_margin_above_30")
 
+    is_live_limited = case_key == H5_LIVE_LIMITED_CASE_KEY
     meta = {
-        "case_key": H5_PRIMARY_CASE_KEY,
-        "case_label": H5_PRIMARY_DISPLAY_NAME,
-        "is_primary_h5": True,
+        "case_key": case_key,
+        "case_label": case_label,
+        "is_primary_h5": is_live_limited,
+        "position_limit_mode": "live_limited" if is_live_limited else "research",
+        "is_h5_research": case_key == H5_RESEARCH_CASE_KEY,
+        "is_h5_live_limited": is_live_limited,
+        "is_live_candidate": is_live_limited,
         "exit_rule": rules["exit_type"],
         "peak_pullback_pct": rules["peak_pullback_pct"],
         "initial_sl_pct": rules["initial_sl_pct"],
@@ -109,4 +160,3 @@ def evaluate_h5_primary_entry(row: dict[str, Any]) -> tuple[bool, list[str], dic
         "h5_skip_reason": ",".join(reasons) if reasons else None,
     }
     return not reasons, reasons, meta
-

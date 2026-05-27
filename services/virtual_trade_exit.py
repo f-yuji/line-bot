@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from services.h5_primary import H5_PRIMARY_CASE_KEY, H5_PRIMARY_RULES
+from services.h5_primary import H5_ACTIVE_CASE_KEYS, H5_PRIMARY_CASE_KEY, H5_PRIMARY_RULES
 
 logger = logging.getLogger(__name__)
 
@@ -226,7 +226,7 @@ class ExitEvaluation:
 
 
 def _is_h5_primary_trade(trade: dict) -> bool:
-    return bool(trade.get("is_primary_h5")) or str(trade.get("case_key") or "") == H5_PRIMARY_CASE_KEY
+    return bool(trade.get("is_primary_h5")) or str(trade.get("case_key") or "") in H5_ACTIVE_CASE_KEYS
 
 
 def evaluate_h5_primary_exit(

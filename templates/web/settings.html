@@ -66,53 +66,6 @@
     </div>
 
     <div class="form-card">
-      <h3>リバウンド判定</h3>
-      {% for key, label, unit in [
-        ("daily_rebound_threshold", "前日比反発率", "%"),
-        ("drop_rebound_threshold", "急落時からの反発率", "%"),
-        ("volume_ratio_threshold", "出来高倍率（20日平均比）", "倍"),
-        ("rsi_low_threshold", "RSI下限（売られすぎ）", ""),
-        ("rsi_recover_threshold", "RSI回復ライン", ""),
-      ] %}
-      <div class="form-row">
-        <label>{{ label }}</label>
-        <div class="input-group">
-          <input type="number" step="0.1" name="{{ key }}" value="{{ cfg[key] }}">
-          {% if unit %}<span class="unit">{{ unit }}</span>{% endif %}
-        </div>
-      </div>
-      {% endfor %}
-      <div class="form-row" style="grid-template-columns:1fr auto">
-        <label>5日線上抜けを条件に含める</label>
-        <label class="switch-wrap" style="display:inline-block">
-          <input type="checkbox" name="ma5_cross_enabled" {% if cfg.ma5_cross_enabled %}checked{% endif %} style="accent-color:var(--accent)">
-        </label>
-      </div>
-      <p class="muted" style="font-size:12px;line-height:1.65;margin:10px 0 0">
-        この反発ルールは monitor_rebound の観測判定用です。日次の仮想購入は
-        <code>predict_rebound.py</code> のAIスコアと入口フィルタで判定され、
-        前日比反発率やRSI回復ラインを必須条件にはしていません。
-      </p>
-    </div>
-
-    <div class="form-card">
-      <h3>エントリー選抜</h3>
-      {% for key, label in [
-        ("max_open_positions", "最大保有数"),
-        ("max_daily_entries", "1日最大エントリー"),
-        ("entry_rank_limit", "エントリー上位数"),
-        ("max_sector_positions", "同セクター最大保有数"),
-      ] %}
-      <div class="form-row">
-        <label>{{ label }}</label>
-        <div class="input-group">
-          <input type="number" step="1" min="0" name="{{ key }}" value="{{ cfg[key] }}">
-        </div>
-      </div>
-      {% endfor %}
-    </div>
-
-    <div class="form-card">
       <h3>入口モード</h3>
       {% for value, label, desc in [
         ("auto", "自動判定（実験的）", "自動判定は実験機能です。market_regimeの誤判定で入口条件が変わる可能性があります。"),
@@ -136,64 +89,6 @@
       <p class="muted" style="font-size:12px;line-height:1.6;margin:8px 0 0">
         入口モードは実験機能です。過去データ上の傾向をもとにしていますが、現在相場への適合を保証するものではありません。
         H5 Primary の新規仮想購入では、新規停止（paused）のみ安全停止として適用し、銘柄選別はH5固定条件を優先します。
-      </p>
-    </div>
-
-    {# ── 出口系 ── #}
-    <div class="form-card">
-      <h3>従来トレードの出口（非H5）</h3>
-      {% for key, label, unit, step in [
-        ("virtual_exit_pullback_pct", "通常反落利確", "%", "0.1"),
-        ("virtual_exit_rsi_level", "RSI引き締めライン", "", "0.1"),
-        ("virtual_exit_rsi_pullback_pct", "RSI後の反落利確", "%", "0.1"),
-        ("virtual_exit_stop_loss_pct", "終値損切り", "%", "0.1"),
-        ("virtual_exit_ma5_failure_pct", "MA5回復後の再崩れ", "%", "0.1")
-      ] %}
-      <div class="form-row">
-        <label>{{ label }}</label>
-        <div class="input-group">
-          <input type="number" step="{{ step }}" min="0" name="{{ key }}" value="{{ cfg[key] }}">
-          {% if unit %}<span class="unit">{{ unit }}</span>{% endif %}
-        </div>
-      </div>
-      {% endfor %}
-      {% for key, label in [
-        ("virtual_exit_holding_days", "保有期限"),
-        ("virtual_exit_extend_high_update_days", "高値更新なら延長")
-      ] %}
-      <div class="form-row">
-        <label>{{ label }}</label>
-        <div class="input-group">
-          <input type="number" step="1" min="0" name="{{ key }}" value="{{ cfg[key] }}">
-          <span class="unit">日</span>
-        </div>
-      </div>
-      {% endfor %}
-      <p class="muted" style="font-size:12px;line-height:1.6;margin:8px 0 0">
-        H5 Primary として作成された新規トレードは、この設定ではなくピーク反落-2% / 3営業日 / -12%事故停止で管理されます。
-      </p>
-    </div>
-
-    {# ── フィルタ系 ── #}
-    <div class="form-card">
-      <h3>エントリーフィルタ</h3>
-      <div class="form-row" style="grid-template-columns:1fr auto">
-        <label>信用倍率フィルタ</label>
-        <input type="checkbox" name="entry_margin_filter_enabled" {% if cfg.entry_margin_filter_enabled %}checked{% endif %} style="accent-color:var(--accent);width:16px;height:16px">
-      </div>
-      <div class="form-row" style="grid-template-columns:1fr auto">
-        <label>信用倍率データ必須</label>
-        <input type="checkbox" name="entry_margin_require_data" {% if cfg.entry_margin_require_data %}checked{% endif %} style="accent-color:var(--accent);width:16px;height:16px">
-      </div>
-      <div class="form-row">
-        <label>信用倍率上限</label>
-        <div class="input-group">
-          <input type="number" step="0.1" min="0" name="entry_max_margin_ratio" value="{{ cfg.entry_max_margin_ratio }}">
-          <span class="unit">倍以下</span>
-        </div>
-      </div>
-      <p class="muted" style="font-size:12px;line-height:1.6;margin:8px 0 0">
-        このフィルタは従来入口用です。H5 Primary は信用倍率3〜30倍（未取得は通過）を固定条件として使用します。
       </p>
     </div>
 

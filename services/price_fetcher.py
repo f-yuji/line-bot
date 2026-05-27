@@ -124,7 +124,7 @@ def judge_h5_entry_status(entry_gap_pct: float | None) -> tuple[str, str]:
 def decorate_h5_price_assist_cards(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Attach display fields only to H5 Primary cards."""
     for row in rows:
-        if not row.get("h5_primary_match"):
+        if not row.get("h5_primary_match") or not row.get("is_live_candidate"):
             continue
         signal_price = _number(row.get("virtual_entry_price")) or _number(row.get("entry_price"))
         row["signal_price"] = signal_price

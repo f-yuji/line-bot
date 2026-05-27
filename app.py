@@ -17,9 +17,12 @@ from services.signal_stage import SIGNAL_STAGES, STAGE_RANK, evaluate_signal_sta
 from services.entry_mode import ENTRY_MODE_LABELS, classify_entry_case, ma_gap_pct, regime_scores, resolve_entry_mode
 from services.h5_primary import (
     H5_ENTRY_EXECUTION_NOTE,
+    H5_ACTIVE_CASE_KEYS,
+    H5_LIVE_LIMITED_CASE_KEY,
     H5_PRIMARY_CASE_KEY,
     H5_PRIMARY_DISPLAY_NAME,
     H5_PRIMARY_RULES,
+    H5_RESEARCH_CASE_KEY,
     evaluate_h5_primary_entry,
 )
 from services.price_fetcher import H5_ENTRY_STATUS_PRIORITY, decorate_h5_price_assist_cards
@@ -3312,12 +3315,21 @@ def web_trade_assist():
             "signal_probability": row.get("display_probability") or row.get("signal_probability"),
         }
         h5_passed, h5_reasons, h5_meta = evaluate_h5_primary_entry(h5_input)
-        persisted_h5 = str((trade or {}).get("case_key") or row.get("case_key") or "") == H5_PRIMARY_CASE_KEY
+        persisted_case_key = str((trade or {}).get("case_key") or row.get("case_key") or "")
+        persisted_h5 = bool((trade or {}).get("is_primary_h5")) or persisted_case_key in H5_ACTIVE_CASE_KEYS
         # An already-created legacy virtual trade must not be relabeled as H5,
         # because its stored exit rule remains the legacy one.
         row["h5_primary_match"] = persisted_h5 if trade else h5_passed
         row["h5_case_key"] = H5_PRIMARY_CASE_KEY
         row["h5_case_label"] = H5_PRIMARY_DISPLAY_NAME
+        row["position_limit_mode"] = (trade or row).get("position_limit_mode") or ("live_limited" if row.get("is_live_candidate") else "research")
+        row["is_live_candidate"] = bool((trade or row).get("is_live_candidate"))
+        row["is_h5_research"] = bool((trade or row).get("is_h5_research")) or (persisted_case_key == H5_RESEARCH_CASE_KEY)
+        row["is_h5_live_limited"] = bool((trade or row).get("is_h5_live_limited")) or (persisted_case_key == H5_LIVE_LIMITED_CASE_KEY)
+        row["selected_rank"] = (trade or row).get("selected_rank")
+        row["live_skip_reason"] = (trade or row).get("live_skip_reason")
+        row["h5_candidate_count"] = (trade or row).get("h5_candidate_count")
+        row["h5_selected_count"] = (trade or row).get("h5_selected_count")
         row["h5_skip_reason"] = None if row["h5_primary_match"] or trade else " / ".join(h5_reasons)
         row["h5_overheat_score"] = h5_meta.get("entry_overheat_score")
         if row["h5_primary_match"]:
@@ -3375,8 +3387,9 @@ def web_trade_assist():
     cards.sort(
         key=lambda r: (
             bool(r.get("h5_primary_match")),
+            bool(r.get("is_live_candidate")),
             H5_ENTRY_STATUS_PRIORITY.get(str(r.get("entry_status") or ""), -1)
-            if r.get("h5_primary_match") else -1,
+            if r.get("h5_primary_match") and r.get("is_live_candidate") else -1,
             _num(r, "signal_probability", "ai_probability")
             if r.get("h5_primary_match") else STAGE_RANK.get(r.get("signal_stage"), 0),
             -_num(r, "entry_gap_pct", default=999.0)
@@ -3602,7 +3615,11 @@ def _entry_mode_migration_status() -> bool:
 def _h5_primary_migration_status() -> bool:
     try:
         supabase.table("virtual_trades").select(
-            "case_key,is_primary_h5,exit_rule,peak_pullback_pct,initial_sl_pct,max_holding_days"
+            "case_key,is_primary_h5,exit_rule,peak_pullback_pct,initial_sl_pct,max_holding_days,"
+            "position_limit_mode,is_live_candidate,selected_rank,live_skip_reason"
+        ).limit(1).execute()
+        supabase.table("stock_drop_watchlist").select(
+            "position_limit_mode,is_live_candidate,selected_rank,live_skip_reason"
         ).limit(1).execute()
         return True
     except Exception as e:

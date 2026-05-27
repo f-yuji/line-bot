@@ -10,14 +10,21 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 from dotenv import load_dotenv
 from supabase import create_client
 
-from services.h5_primary import H5_ENTRY_EXECUTION_NOTE, H5_PRIMARY_CASE_KEY, H5_PRIMARY_RULES
+from services.h5_primary import (
+    H5_ENTRY_EXECUTION_NOTE,
+    H5_LEGACY_PRIMARY_CASE_KEY,
+    H5_LIVE_LIMITED_CASE_KEY,
+    H5_LIVE_LIMITED_RULES,
+    H5_RESEARCH_CASE_KEY,
+    H5_RESEARCH_RULES,
+)
 
 load_dotenv()
 
 
 def _case(case_key: str, case_name: str, description: str, **overrides) -> dict:
     rules = {
-        **H5_PRIMARY_RULES,
+        **H5_LIVE_LIMITED_RULES,
         "entry_sort": "expected_value_desc",
         "max_daily_entries": 999,
         "max_open_positions": 999,
@@ -35,9 +42,25 @@ def _case(case_key: str, case_name: str, description: str, **overrides) -> dict:
 
 H5_CASES = [
     _case(
-        H5_PRIMARY_CASE_KEY,
-        "H5 Primary: AI65 / PB2 / HD3 / EST12 / Credit 3-30",
-        "Formal H5 Primary: high-probability short rebound with -12% emergency stop and credit ratio range 3-30.",
+        H5_RESEARCH_CASE_KEY,
+        "H5 Research: AI65 / PB2 / HD3 / EST12 / Credit 3-30 / No limits",
+        "Research H5 case: all qualified signals are tracked for pure strategy observation.",
+        **H5_RESEARCH_RULES,
+        credit_profile="margin_range_3_30",
+    ),
+    _case(
+        H5_LIVE_LIMITED_CASE_KEY,
+        "H5 Live Limited: AI65 / PB2 / HD3 / EST12 / Credit 3-30",
+        "Execution candidate H5 case: top ranked signals are marked as live candidates with 2/2 limits.",
+        **H5_LIVE_LIMITED_RULES,
+        credit_profile="margin_range_3_30",
+    ),
+    _case(
+        H5_LEGACY_PRIMARY_CASE_KEY,
+        "H5 Primary Legacy: AI65 / PB2 / HD3 / EST12 / Credit 3-30",
+        "Legacy H5 Primary kept for compatibility and comparison.",
+        is_primary_h5=False,
+        h5_comparison=True,
     ),
     _case(
         "h5_ai65_pb20_hd3_nostop_cm_range330",

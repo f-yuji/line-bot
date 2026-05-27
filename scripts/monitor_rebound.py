@@ -31,7 +31,14 @@ from bad_news_filter import analyze_bad_news
 from scoring import calculate_score
 from services.market_regime import evaluate_market_regime
 from services.entry_credit_filter import attach_entry_margin_data
-from services.h5_primary import H5_PRIMARY_CASE_KEY, evaluate_h5_primary_entry
+from services.h5_primary import (
+    H5_LIVE_LIMITED_CASE_KEY,
+    H5_LIVE_LIMITED_RULES,
+    H5_PRIMARY_DISPLAY_NAME,
+    H5_RESEARCH_CASE_KEY,
+    H5_RESEARCH_DISPLAY_NAME,
+    evaluate_h5_primary_entry,
+)
 from services.signal_stage import SIGNAL_STAGES, evaluate_signal_stage
 from services.signal_history import record_rebound_signal
 from services.virtual_trade_exit import close_related_watchlist, evaluate_virtual_trade_exit, fetch_snapshot_price_rows_since_entry
@@ -712,6 +719,14 @@ def _create_virtual_trade(
             "case_key": item.get("case_key"),
             "case_label": item.get("case_label"),
             "is_primary_h5": item.get("is_primary_h5"),
+            "position_limit_mode": item.get("position_limit_mode"),
+            "is_h5_research": item.get("is_h5_research"),
+            "is_h5_live_limited": item.get("is_h5_live_limited"),
+            "is_live_candidate": item.get("is_live_candidate"),
+            "selected_rank": item.get("selected_rank"),
+            "live_skip_reason": item.get("live_skip_reason"),
+            "h5_candidate_count": item.get("h5_candidate_count"),
+            "h5_selected_count": item.get("h5_selected_count"),
             "exit_rule": item.get("exit_rule"),
             "peak_pullback_pct": item.get("peak_pullback_pct"),
             "initial_sl_pct": item.get("initial_sl_pct"),
@@ -814,6 +829,15 @@ def _entry_rank_value(candidate: dict) -> tuple[float, float]:
     return stage_rank, float(ev if ev is not None else -999.0), float(prob if prob is not None else 0.0)
 
 
+def _h5_live_rank_value(candidate: dict) -> tuple[float, float, float]:
+    item = candidate["item"]
+    return (
+        float(item.get("signal_probability") or 0.0),
+        -float(item.get("entry_overheat_score") or 0.0),
+        float(item.get("volume_ratio_20d") or 0.0),
+    )
+
+
 def _create_ranked_virtual_trades(
     candidates: list[dict],
     cfg: dict,
@@ -828,20 +852,15 @@ def _create_ranked_virtual_trades(
         logger.info("[h5_primary_entry] entry_mode=paused candidates_skipped=%d", len(candidates))
         return
 
-    max_open = _int_setting(cfg, "max_open_positions", 20)
-    max_daily = _int_setting(cfg, "max_daily_entries", 5)
-    rank_limit = _int_setting(cfg, "entry_rank_limit", 10)
-    max_sector = _int_setting(cfg, "max_sector_positions", 2)
-    if market_adjustment.get("regime") == "panic_rebound" and rank_limit > 0:
-        original = rank_limit
-        rank_limit = max(1, rank_limit // 2)
-        logger.info("[market_regime_limit] regime=panic_rebound entry_rank_limit=%d original=%d", rank_limit, original)
-
     attach_entry_margin_data(supabase, [c["item"] for c in candidates])
     filtered_candidates: list[dict] = []
     for candidate in candidates:
         item = candidate["item"]
-        passed_h5, reasons, h5_meta = evaluate_h5_primary_entry(item)
+        passed_h5, reasons, h5_meta = evaluate_h5_primary_entry(
+            item,
+            case_key=H5_RESEARCH_CASE_KEY,
+            case_label=H5_RESEARCH_DISPLAY_NAME,
+        )
         item.update(h5_meta)
         if not passed_h5:
             reason = reasons[0] if reasons else "h5_primary_filter"
@@ -857,38 +876,70 @@ def _create_ranked_virtual_trades(
             )
             _mark_watchlist_status(item, "signal_skipped", reason, now_utc)
             continue
-        logger.info("[h5_primary_entry] code=%s case=%s price=%s", item.get("code"), H5_PRIMARY_CASE_KEY, candidate.get("current"))
+        logger.info("[h5_primary_entry] code=%s case=%s price=%s", item.get("code"), H5_RESEARCH_CASE_KEY, candidate.get("current"))
         filtered_candidates.append(candidate)
     if not filtered_candidates:
         return
 
-    ranked_all = sorted(filtered_candidates, key=_entry_rank_value, reverse=True)
-    ranked = ranked_all[:rank_limit] if rank_limit > 0 else ranked_all
-    ranked_ids = {c["item"].get("id") for c in ranked if c["item"].get("id")}
-    for candidate in ranked_all:
-        item = candidate["item"]
-        if item.get("id") and item.get("id") not in ranked_ids:
-            _mark_watchlist_status(item, "signal_skipped", "entry_rank_limit", now_utc)
-
+    max_open = int(H5_LIVE_LIMITED_RULES["max_open_positions"])
+    max_daily = int(H5_LIVE_LIMITED_RULES["max_daily_entries"])
+    max_sector = int(H5_LIVE_LIMITED_RULES["max_sector_positions"])
+    rank_limit = int(H5_LIVE_LIMITED_RULES["entry_rank_limit"])
     open_count, today_entries, sector_counts = _entry_limit_state(now_utc)
-    for candidate in ranked:
+    live_selected = 0
+    ranked_all = sorted(filtered_candidates, key=_h5_live_rank_value, reverse=True)
+    for selected_rank, candidate in enumerate(ranked_all, start=1):
         item = candidate["item"]
         code = item.get("code", "")
         sector = str(item.get("sector") or "unknown")
-        if max_open and open_count >= max_open:
-            logger.info("[position_limit] skip code=%s open_positions=%d limit=%d", code, open_count, max_open)
-            _mark_watchlist_status(item, "signal_skipped", "max_open_positions", now_utc)
-            continue
-        if max_daily and today_entries >= max_daily:
-            logger.info("[daily_entry_limit] skip code=%s today_entries=%d limit=%d", code, today_entries, max_daily)
-            _mark_watchlist_status(item, "signal_skipped", "max_daily_entries", now_utc)
-            continue
-        current_sector = sector_counts.get(sector, 0)
-        if max_sector and current_sector >= max_sector:
-            logger.info("[sector_limit] skip code=%s sector=%s current=%d limit=%d", code, sector, current_sector, max_sector)
-            _mark_watchlist_status(item, "signal_skipped", "max_sector_positions", now_utc)
-            continue
-        created = _create_virtual_trade(
+        reason = None
+        if rank_limit and selected_rank > rank_limit:
+            reason = "entry_rank_limit_exceeded"
+        elif max_open and open_count + live_selected >= max_open:
+            reason = "max_open_positions_exceeded"
+        elif max_daily and today_entries + live_selected >= max_daily:
+            reason = "max_daily_entries_exceeded"
+        else:
+            current_sector = sector_counts.get(sector, 0)
+            if max_sector and current_sector >= max_sector:
+                reason = "max_sector_positions_exceeded"
+
+        item["selected_rank"] = selected_rank
+        item["h5_candidate_count"] = len(filtered_candidates)
+        item["h5_selected_count"] = live_selected
+        item["live_skip_reason"] = reason
+        if reason is None:
+            item["position_limit_mode"] = "live_limited"
+            item["is_h5_research"] = False
+            item["is_h5_live_limited"] = True
+            item["is_live_candidate"] = True
+            item["case_key"] = H5_LIVE_LIMITED_CASE_KEY
+            item["case_label"] = H5_PRIMARY_DISPLAY_NAME
+            item["is_primary_h5"] = True
+            live_selected += 1
+            sector_counts[sector] = sector_counts.get(sector, 0) + 1
+        else:
+            item["position_limit_mode"] = "research"
+            item["is_h5_research"] = True
+            item["is_h5_live_limited"] = False
+            item["is_live_candidate"] = False
+            item["case_key"] = H5_RESEARCH_CASE_KEY
+            item["case_label"] = H5_RESEARCH_DISPLAY_NAME
+            item["is_primary_h5"] = False
+
+        logger.info(
+            "[h5_position_limit] code=%s rank=%s live=%s reason=%s total=%s",
+            code,
+            selected_rank,
+            item["is_live_candidate"],
+            reason or "selected",
+            len(filtered_candidates),
+        )
+
+    for candidate in ranked_all:
+        item = candidate["item"]
+        item["h5_selected_count"] = live_selected
+        _created = _create_virtual_trade(
             item,
             candidate["current"],
             candidate["score"],
@@ -896,10 +947,6 @@ def _create_ranked_virtual_trades(
             candidate.get("rebound"),
             candidate.get("bad_analysis"),
         )
-        if created:
-            open_count += 1
-            today_entries += 1
-            sector_counts[sector] = current_sector + 1
 
 
 def _manage_virtual_trades(cfg: dict, now_utc: datetime, *, dry_run: bool = False) -> None:

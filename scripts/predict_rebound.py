@@ -36,8 +36,12 @@ from services.market_regime import evaluate_market_regime
 from services.entry_credit_filter import attach_entry_margin_data
 from services.entry_mode import classify_entry_case, entry_mode_filter, resolve_entry_mode
 from services.h5_primary import (
-    H5_PRIMARY_CASE_KEY,
+    H5_LIVE_LIMITED_CASE_KEY,
+    H5_LIVE_LIMITED_RULES,
     H5_PRIMARY_DISPLAY_NAME,
+    H5_RESEARCH_CASE_KEY,
+    H5_RESEARCH_DISPLAY_NAME,
+    H5_PRIMARY_CASE_KEY,
     evaluate_h5_primary_entry,
 )
 from services.model_storage import download_model_artifact
@@ -538,10 +542,18 @@ def _save_h5_watchlist_meta(sb, watch: dict, passed: bool, meta: dict, *, dry_ru
     if not watchlist_id:
         return
     update = {
-        "h5_case_key": H5_PRIMARY_CASE_KEY,
+        "h5_case_key": meta.get("case_key") or H5_RESEARCH_CASE_KEY,
         "h5_primary_match": passed,
         "h5_skip_reason": meta.get("h5_skip_reason"),
         "h5_overheat_score": meta.get("entry_overheat_score"),
+        "position_limit_mode": meta.get("position_limit_mode"),
+        "is_h5_research": meta.get("is_h5_research"),
+        "is_h5_live_limited": meta.get("is_h5_live_limited"),
+        "is_live_candidate": meta.get("is_live_candidate"),
+        "selected_rank": meta.get("selected_rank"),
+        "live_skip_reason": meta.get("live_skip_reason"),
+        "h5_candidate_count": meta.get("h5_candidate_count"),
+        "h5_selected_count": meta.get("h5_selected_count"),
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
     if dry_run:
@@ -890,6 +902,14 @@ def _create_virtual_trade(sb, snapshot: dict, watch: dict, result: dict, *, dry_
             "case_key": result.get("case_key"),
             "case_label": result.get("case_label"),
             "is_primary_h5": result.get("is_primary_h5"),
+            "position_limit_mode": result.get("position_limit_mode"),
+            "is_h5_research": result.get("is_h5_research"),
+            "is_h5_live_limited": result.get("is_h5_live_limited"),
+            "is_live_candidate": result.get("is_live_candidate"),
+            "selected_rank": result.get("selected_rank"),
+            "live_skip_reason": result.get("live_skip_reason"),
+            "h5_candidate_count": result.get("h5_candidate_count"),
+            "h5_selected_count": result.get("h5_selected_count"),
             "exit_rule": result.get("exit_rule"),
             "peak_pullback_pct": result.get("peak_pullback_pct"),
             "initial_sl_pct": result.get("initial_sl_pct"),
@@ -930,6 +950,15 @@ def _entry_rank_value(candidate: tuple[dict, dict, dict]) -> tuple[float, float]
     return stage_rank, float(result.get("expected_value") or -999.0), float(result.get("probability") or 0.0)
 
 
+def _h5_live_rank_value(candidate: tuple[dict, dict, dict]) -> tuple[float, float, float]:
+    row, _watch, result = candidate
+    return (
+        float(result.get("probability") or 0.0),
+        -float(result.get("entry_overheat_score") or 0.0),
+        float(row.get("volume_ratio_20d") or 0.0),
+    )
+
+
 def _create_ranked_virtual_trades(
     sb,
     candidates: list[tuple[dict, dict, dict]],
@@ -952,14 +981,6 @@ def _create_ranked_virtual_trades(
         entry_mode_ctx.get("recommendation_basis"),
     )
     effective_entry_mode = str(entry_mode_ctx["effective"])
-    max_open = _int_setting(cfg, "max_open_positions", 20)
-    max_daily = _int_setting(cfg, "max_daily_entries", 5)
-    max_sector = _int_setting(cfg, "max_sector_positions", 2)
-    rank_limit = _int_setting(cfg, "entry_rank_limit", 10)
-    if market_adjustment.get("regime") == "panic_rebound" and rank_limit > 0:
-        original = rank_limit
-        rank_limit = max(1, rank_limit // 2)
-        logger.info("[market_regime_limit] regime=panic_rebound entry_rank_limit=%d original=%d", rank_limit, original)
     candidate_rows = [row for row, _watch, _result in candidates]
     attach_entry_margin_data(sb, candidate_rows)
     filtered_candidates: list[tuple[dict, dict, dict]] = []
@@ -981,7 +1002,11 @@ def _create_ranked_virtual_trades(
             "market_regime": result.get("market_regime"),
             "entry_ma5_gap_pct": result.get("entry_ma5_gap_pct"),
         }
-        passed_h5, h5_reasons, h5_meta = evaluate_h5_primary_entry(h5_row)
+        passed_h5, h5_reasons, h5_meta = evaluate_h5_primary_entry(
+            h5_row,
+            case_key=H5_RESEARCH_CASE_KEY,
+            case_label=H5_RESEARCH_DISPLAY_NAME,
+        )
         result.update(h5_meta)
         _save_h5_watchlist_meta(sb, watch, passed_h5, h5_meta, dry_run=dry_run)
         if not passed_h5:
@@ -1013,38 +1038,57 @@ def _create_ranked_virtual_trades(
     if not filtered_candidates:
         return
 
-    ranked_all = sorted(filtered_candidates, key=_entry_rank_value, reverse=True)
-    ranked = ranked_all[:rank_limit] if rank_limit > 0 else ranked_all
-    ranked_ids = {(w or {}).get("id") for _r, w, _res in ranked if (w or {}).get("id")}
-    for row, watch, result in ranked_all:
-        watch_id = (watch or {}).get("id")
-        if watch_id and watch_id not in ranked_ids:
-            _virtual_entry_check_log(row, result, "skip", "entry_rank_limit")
-            _mark_watchlist_status(sb, watch, row, "signal_skipped", "entry_rank_limit", dry_run=dry_run)
     open_count, today_entries, sector_counts = _entry_limit_state(sb)
-    for row, watch, result in ranked:
-        code = row.get("code")
+    live_rank_limit = int(H5_LIVE_LIMITED_RULES["entry_rank_limit"])
+    live_max_open = int(H5_LIVE_LIMITED_RULES["max_open_positions"])
+    live_max_daily = int(H5_LIVE_LIMITED_RULES["max_daily_entries"])
+    live_max_sector = int(H5_LIVE_LIMITED_RULES["max_sector_positions"])
+    live_selected = 0
+    ranked_live = sorted(filtered_candidates, key=_h5_live_rank_value, reverse=True)
+
+    for rank, (row, watch, result) in enumerate(ranked_live, start=1):
         sector = str(row.get("sector") or "unknown")
-        if max_open and open_count >= max_open:
-            logger.info("[position_limit] skip code=%s open_positions=%d limit=%d", code, open_count, max_open)
-            _virtual_entry_check_log(row, result, "skip", "max_open_positions")
-            _mark_watchlist_status(sb, watch, row, "signal_skipped", "max_open_positions", dry_run=dry_run)
-            continue
-        if max_daily and today_entries >= max_daily:
-            logger.info("[daily_entry_limit] skip code=%s today_entries=%d limit=%d", code, today_entries, max_daily)
-            _virtual_entry_check_log(row, result, "skip", "max_daily_entries")
-            _mark_watchlist_status(sb, watch, row, "signal_skipped", "max_daily_entries", dry_run=dry_run)
-            continue
-        current_sector = sector_counts.get(sector, 0)
-        if max_sector and current_sector >= max_sector:
-            logger.info("[sector_limit] skip code=%s sector=%s current=%d limit=%d", code, sector, current_sector, max_sector)
-            _virtual_entry_check_log(row, result, "skip", "max_sector_positions")
-            _mark_watchlist_status(sb, watch, row, "signal_skipped", "max_sector_positions", dry_run=dry_run)
-            continue
-        if _create_virtual_trade(sb, row, watch, result, dry_run=dry_run):
-            open_count += 1
-            today_entries += 1
-            sector_counts[sector] = current_sector + 1
+        reason = None
+        if rank > live_rank_limit:
+            reason = "entry_rank_limit_exceeded"
+        elif live_max_open and open_count + live_selected >= live_max_open:
+            reason = "max_open_positions_exceeded"
+        elif live_max_daily and today_entries + live_selected >= live_max_daily:
+            reason = "max_daily_entries_exceeded"
+        elif live_max_sector and sector_counts.get(sector, 0) >= live_max_sector:
+            reason = "max_sector_positions_exceeded"
+
+        result["selected_rank"] = rank
+        result["h5_candidate_count"] = len(filtered_candidates)
+        result["position_limit_mode"] = "live_limited" if reason is None else "research"
+        result["is_h5_research"] = reason is not None
+        result["is_h5_live_limited"] = reason is None
+        result["is_live_candidate"] = reason is None
+        result["live_skip_reason"] = reason
+        if reason is None:
+            live_selected += 1
+            result["case_key"] = H5_LIVE_LIMITED_CASE_KEY
+            result["case_label"] = H5_PRIMARY_DISPLAY_NAME
+            result["is_primary_h5"] = True
+        else:
+            result["case_key"] = H5_RESEARCH_CASE_KEY
+            result["case_label"] = H5_RESEARCH_DISPLAY_NAME
+            result["is_primary_h5"] = False
+        logger.info(
+            "[h5_position_limit] code=%s rank=%s live=%s reason=%s total=%s",
+            row.get("code"),
+            rank,
+            result["is_live_candidate"],
+            reason or "selected",
+            len(filtered_candidates),
+        )
+
+    for _row, watch, result in filtered_candidates:
+        result["h5_selected_count"] = live_selected
+        _save_h5_watchlist_meta(sb, watch, True, result, dry_run=dry_run)
+
+    for row, watch, result in ranked_live:
+        _create_virtual_trade(sb, row, watch, result, dry_run=dry_run)
 
 
 def _eligible_users(sb) -> list[dict]:
