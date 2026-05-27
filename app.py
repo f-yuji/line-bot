@@ -2107,25 +2107,81 @@ def web_dashboard():
         ),
         reverse=True,
     )
-    candidate_rows = [
-        r for r in rows
-        if r.get("status") == "rebound_candidate"
-        and r.get("signal_stage") == "early"
-        and not r.get("is_excluded")
-    ]
-    _with_rebound_diagnostics(signal_rows + candidate_rows, market_adjustment, cfg)
+    _with_rebound_diagnostics(signal_rows, market_adjustment, cfg)
     watching_rows = [r for r in rows if r.get("status") == "watching"]
     stats = get_watchlist_counts(rows, open_trade_codes)
     stats["holding"] = holding_count
+
+    # H5 open positions
+    h5_open_trades: list[dict] = []
+    try:
+        h5_open_trades = (
+            supabase.table("virtual_trades")
+            .select("id,code,name,buy_price,buy_date,peak_price,current_price,unrealized_pnl_pct,case_key,is_primary_h5,is_live_candidate,selected_rank,signal_probability")
+            .in_("case_key", list(H5_ACTIVE_CASE_KEYS))
+            .eq("status", "open")
+            .is_("sell_date", "null")
+            .order("buy_date", desc=True)
+            .limit(20)
+            .execute()
+            .data or []
+        )
+    except Exception as e:
+        logger.warning("h5 open trades fetch failed: %s", e)
+
+    # Today's H5 evaluation log (signals evaluated today, any h5 result)
+    h5_today_evals: list[dict] = []
+    try:
+        _jst_today = datetime.now(JST).date()
+        _today_start_utc = datetime(_jst_today.year, _jst_today.month, _jst_today.day, tzinfo=JST).astimezone(timezone.utc).isoformat()
+        h5_today_evals = (
+            supabase.table("stock_drop_watchlist")
+            .select("code,name,h5_primary_match,h5_skip_reason,h5_overheat_score,signal_probability,drop_detected_at,is_live_candidate,selected_rank")
+            .not_.is_("h5_case_key", "null")
+            .gte("updated_at", _today_start_utc)
+            .order("h5_primary_match", desc=True)
+            .order("signal_probability", desc=True)
+            .limit(30)
+            .execute()
+            .data or []
+        )
+    except Exception as e:
+        logger.warning("h5 today evals fetch failed: %s", e)
+
+    # AI diary (latest rebound_ai_daily log)
+    ai_diary: dict = {}
+    try:
+        diary_rows = (
+            supabase.table("research_import_logs")
+            .select("finished_at,params,status")
+            .eq("job_type", "rebound_ai_daily")
+            .order("finished_at", desc=True)
+            .limit(1)
+            .execute()
+            .data or []
+        )
+        if diary_rows:
+            row = diary_rows[0]
+            params = row.get("params") or {}
+            ai_diary = {
+                "date": (params.get("latest_feature_date") or str(row.get("finished_at") or ""))[:10],
+                "text": params.get("ai_summary") or "",
+                "status": row.get("status"),
+            }
+    except Exception as e:
+        logger.warning("ai diary fetch failed: %s", e)
+
     return render_template("web/dashboard.html",
         rows=rows,
         signal_rows=signal_rows,
-        candidate_rows=candidate_rows,
         watching_rows=watching_rows,
         stats=stats,
         market_adjustment=market_adjustment,
         long_term_market=long_term_market,
         entry_mode_context=entry_mode_context,
+        h5_open_trades=h5_open_trades,
+        h5_today_evals=h5_today_evals,
+        ai_diary=ai_diary,
     )
 
 
