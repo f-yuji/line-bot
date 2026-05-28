@@ -44,6 +44,7 @@ from services.h5_primary import (
     H5_RESEARCH_DISPLAY_NAME,
     H5_PRIMARY_CASE_KEY,
     evaluate_h5_primary_entry,
+    h5_overheat_score,
 )
 from services.model_storage import download_model_artifact
 from services.signal_stage import SIGNAL_STAGES, evaluate_signal_stage
@@ -67,6 +68,9 @@ TARGET_CONFIG = {
 VIRTUAL_REENTRY_COOLDOWN_DAYS = 10
 ENTRY_SIGNAL_STAGES = {"confirmed", "strong_confirmed"}
 ACTIVE_SIGNAL_STAGES = {"confirmed", "strong_confirmed"}
+H5_WATCH_AI_MIN = 0.60
+H5_WATCH_DROP20_MAX = -6.5
+H5_WATCH_OVERHEAT_MAX = 2
 
 
 def _target_config(args: argparse.Namespace) -> dict:
@@ -568,6 +572,91 @@ def _save_h5_watchlist_meta(sb, watch: dict, passed: bool, meta: dict, *, dry_ru
         logger.info("DRYRUN watchlist H5 metadata: id=%s update=%s", watchlist_id, update)
         return
     _update_watchlist_with_optional_columns(sb, watchlist_id, update)
+
+
+def _build_h5_pre_signal_watch_row(row: dict, result: dict) -> dict | None:
+    probability = _to_float(result.get("probability"))
+    stage = str(result.get("signal_stage") or "")
+    drop20 = _to_float(row.get("drop_from_20d_high_pct"))
+    close_price = _to_float(row.get("close"))
+    margin = _to_float(row.get("margin_ratio"))
+    regime = str(result.get("market_regime") or row.get("market_regime") or "normal")
+    overheat = h5_overheat_score({**row, "signal_probability": probability, "signal_stage": stage, "market_regime": regime})
+
+    if probability is None or probability < H5_WATCH_AI_MIN:
+        return None
+    if stage not in {"early", "confirmed", "strong_confirmed"}:
+        return None
+    if drop20 is None or drop20 > H5_WATCH_DROP20_MAX:
+        return None
+    if regime == "panic_selloff":
+        return None
+    if overheat > H5_WATCH_OVERHEAT_MAX:
+        return None
+    if margin is not None and (margin < 3 or margin > 30):
+        return None
+    if close_price is None or close_price <= 0:
+        return None
+
+    passed_h5, _, _ = evaluate_h5_primary_entry(
+        {**row, "signal_probability": probability, "signal_stage": stage, "market_regime": regime}
+    )
+    if passed_h5:
+        return None
+
+    denominator = 1 + (drop20 / 100)
+    if denominator <= 0:
+        return None
+    high20 = close_price / denominator
+    trigger_price = high20 * 0.92
+    if trigger_price <= 0:
+        return None
+    distance = (close_price / trigger_price - 1) * 100
+    return {
+        "watch_date": row.get("trade_date"),
+        "code": row.get("code"),
+        "name": row.get("name"),
+        "ai_score": probability,
+        "signal_stage": stage,
+        "high_20d": round(high20, 4),
+        "close_price": close_price,
+        "h5_trigger_price": round(trigger_price, 4),
+        "distance_to_trigger_pct": round(distance, 4),
+        "drop_from_20d_high_pct": drop20,
+        "market_regime": regime,
+        "overheat_score": overheat,
+        "overheat_bucket": "hot" if overheat >= 2 else ("mild" if overheat == 1 else "cool"),
+        "margin_ratio": margin,
+        "volume_ratio": _to_float(row.get("volume_ratio_20d") or row.get("volume_ratio")),
+        "liquidity": _to_float(row.get("turnover_value") or row.get("liquidity")),
+        "watch_status": "watch",
+        "reject_reason": None,
+        "memo": "h5_watch_candidate",
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def _upsert_h5_pre_signal_watchlist(sb, rows: list[dict], *, dry_run: bool) -> None:
+    clean = [r for r in rows if r.get("watch_date") and r.get("code")]
+    logger.info("[h5_watchlist] candidates=%d", len(clean))
+    if not clean:
+        return
+    if dry_run:
+        for sample in clean[:10]:
+            logger.info(
+                "DRYRUN h5_watchlist code=%s ai=%.3f drop20=%s trigger=%s distance=%s",
+                sample.get("code"),
+                sample.get("ai_score") or 0,
+                sample.get("drop_from_20d_high_pct"),
+                sample.get("h5_trigger_price"),
+                sample.get("distance_to_trigger_pct"),
+            )
+        return
+    try:
+        for i in range(0, len(clean), 500):
+            sb.table("h5_watchlist").upsert(clean[i:i + 500], on_conflict="watch_date,code").execute()
+    except Exception as e:
+        logger.warning("h5_watchlist upsert failed; apply db/h5_primary_virtual_trades.sql: %s", e)
 
 
 def _current_mode(sb, target_date: str) -> dict:
@@ -1342,6 +1431,7 @@ def run(args: argparse.Namespace) -> None:
     signal_count = 0
     notify_items: list[tuple[dict, dict]] = []
     entry_candidates: list[tuple[dict, dict, dict]] = []
+    h5_watch_rows: list[dict] = []
     for row, prob in zip(snapshots, probabilities):
         row["market_regime_adjustment"] = market_adjustment
         ev = _expected_value(prob, target["take_profit_pct"], target["stop_loss_pct"])
@@ -1375,6 +1465,9 @@ def run(args: argparse.Namespace) -> None:
         result["entry_mode_used"] = effective_entry_mode
         result["entry_mode_reason"] = mode_reason or "entry_mode_candidate"
         result["recommended_entry_mode"] = entry_mode_ctx["recommended"]
+        h5_watch_row = _build_h5_pre_signal_watch_row(row, result)
+        if h5_watch_row:
+            h5_watch_rows.append(h5_watch_row)
         if stage in SIGNAL_STAGES:
             signal_count += 1
             thresholds = stage_check.get("thresholds") or {}
@@ -1418,6 +1511,7 @@ def run(args: argparse.Namespace) -> None:
             entry_candidates.append((row, watch or {}, result))
         if args.notify and not args.dry_run and _notification_allowed(row, result, cfg):
             notify_items.append((row, result))
+    _upsert_h5_pre_signal_watchlist(sb, h5_watch_rows, dry_run=args.dry_run)
     _create_ranked_virtual_trades(sb, entry_candidates, cfg, market_adjustment, long_term_market, dry_run=args.dry_run)
     if args.notify and not args.dry_run:
         _notify_batch(sb, notify_items, target_date, mode)

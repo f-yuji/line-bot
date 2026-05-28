@@ -2090,9 +2090,12 @@ def _build_h5_watchlist() -> dict:
         return {"ok": False, "error": "latest_snapshot_missing", "created": 0, "watch_date": None}
 
     try:
-        next_day = (datetime.fromisoformat(watch_date).date() + timedelta(days=1)).isoformat()
+        watch_day = datetime.fromisoformat(watch_date).date()
     except Exception:
-        next_day = watch_date
+        watch_day = datetime.now(JST).date()
+    start_utc = datetime(watch_day.year, watch_day.month, watch_day.day, tzinfo=JST).astimezone(timezone.utc).isoformat()
+    end_day = watch_day + timedelta(days=1)
+    end_utc = datetime(end_day.year, end_day.month, end_day.day, tzinfo=JST).astimezone(timezone.utc).isoformat()
 
     snapshots = _fetch_all_ranges(
         "stock_feature_snapshots",
@@ -2105,7 +2108,7 @@ def _build_h5_watchlist() -> dict:
 
     watch_rows = _fetch_all_ranges(
         "stock_drop_watchlist",
-        conditions=[("gte", "drop_detected_at", watch_date), ("lt", "drop_detected_at", next_day)],
+        conditions=[("gte", "drop_detected_at", start_utc), ("lt", "drop_detected_at", end_utc)],
         max_rows=4000,
     )
     market_adjustment = _current_market_adjustment()
