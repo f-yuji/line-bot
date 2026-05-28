@@ -315,7 +315,7 @@
       </tr></thead>
       <tbody>
       {% for m in execution_reviews %}
-      <tr>
+      <tr class="execution-review-row" data-review-id="{{ m.id }}" style="cursor:pointer">
         <td class="muted num">{{ m.trade_date or (m.created_at | jst("%Y-%m-%d")) }}</td>
         <td class="code">{{ m.code }}</td>
         <td class="name">{{ m.name or "" }}</td>
@@ -333,6 +333,29 @@
   {% else %}
   <div class="muted" style="padding:16px">執行レビューはまだありません。H5候補カードから「執行レビューに記録」できます。</div>
   {% endif %}
+</div>
+
+<div id="executionReviewOverlay" style="display:none;position:fixed;inset:0;z-index:80;background:rgba(0,0,0,.68);place-items:center;padding:18px">
+  <div class="panel" style="width:min(720px,96vw);max-height:90vh;overflow:auto;border-color:rgba(212,164,74,.35)">
+    <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;padding:16px;border-bottom:1px solid var(--line-dim)">
+      <div>
+        <div class="section-h" style="margin:0;color:var(--accent)">執行レビュー詳細</div>
+        <div class="muted" id="reviewModalSub" style="font-size:12px;margin-top:4px"></div>
+      </div>
+      <button class="btn sm" type="button" onclick="closeExecutionReview()">×</button>
+    </div>
+    <div id="reviewModalBody" style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;padding:16px"></div>
+    <div style="padding:0 16px 16px">
+      <div class="muted" style="font-size:12px;margin-bottom:6px">補足メモ</div>
+      <div id="reviewModalFreeText" style="white-space:pre-wrap;line-height:1.7;background:rgba(255,255,255,.03);border:1px solid var(--line-dim);padding:12px;border-radius:8px"></div>
+    </div>
+    <div style="display:flex;justify-content:flex-end;gap:8px;padding:12px 16px;border-top:1px solid var(--line-dim)">
+      <form id="reviewDeleteForm" method="post" class="js-disable-on-submit" onsubmit="return confirm('この執行レビューを削除しますか？');">
+        <button class="btn sm" type="submit" style="border-color:rgba(255,90,90,.45);color:#ff7b7b">レビュー削除</button>
+      </form>
+      <button class="btn sm" type="button" onclick="closeExecutionReview()">閉じる</button>
+    </div>
+  </div>
 </div>
 
 <div class="section-h" style="margin-top:12px">
@@ -402,11 +425,69 @@
 <script>
 const _ALL_ROWS = {};
 {{ (signal_rows + watching_rows) | tojson }}.forEach(function(r) { _ALL_ROWS[r.id] = r; });
+const _EXECUTION_REVIEWS = {};
+{{ execution_reviews | tojson }}.forEach(function(r) { _EXECUTION_REVIEWS[r.id] = r; });
 
 document.querySelectorAll('.clickable-row[data-id]').forEach(function(tr) {
   tr.addEventListener('click', function() {
     openDetail(_ALL_ROWS[this.dataset.id]);
   });
+});
+
+function _reviewText(v) {
+  return (v === null || v === undefined || v === '') ? '—' : String(v);
+}
+
+function _reviewEsc(v) {
+  return _reviewText(v).replace(/[&<>"']/g, function(c) {
+    return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];
+  });
+}
+
+function _reviewKv(label, value) {
+  return `<div style="border:1px solid var(--line-dim);border-radius:8px;padding:10px;background:rgba(255,255,255,.025)">
+    <div class="muted" style="font-size:11px;margin-bottom:4px">${_reviewEsc(label)}</div>
+    <div style="font-size:13px;line-height:1.45;white-space:normal">${_reviewEsc(value)}</div>
+  </div>`;
+}
+
+function openExecutionReview(review) {
+  if (!review) return;
+  document.getElementById('reviewModalSub').textContent =
+    `${_reviewText(review.trade_date || '').slice(0, 10)} / ${_reviewText(review.code)} ${_reviewText(review.name)}`;
+  document.getElementById('reviewModalBody').innerHTML = [
+    ['レビュー種別', review.review_type],
+    ['本来の行動', review.expected_action],
+    ['実際の行動', review.actual_action],
+    ['客観理由', review.reason_category],
+    ['感情要因', review.reason_emotion],
+    ['再発防止ルール', review.prevention_rule],
+    ['状態', review.status],
+    ['case', review.case_key],
+    ['signal価格', review.signal_price],
+    ['実際価格', review.actual_price],
+    ['機会損失%', review.opportunity_loss_pct],
+    ['実損失%', review.actual_loss_pct],
+    ['結果', review.result_summary],
+    ['教訓', review.lesson]
+  ].map(function(item) { return _reviewKv(item[0], item[1]); }).join('');
+  document.getElementById('reviewModalFreeText').textContent = _reviewText(review.free_text);
+  document.getElementById('reviewDeleteForm').action = `/web/h5/execution-reviews/${encodeURIComponent(review.id)}/delete`;
+  document.getElementById('executionReviewOverlay').style.display = 'grid';
+}
+
+function closeExecutionReview() {
+  document.getElementById('executionReviewOverlay').style.display = 'none';
+}
+
+document.querySelectorAll('.execution-review-row[data-review-id]').forEach(function(tr) {
+  tr.addEventListener('click', function() {
+    openExecutionReview(_EXECUTION_REVIEWS[this.dataset.reviewId]);
+  });
+});
+
+document.getElementById('executionReviewOverlay')?.addEventListener('click', function(e) {
+  if (e.target === this) closeExecutionReview();
 });
 
 document.querySelectorAll('.js-disable-on-submit').forEach(function(form) {

@@ -3741,6 +3741,17 @@ def web_h5_execution_review_create():
     return redirect(url_for("web_trade_assist"))
 
 
+@app.route("/web/h5/execution-reviews/<review_id>/delete", methods=["POST"])
+def web_h5_execution_review_delete(review_id: str):
+    try:
+        supabase.table("trade_execution_reviews").delete().eq("id", review_id).execute()
+        flash("執行レビューを削除しました。", "success")
+    except Exception as e:
+        logger.exception("h5 execution review delete failed")
+        flash(f"執行レビューの削除に失敗しました: {e}", "warning")
+    return redirect(url_for("web_dashboard"))
+
+
 @app.route("/web/h5/actual-trades", methods=["POST"])
 def web_h5_actual_trade_create():
     code = _form_text("code")
