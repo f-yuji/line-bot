@@ -3705,6 +3705,9 @@ def web_h5_execution_review_create():
     if not code:
         flash("執行レビューの銘柄コードがありません。", "warning")
         return redirect(url_for("web_trade_assist"))
+    free_text = _form_text("free_text")
+    if not free_text:
+        free_text = _form_text("free_text_preset")
     payload = {
         "trade_date": _form_text("trade_date") or None,
         "code": code,
@@ -3725,7 +3728,7 @@ def web_h5_execution_review_create():
         "actual_loss_pct": _form_float("actual_loss_pct"),
         "lesson": _form_text("lesson"),
         "prevention_rule": _form_text("prevention_rule"),
-        "free_text": _form_text("free_text"),
+        "free_text": free_text,
         "status": _form_text("status", "open"),
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }

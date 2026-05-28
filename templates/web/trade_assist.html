@@ -791,9 +791,17 @@
               </label>
               <label><span>機会損失%</span><input name="opportunity_loss_pct" type="number" step="0.01"></label>
             </div>
-            <input name="free_text" placeholder="補足メモ: 検証不十分段階での許容ロットオーバーにつき本銘柄見送り">
-            <input name="result_summary" value="H5候補だったが、初期実弾検証の許容ロットを超過したため見送り。">
-            <input name="lesson" value="これは怖さによる見送りではなく、資金管理上の正当な見送り。">
+            <label><span>補足メモ定型文</span>
+              <select name="free_text_preset">
+                <option value="検証不十分段階での許容ロットオーバーにつき本銘柄見送り">検証不十分段階での許容ロットオーバーにつき本銘柄見送り</option>
+                <option value="H5 Live Limitedかつシグナル価格以下だったが、恐怖で見送り">H5条件良好だが恐怖で見送り</option>
+                <option value="シグナル価格から+3%超のため飛びつき回避">+3%超のため飛びつき回避</option>
+                <option value="個別悪材料確認により見送り">個別悪材料により見送り</option>
+                <option value="ルール通り最低ロットでentry">ルール通り最低ロットでentry</option>
+                <option value="">定型文なし</option>
+              </select>
+            </label>
+            <input name="free_text" placeholder="自由入力。入力した場合は定型文よりこちらを保存します。">
             <button class="btn sm" type="submit">執行レビューに記録</button>
           </form>
         </details>
