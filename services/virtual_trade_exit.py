@@ -12,10 +12,12 @@ import os
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from services.h5_primary import H5_ACTIVE_CASE_KEYS, H5_PRIMARY_CASE_KEY, H5_PRIMARY_RULES
 
 logger = logging.getLogger(__name__)
+JST = ZoneInfo("Asia/Tokyo")
 
 # exit_reason values added after the DB sell_reason CHECK constraint was frozen.
 # sell_reason must use the legacy value that the constraint allows.
@@ -99,6 +101,11 @@ def _parse_dt(value: Any) -> datetime | None:
         return None
 
 
+def _trade_local_date(dt: datetime, trade: dict) -> str:
+    tz = timezone.utc if is_non_japanese_trade(trade) else JST
+    return dt.astimezone(tz).date().isoformat()
+
+
 def _ticker(code: str, market: str | None = None) -> str:
     code = str(code or "").strip()
     market_l = str(market or "").strip().lower()
@@ -119,8 +126,9 @@ def fetch_price_rows_since_entry(trade: dict, *, pre_days: int = 35) -> list[dic
     buy_dt = _parse_dt(trade.get("buy_date"))
     if not buy_dt:
         return []
-    start = (buy_dt.date() - timedelta(days=pre_days)).isoformat()
-    end = (datetime.now(timezone.utc).date() + timedelta(days=1)).isoformat()
+    buy_date = datetime.fromisoformat(_trade_local_date(buy_dt, trade))
+    start = (buy_date.date() - timedelta(days=pre_days)).isoformat()
+    end = (datetime.now(JST if not is_non_japanese_trade(trade) else timezone.utc).date() + timedelta(days=1)).isoformat()
     hist = yf.Ticker(_ticker(str(trade.get("code") or ""), trade.get("market"))).history(
         start=start,
         end=end,
@@ -154,7 +162,8 @@ def fetch_snapshot_price_rows_since_entry(sb, trade: dict, *, pre_days: int = 35
     code = str(trade.get("code") or "").replace(".T", "").strip()
     if not buy_dt or not code:
         return []
-    start = (buy_dt.date() - timedelta(days=pre_days)).isoformat()
+    buy_date = datetime.fromisoformat(_trade_local_date(buy_dt, trade))
+    start = (buy_date.date() - timedelta(days=pre_days)).isoformat()
     try:
         rows = (
             sb.table("stock_feature_snapshots")
@@ -241,7 +250,7 @@ def evaluate_h5_primary_exit(
     if buy is None or buy <= 0 or not buy_dt or not price_rows:
         return None
     now_utc = now or datetime.now(timezone.utc)
-    buy_date = buy_dt.date().isoformat()
+    buy_date = _trade_local_date(buy_dt, trade)
     future_rows = [
         row for row in price_rows
         if str(row.get("date") or "") > buy_date and _to_float(row.get("close")) is not None
@@ -380,7 +389,7 @@ def evaluate_virtual_trade_exit(
     extend_high_update_days = int(exit_cfg["virtual_exit_extend_high_update_days"])
 
     now_utc = now or datetime.now(timezone.utc)
-    buy_date = buy_dt.date().isoformat()
+    buy_date = _trade_local_date(buy_dt, trade)
     pre_rows = [r for r in rows if str(r.get("date")) < buy_date and _to_float(r.get("close")) is not None]
     eval_rows = [r for r in rows if str(r.get("date")) >= buy_date and _to_float(r.get("close")) is not None]
     if not eval_rows:
