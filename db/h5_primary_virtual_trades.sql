@@ -91,6 +91,7 @@ CREATE TABLE IF NOT EXISTS h5_watchlist (
     name text,
 
     ai_score numeric,
+    signal_probability numeric,
     signal_stage text,
 
     high_20d numeric,
@@ -106,12 +107,15 @@ CREATE TABLE IF NOT EXISTS h5_watchlist (
     volume_ratio numeric,
     liquidity numeric,
 
+    current_price numeric,
     current_price_yf numeric,
     current_price_source text,
     current_price_fetched_at timestamptz,
     current_distance_to_trigger_pct numeric,
 
     watch_status text DEFAULT 'watch',
+    intraday_h5_checked_at timestamptz,
+    intraday_h5_reason text,
     promoted_virtual_trade_id uuid,
     promoted_at timestamptz,
 
@@ -120,6 +124,16 @@ CREATE TABLE IF NOT EXISTS h5_watchlist (
 
     UNIQUE (watch_date, code)
 );
+
+ALTER TABLE h5_watchlist
+    ADD COLUMN IF NOT EXISTS signal_probability numeric,
+    ADD COLUMN IF NOT EXISTS current_price numeric,
+    ADD COLUMN IF NOT EXISTS current_price_yf numeric,
+    ADD COLUMN IF NOT EXISTS current_price_source text,
+    ADD COLUMN IF NOT EXISTS current_price_fetched_at timestamptz,
+    ADD COLUMN IF NOT EXISTS current_distance_to_trigger_pct numeric,
+    ADD COLUMN IF NOT EXISTS intraday_h5_checked_at timestamptz,
+    ADD COLUMN IF NOT EXISTS intraday_h5_reason text;
 
 CREATE INDEX IF NOT EXISTS idx_h5_watchlist_status_date
     ON h5_watchlist (watch_status, watch_date DESC);
@@ -193,6 +207,7 @@ CREATE TABLE IF NOT EXISTS actual_trade_logs (
   created_at timestamptz DEFAULT now(),
   updated_at timestamptz DEFAULT now(),
   virtual_trade_id uuid,
+  watchlist_id uuid,
   case_key text,
   trade_date date,
   code text,
@@ -200,8 +215,14 @@ CREATE TABLE IF NOT EXISTS actual_trade_logs (
   virtual_entry_price numeric,
   actual_entry_price numeric,
   actual_entry_date timestamptz,
+  actual_entry_time timestamptz,
   actual_order_type text,
   actual_fill_status text,
+  entry_reason text,
+  h5_trigger_price numeric,
+  current_price_at_judgement numeric,
+  current_distance_to_trigger_pct numeric,
+  intraday_h5_status text,
   virtual_exit_price numeric,
   actual_exit_price numeric,
   actual_exit_date timestamptz,
@@ -213,6 +234,15 @@ CREATE TABLE IF NOT EXISTS actual_trade_logs (
   skip_reason text,
   note text
 );
+
+ALTER TABLE actual_trade_logs
+    ADD COLUMN IF NOT EXISTS watchlist_id uuid,
+    ADD COLUMN IF NOT EXISTS actual_entry_time timestamptz,
+    ADD COLUMN IF NOT EXISTS entry_reason text,
+    ADD COLUMN IF NOT EXISTS h5_trigger_price numeric,
+    ADD COLUMN IF NOT EXISTS current_price_at_judgement numeric,
+    ADD COLUMN IF NOT EXISTS current_distance_to_trigger_pct numeric,
+    ADD COLUMN IF NOT EXISTS intraday_h5_status text;
 
 CREATE INDEX IF NOT EXISTS idx_actual_trade_logs_code_date
     ON actual_trade_logs (code, trade_date DESC);

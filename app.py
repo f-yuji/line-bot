@@ -1967,13 +1967,6 @@ def get_watchlist_counts(rows: list[dict], open_trade_codes: set[str] | None = N
         return list(by_key.values())
 
     watching = [r for r in rows if r.get("status") == "watching"]
-    candidates = [
-        r for r in rows
-        if r.get("status") == "rebound_candidate"
-        and r.get("signal_stage") == "early"
-        and not r.get("is_excluded")
-    ]
-
     active_signal = [
         r for r in rows
         if r.get("status") == "rebound_signal"
@@ -1990,23 +1983,25 @@ def get_watchlist_counts(rows: list[dict], open_trade_codes: set[str] | None = N
     ]
 
     unique_ids = {
-        r.get("id") for r in watching + candidates + active_signal + notified if r.get("id")
+        r.get("id") for r in watching + active_signal + notified if r.get("id")
     }
 
     return {
         "watching": len(watching),
-        "candidate": len(candidates),
-        "candidate_count": len(candidates),
+        "candidate": 0,
+        "candidate_count": 0,
         "active_signal": len(active_signal),
         "notified": len(notified),
         "total": len(unique_ids),
     }
 
 
-H5_WATCH_ACTIVE_STATUSES = ("watch", "near_trigger", "pre_signal")
+H5_WATCH_ACTIVE_STATUSES = ("watch", "near_trigger", "pre_signal", "intraday_h5")
 H5_WATCH_AI_MIN = 0.60
 H5_WATCH_DROP20_MAX = -6.5
 H5_WATCH_OVERHEAT_MAX = 2
+H5_INTRADAY_AI_MIN = 0.65
+H5_INTRADAY_OVERHEAT_MAX = 1
 
 
 def _h5_float(value) -> float | None:
@@ -2018,15 +2013,43 @@ def _h5_float(value) -> float | None:
         return None
 
 
-def _h5_watch_status(current_price: float | None, trigger_price: float | None) -> tuple[str, float | None]:
+def _h5_intraday_static_check(row: dict) -> tuple[bool, str]:
+    probability = _h5_float(row.get("signal_probability") or row.get("ai_score"))
+    if probability is None or probability < H5_INTRADAY_AI_MIN:
+        return False, "ai_below_065"
+    if str(row.get("signal_stage") or "") not in {"confirmed", "strong_confirmed"}:
+        return False, "stage_not_confirmed"
+    if str(row.get("market_regime") or "") == "panic_selloff":
+        return False, "panic_selloff"
+    overheat = row.get("overheat_score")
+    try:
+        overheat_score = int(overheat) if overheat is not None else 0
+    except Exception:
+        overheat_score = 0
+    if overheat_score > H5_INTRADAY_OVERHEAT_MAX:
+        return False, "overheat_hot"
+    margin = _h5_float(row.get("margin_ratio"))
+    if margin is not None and (margin < 3 or margin > 30):
+        return False, "margin_out_of_range"
+    liquidity = _h5_float(row.get("liquidity"))
+    if liquidity is not None and liquidity <= 0:
+        return False, "liquidity_low"
+    return True, "price_triggered_and_static_conditions_passed"
+
+
+def _h5_watch_status(row: dict, current_price: float | None, trigger_price: float | None) -> tuple[str, float | None, str | None]:
     if current_price is None or trigger_price is None or trigger_price <= 0:
-        return "watch", None
+        return "watch", None, None
+    if str(row.get("market_regime") or "") == "panic_selloff":
+        distance = (current_price / trigger_price - 1) * 100
+        return "rejected", distance, "panic_selloff"
     distance = (current_price / trigger_price - 1) * 100
     if distance <= 0:
-        return "pre_signal", distance
+        intraday_ok, reason = _h5_intraday_static_check(row)
+        return ("intraday_h5" if intraday_ok else "pre_signal"), distance, reason
     if distance <= 1.0:
-        return "near_trigger", distance
-    return "watch", distance
+        return "near_trigger", distance, None
+    return "watch", distance, None
 
 
 def _latest_snapshot_trade_date() -> str | None:
@@ -2069,16 +2092,32 @@ def _fetch_all_ranges(table_name: str, *, select: str = "*", page_size: int = 10
 
 def _fetch_h5_watchlist_rows(limit: int = 80) -> list[dict]:
     try:
-        return (
+        rows = (
             supabase.table("h5_watchlist")
             .select("*")
             .in_("watch_status", list(H5_WATCH_ACTIVE_STATUSES))
             .order("watch_date", desc=True)
-            .order("distance_to_trigger_pct", desc=False)
-            .limit(limit)
+            .limit(max(limit * 3, 200))
             .execute()
             .data or []
         )
+        rows.sort(
+            key=lambda r: (
+                str(r.get("watch_date") or ""),
+                abs(_h5_float(r.get("current_distance_to_trigger_pct")) if r.get("current_distance_to_trigger_pct") is not None else (_h5_float(r.get("distance_to_trigger_pct")) or 9999)),
+            ),
+            reverse=False,
+        )
+        latest_date = str(rows[-1].get("watch_date") or "") if rows else ""
+        latest_rows = [r for r in rows if str(r.get("watch_date") or "") == latest_date] if latest_date else rows
+        latest_rows.sort(
+            key=lambda r: abs(
+                _h5_float(r.get("current_distance_to_trigger_pct"))
+                if r.get("current_distance_to_trigger_pct") is not None
+                else (_h5_float(r.get("distance_to_trigger_pct")) or 9999)
+            )
+        )
+        return latest_rows[:limit]
     except Exception as e:
         logger.warning("[h5_watch] fetch failed: %s", e)
         return []
@@ -2174,6 +2213,7 @@ def _build_h5_watchlist() -> dict:
             "code": code,
             "name": row.get("name") or snapshot.get("name"),
             "ai_score": probability,
+            "signal_probability": probability,
             "signal_stage": stage,
             "high_20d": round(high20, 4),
             "close_price": close_price,
@@ -2187,13 +2227,23 @@ def _build_h5_watchlist() -> dict:
             "volume_ratio": _h5_float(enriched.get("volume_ratio_20d") or enriched.get("volume_ratio")),
             "liquidity": _h5_float(enriched.get("turnover_value") or enriched.get("liquidity")),
             "watch_status": "watch",
+            "intraday_h5_reason": None,
             "reject_reason": None,
             "memo": "h5_watch_candidate",
             "updated_at": datetime.now(timezone.utc).isoformat(),
         })
 
     if candidates:
-        supabase.table("h5_watchlist").upsert(candidates, on_conflict="watch_date,code").execute()
+        try:
+            supabase.table("h5_watchlist").upsert(candidates, on_conflict="watch_date,code").execute()
+        except Exception as e:
+            if "column" not in str(e).lower() and "schema cache" not in str(e).lower():
+                raise
+            legacy_candidates = [
+                {k: v for k, v in row.items() if k not in {"signal_probability", "intraday_h5_reason"}}
+                for row in candidates
+            ]
+            supabase.table("h5_watchlist").upsert(legacy_candidates, on_conflict="watch_date,code").execute()
     return {
         "ok": True,
         "watch_date": watch_date,
@@ -2206,8 +2256,11 @@ def _build_h5_watchlist() -> dict:
 def _refresh_h5_watchlist_rows(rows: list[dict], *, force: bool = False) -> dict:
     updated = 0
     failed = 0
+    watch_count = 0
     near_trigger = 0
     pre_signal = 0
+    intraday_h5 = 0
+    rejected = 0
     now_utc = datetime.now(timezone.utc).isoformat()
     for row in rows:
         code = str(row.get("code") or "").strip()
@@ -2227,31 +2280,53 @@ def _refresh_h5_watchlist_rows(rows: list[dict], *, force: bool = False) -> dict
             except Exception:
                 logger.warning("[h5_watch] failed memo update code=%s", code)
             continue
-        status, distance = _h5_watch_status(current, trigger_price)
+        status, distance, intraday_reason = _h5_watch_status(row, current, trigger_price)
         payload = {
+            "current_price": current,
             "current_price_yf": current,
             "current_price_source": quote.get("source") or "yfinance",
             "current_price_fetched_at": quote.get("fetched_at") or now_utc,
             "current_distance_to_trigger_pct": round(distance, 4) if distance is not None else None,
             "watch_status": status,
+            "intraday_h5_checked_at": now_utc if status in {"pre_signal", "intraday_h5"} else row.get("intraday_h5_checked_at"),
+            "intraday_h5_reason": intraday_reason,
+            "reject_reason": intraday_reason if status == "rejected" else None,
             "memo": None,
             "updated_at": now_utc,
         }
         try:
-            supabase.table("h5_watchlist").update(payload).eq("id", row["id"]).execute()
+            try:
+                supabase.table("h5_watchlist").update(payload).eq("id", row["id"]).execute()
+            except Exception as e:
+                legacy_payload = {
+                    k: v for k, v in payload.items()
+                    if k not in {"current_price", "intraday_h5_checked_at", "intraday_h5_reason"}
+                }
+                if "column" not in str(e).lower() and "schema cache" not in str(e).lower():
+                    raise
+                supabase.table("h5_watchlist").update(legacy_payload).eq("id", row["id"]).execute()
             updated += 1
-            if status == "near_trigger":
+            if status == "watch":
+                watch_count += 1
+            elif status == "near_trigger":
                 near_trigger += 1
             elif status == "pre_signal":
                 pre_signal += 1
+            elif status == "intraday_h5":
+                intraday_h5 += 1
+            elif status == "rejected":
+                rejected += 1
         except Exception as e:
             failed += 1
             logger.warning("[h5_watch] update failed code=%s error=%s", code, e)
     return {
         "updated": updated,
         "failed": failed,
+        "watch": watch_count,
         "near_trigger": near_trigger,
         "pre_signal": pre_signal,
+        "intraday_h5": intraday_h5,
+        "rejected": rejected,
     }
 
 
@@ -2371,13 +2446,15 @@ def web_dashboard():
     stats["holding"] = holding_count
 
     h5_watch_rows: list[dict] = []
-    h5_watch_stats = {"total": 0, "near_trigger": 0, "pre_signal": 0}
+    h5_watch_stats = {"total": 0, "watch": 0, "near_trigger": 0, "pre_signal": 0, "intraday_h5": 0}
     try:
         h5_watch_rows = _fetch_h5_watchlist_rows(limit=80)
         h5_watch_stats = {
             "total": len(h5_watch_rows),
+            "watch": sum(1 for r in h5_watch_rows if r.get("watch_status") == "watch"),
             "near_trigger": sum(1 for r in h5_watch_rows if r.get("watch_status") == "near_trigger"),
             "pre_signal": sum(1 for r in h5_watch_rows if r.get("watch_status") == "pre_signal"),
+            "intraday_h5": sum(1 for r in h5_watch_rows if r.get("watch_status") == "intraday_h5"),
         }
     except Exception as e:
         logger.warning("h5 watchlist fetch failed: %s", e)
@@ -2863,7 +2940,8 @@ def web_h5_watchlist_refresh_prices():
     result = _refresh_h5_watchlist_rows(rows, force=force)
     flash(
         f"H5予備軍 現在値更新: 更新{result['updated']}件 / Near {result['near_trigger']}件 / "
-        f"Pre-Signal {result['pre_signal']}件 / 失敗{result['failed']}件",
+        f"Pre-Signal {result['pre_signal']}件 / Intraday H5 {result['intraday_h5']}件 / "
+        f"失敗{result['failed']}件",
         "success" if result["failed"] == 0 else "warning",
     )
     return redirect(request.referrer or url_for("web_dashboard"))
@@ -2894,7 +2972,25 @@ def web_h5_watchlist_refresh_price():
     result = _refresh_h5_watchlist_rows(rows, force=bool(request.form.get("force")))
     flash(
         f"H5予備軍 現在値更新: 更新{result['updated']}件 / Near {result['near_trigger']}件 / "
-        f"Pre-Signal {result['pre_signal']}件 / 失敗{result['failed']}件",
+        f"Pre-Signal {result['pre_signal']}件 / Intraday H5 {result['intraday_h5']}件 / "
+        f"失敗{result['failed']}件",
+        "success" if result["failed"] == 0 else "warning",
+    )
+    return redirect(request.referrer or url_for("web_dashboard"))
+
+
+@app.route("/web/actions/h5/watchlist/recheck_intraday", methods=["POST"])
+def web_h5_watchlist_recheck_intraday():
+    rows = _fetch_h5_watchlist_rows(limit=200)
+    rows = [r for r in rows if r.get("watch_status") in {"watch", "near_trigger", "pre_signal", "intraday_h5"}]
+    if not rows:
+        flash("Intraday H5再判定の対象がありません。", "warning")
+        return redirect(request.referrer or url_for("web_dashboard"))
+    result = _refresh_h5_watchlist_rows(rows, force=True)
+    flash(
+        f"Intraday H5再判定: 更新{result['updated']}件 / Near {result['near_trigger']}件 / "
+        f"Pre-Signal {result['pre_signal']}件 / Intraday H5 {result['intraday_h5']}件 / "
+        f"失敗{result['failed']}件",
         "success" if result["failed"] == 0 else "warning",
     )
     return redirect(request.referrer or url_for("web_dashboard"))
@@ -2954,6 +3050,8 @@ def web_box_refresh_prices():
 @app.route("/web/watchlist")
 def web_watchlist():
     status_filter = request.args.get("status", "all")
+    if status_filter == "rebound_candidate":
+        return redirect(url_for("web_watchlist", status="all"))
     market_adjustment = _current_market_adjustment()
     terminal_statuses = {"closed", "expired", "ai_dropped", "signal_skipped", "excluded"}
 
@@ -3041,13 +3139,16 @@ def web_watchlist():
         if status_filter != "all":
             q = q.eq("status", status_filter)
         rows = q.limit(1000).execute().data or []
+        if status_filter == "all":
+            rows = [r for r in rows if r.get("status") != "rebound_candidate"]
         rows = [_with_ai_priority_stage(r, market_adjustment) for r in rows]
         rows = _dedupe_current_rows(rows)
         if status_filter == "all":
             cutoff = datetime.now(timezone.utc) - timedelta(days=30)
             rows = [
                 r for r in rows
-                if r.get("status") not in terminal_statuses or _row_dt(r) >= cutoff
+                if r.get("status") != "rebound_candidate"
+                and (r.get("status") not in terminal_statuses or _row_dt(r) >= cutoff)
             ]
         rows.sort(
             key=lambda r: (
@@ -3062,7 +3163,7 @@ def web_watchlist():
     except Exception as e:
         logger.error("watchlist error: %s", e)
         rows = []
-    closable_watchlist_statuses = {"watching", "rebound_candidate", "rebound_signal"}
+    closable_watchlist_statuses = {"watching", "rebound_signal"}
     return render_template(
         "web/watchlist.html",
         rows=rows,
@@ -4280,7 +4381,10 @@ def _h5_primary_migration_status() -> bool:
             "live_candidate_rank,selected_rank,live_skip_reason"
         ).limit(1).execute()
         supabase.table("trade_execution_reviews").select("id").limit(1).execute()
-        supabase.table("actual_trade_logs").select("id").limit(1).execute()
+        supabase.table("actual_trade_logs").select("id,watchlist_id,intraday_h5_status").limit(1).execute()
+        supabase.table("h5_watchlist").select(
+            "id,signal_probability,current_price,intraday_h5_checked_at,intraday_h5_reason"
+        ).limit(1).execute()
         return True
     except Exception as e:
         logger.warning("H5 Primary migration check failed: %s", e)

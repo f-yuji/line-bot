@@ -247,12 +247,20 @@
       <form method="post" action="/web/actions/h5/watchlist/refresh_prices" class="js-disable-on-submit">
         <button class="btn primary sm" type="submit">H5予備軍 現在値更新</button>
       </form>
+      <form method="post" action="/web/actions/h5/watchlist/recheck_intraday" class="js-disable-on-submit">
+        <button class="btn sm" type="submit">Intraday H5判定</button>
+      </form>
     </div>
   </div>
   <div style="display:flex;gap:8px;flex-wrap:wrap;padding:10px 16px">
     <span class="tag">全{{ h5_watch_stats.total or 0 }}件</span>
+    <span class="tag">Watch {{ h5_watch_stats.watch or 0 }}件</span>
     <span class="tag">Near {{ h5_watch_stats.near_trigger or 0 }}件</span>
     <span class="tag">Pre-Signal {{ h5_watch_stats.pre_signal or 0 }}件</span>
+    <span class="tag">Intraday H5 {{ h5_watch_stats.intraday_h5 or 0 }}件</span>
+  </div>
+  <div class="muted" style="padding:0 16px 10px;font-size:12px;line-height:1.6;white-space:normal">
+    Nearは成立価格まで+1%以内、Pre-Signalは価格条件だけ達成、Intraday H5は価格条件と静的H5条件を満たした引け前の実弾判断候補です。正式H5は大引け後に終値ベースで確定します。
   </div>
   {% if h5_watch_rows %}
   <div class="table-wrap">
@@ -261,13 +269,14 @@
         <th>状態</th><th>コード</th><th>銘柄</th><th class="right">AI</th><th>段階</th>
         <th class="right">H5成立価格</th><th class="right">終値</th><th class="right">H5まで</th>
         <th class="right">現在値</th><th class="right">現在H5まで</th>
-        <th>地合い</th><th class="right">過熱</th><th class="right">信用</th><th>更新</th><th></th>
+        <th>地合い</th><th class="right">過熱</th><th class="right">信用</th><th>判定理由</th><th>更新</th><th></th>
       </tr></thead>
       <tbody>
       {% for r in h5_watch_rows %}
       <tr>
         <td>
-          {% if r.watch_status == "pre_signal" %}<span class="badge notified">Pre-Signal</span>
+          {% if r.watch_status == "intraday_h5" %}<span class="badge notified">Intraday H5</span>
+          {% elif r.watch_status == "pre_signal" %}<span class="badge signal-early">Pre-Signal</span>
           {% elif r.watch_status == "near_trigger" %}<span class="badge signal">Near</span>
           {% else %}<span class="badge watching">Watch</span>{% endif %}
         </td>
@@ -278,13 +287,14 @@
         <td class="right num">{{ "{:,.0f}".format(r.h5_trigger_price) if r.h5_trigger_price else "-" }}</td>
         <td class="right num">{{ "{:,.0f}".format(r.close_price) if r.close_price else "-" }}</td>
         <td class="right num">{% if r.distance_to_trigger_pct is not none %}{{ "%+.2f"|format(r.distance_to_trigger_pct) }}%{% else %}-{% endif %}</td>
-        <td class="right num">{{ "{:,.0f}".format(r.current_price_yf) if r.current_price_yf else "-" }}</td>
+        <td class="right num">{{ "{:,.0f}".format(r.current_price or r.current_price_yf) if (r.current_price or r.current_price_yf) else "-" }}</td>
         <td class="right num {% if r.current_distance_to_trigger_pct is not none and r.current_distance_to_trigger_pct <= 0 %}down-text{% elif r.current_distance_to_trigger_pct is not none and r.current_distance_to_trigger_pct <= 1 %}up-text{% endif %}">
           {% if r.current_distance_to_trigger_pct is not none %}{{ "%+.2f"|format(r.current_distance_to_trigger_pct) }}%{% else %}-{% endif %}
         </td>
         <td class="muted">{{ r.market_regime or "-" }}</td>
         <td class="right num">{{ r.overheat_score if r.overheat_score is not none else "-" }}</td>
         <td class="right num">{% if r.margin_ratio is not none %}{{ "%.1f"|format(r.margin_ratio) }}{% else %}-{% endif %}</td>
+        <td class="muted" style="font-size:11px;white-space:normal">{{ r.intraday_h5_reason or r.reject_reason or "-" }}</td>
         <td class="muted" style="font-size:11px">{{ r.current_price_fetched_at | jst("%m-%d %H:%M") if r.current_price_fetched_at else "-" }}</td>
         <td>
           <form method="post" action="/web/actions/h5/watchlist/refresh_price" class="js-disable-on-submit">
@@ -475,7 +485,7 @@
 {% endif %}
 
 {# ── 監視中：国内 ── #}
-<div class="section-h" style="margin-top:{% if signal_rows or candidate_rows %}16px{% else %}0{% endif %}">
+<div class="section-h" style="margin-top:{% if signal_rows %}16px{% else %}0{% endif %}">
   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:12px;height:12px"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>
   監視中 — 国内
 </div>

@@ -617,6 +617,7 @@ def _build_h5_pre_signal_watch_row(row: dict, result: dict) -> dict | None:
         "code": row.get("code"),
         "name": row.get("name"),
         "ai_score": probability,
+        "signal_probability": probability,
         "signal_stage": stage,
         "high_20d": round(high20, 4),
         "close_price": close_price,
@@ -630,6 +631,7 @@ def _build_h5_pre_signal_watch_row(row: dict, result: dict) -> dict | None:
         "volume_ratio": _to_float(row.get("volume_ratio_20d") or row.get("volume_ratio")),
         "liquidity": _to_float(row.get("turnover_value") or row.get("liquidity")),
         "watch_status": "watch",
+        "intraday_h5_reason": None,
         "reject_reason": None,
         "memo": "h5_watch_candidate",
         "updated_at": datetime.now(timezone.utc).isoformat(),
@@ -654,7 +656,17 @@ def _upsert_h5_pre_signal_watchlist(sb, rows: list[dict], *, dry_run: bool) -> N
         return
     try:
         for i in range(0, len(clean), 500):
-            sb.table("h5_watchlist").upsert(clean[i:i + 500], on_conflict="watch_date,code").execute()
+            batch = clean[i:i + 500]
+            try:
+                sb.table("h5_watchlist").upsert(batch, on_conflict="watch_date,code").execute()
+            except Exception as exc:
+                if "column" not in str(exc).lower() and "schema cache" not in str(exc).lower():
+                    raise
+                legacy_batch = [
+                    {k: v for k, v in row.items() if k not in {"signal_probability", "intraday_h5_reason"}}
+                    for row in batch
+                ]
+                sb.table("h5_watchlist").upsert(legacy_batch, on_conflict="watch_date,code").execute()
     except Exception as e:
         logger.warning("h5_watchlist upsert failed; apply db/h5_primary_virtual_trades.sql: %s", e)
 

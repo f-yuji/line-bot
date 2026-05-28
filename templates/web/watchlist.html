@@ -69,7 +69,7 @@
 
 <div class="filter-bar">
   <div class="segmented">
-    {% for val, label in [("all","全て"), ("entered","保有中"), ("rebound_signal","シグナル"), ("rebound_candidate","候補"), ("signal_skipped","見送り"), ("expired","期限切れ"), ("ai_dropped","AI低下"), ("excluded","除外"), ("closed","クローズ")] %}
+    {% for val, label in [("all","全て"), ("entered","保有中"), ("rebound_signal","シグナル"), ("signal_skipped","見送り"), ("expired","期限切れ"), ("ai_dropped","AI低下"), ("excluded","除外"), ("closed","クローズ")] %}
     <a href="/web/watchlist?status={{ val }}" class="{{ 'active' if status_filter == val else '' }}" style="text-decoration:none">{{ label }}</a>
     {% endfor %}
   </div>
