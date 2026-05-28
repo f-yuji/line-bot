@@ -255,7 +255,7 @@
           {% if t.unrealized_pnl_pct is not none %}{{ "%+.2f"|format(t.unrealized_pnl_pct) }}%{% else %}—{% endif %}
         </td>
         <td class="right num">{{ "{:,.0f}".format(t.peak_price) if t.peak_price else "—" }}</td>
-        <td class="right num">{% if t.signal_probability is not none %}{{ "%.0f"|format(t.signal_probability * 100) }}{% else %}—{% endif %}</td>
+        <td class="right num">{% if t.entry_probability is not none %}{{ "%.0f"|format(t.entry_probability * 100) }}{% else %}—{% endif %}</td>
         <td class="muted num">{{ t.buy_date | jst("%Y-%m-%d") }}</td>
       </tr>
       {% else %}
@@ -297,6 +297,70 @@
   </div>
   {% else %}
   <div class="muted" style="padding:16px">本日のH5評価データなし</div>
+  {% endif %}
+</div>
+
+<div class="section-h" style="color:var(--accent);margin-top:12px">
+  H5 ミス記録掲示板
+</div>
+<div class="panel">
+  {% if mistake_logs %}
+  <div class="table-wrap">
+    <table class="tbl">
+      <thead><tr>
+        <th>日付</th><th>コード</th><th>銘柄</th><th>種別</th><th>本来</th><th>実際</th><th>教訓</th><th>状態</th>
+      </tr></thead>
+      <tbody>
+      {% for m in mistake_logs %}
+      <tr>
+        <td class="muted num">{{ m.trade_date or (m.created_at | jst("%Y-%m-%d")) }}</td>
+        <td class="code">{{ m.code }}</td>
+        <td class="name">{{ m.name or "" }}</td>
+        <td><span class="tag">{{ m.mistake_type or "-" }}</span></td>
+        <td class="muted" style="font-size:12px;white-space:normal">{{ m.expected_action or "—" }}</td>
+        <td class="muted" style="font-size:12px;white-space:normal">{{ m.actual_action or m.reason_emotion or "—" }}</td>
+        <td style="font-size:12px;white-space:normal">{{ m.lesson or "—" }}</td>
+        <td>{{ m.status or "open" }}</td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="muted" style="padding:16px">ミス記録はまだありません。H5候補カードから「ミスとして記録」できます。</div>
+  {% endif %}
+</div>
+
+<div class="section-h" style="margin-top:12px">
+  H5 実弾ログ
+</div>
+<div class="panel">
+  {% if actual_trade_logs %}
+  <div class="table-wrap">
+    <table class="tbl">
+      <thead><tr>
+        <th>日付</th><th>コード</th><th>銘柄</th><th class="right">仮想entry</th><th class="right">実弾entry</th><th class="right">乖離</th><th>状態</th><th>メモ</th>
+      </tr></thead>
+      <tbody>
+      {% for a in actual_trade_logs %}
+      <tr>
+        <td class="muted num">{{ a.trade_date or (a.created_at | jst("%Y-%m-%d")) }}</td>
+        <td class="code">{{ a.code }}</td>
+        <td class="name">{{ a.name or "" }}</td>
+        <td class="right num">{{ "{:,.0f}".format(a.virtual_entry_price) if a.virtual_entry_price else "—" }}</td>
+        <td class="right num">{{ "{:,.0f}".format(a.actual_entry_price) if a.actual_entry_price else "—" }}</td>
+        <td class="right num {% if a.entry_slippage_pct is not none %}{% if a.entry_slippage_pct > 2 %}down-text{% elif a.entry_slippage_pct <= 0 %}up-text{% endif %}{% endif %}">
+          {% if a.entry_slippage_pct is not none %}{{ "%+.2f"|format(a.entry_slippage_pct) }}%{% else %}—{% endif %}
+        </td>
+        <td>{{ a.actual_fill_status or a.skip_reason or "—" }}</td>
+        <td class="muted" style="font-size:12px;white-space:normal">{{ a.note or "—" }}</td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="muted" style="padding:16px">実弾ログはまだありません。H5候補カードからentry・見送り・exitを記録できます。</div>
   {% endif %}
 </div>
 

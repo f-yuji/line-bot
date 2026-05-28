@@ -657,6 +657,64 @@
         </div>
         {% endif %}
 
+        {% if r.h5_primary_match %}
+        <details class="ta-h5-note" style="margin:12px 0 0">
+          <summary>H5運用ログを記録</summary>
+          <div class="muted" style="margin:8px 0">自動発注ではありません。実弾判断・見送り・ミスを後で検証するための手入力ログです。</div>
+          <form method="post" action="/web/h5/actual-trades" class="js-disable-on-submit" style="display:grid;gap:8px;margin-top:8px">
+            <input type="hidden" name="code" value="{{ r.code }}">
+            <input type="hidden" name="name" value="{{ r.name or '' }}">
+            <input type="hidden" name="case_key" value="{{ r.h5_case_key or r.case_key or '' }}">
+            <input type="hidden" name="virtual_trade_id" value="{{ r.virtual_trade_id or '' }}">
+            <input type="hidden" name="trade_date" value="{{ (r.drop_detected_at or r.buy_date or '')[:10] }}">
+            <input type="hidden" name="virtual_entry_price" value="{{ r.signal_price if r.h5_primary_match else r.entry_price }}">
+            <div class="ta-entry-check-grid">
+              <label><span>実弾entry価格</span><input name="actual_entry_price" type="number" step="0.01" placeholder="例 1235"></label>
+              <label><span>entry日時</span><input name="actual_entry_date" type="datetime-local"></label>
+              <label><span>株数</span><input name="quantity" type="number" step="1" placeholder="100"></label>
+              <label><span>ロット金額</span><input name="lot_amount" type="number" step="1" placeholder="100000"></label>
+              <label><span>注文種別</span><input name="actual_order_type" placeholder="指値 / 成行"></label>
+              <label><span>約定状態</span><input name="actual_fill_status" placeholder="filled / skipped"></label>
+              <label><span>実弾exit価格</span><input name="actual_exit_price" type="number" step="0.01"></label>
+              <label><span>exit日時</span><input name="actual_exit_date" type="datetime-local"></label>
+            </div>
+            <label><span>見送り理由 / メモ</span><input name="skip_reason" placeholder="見送りなら理由"></label>
+            <label><span>補足</span><input name="note" placeholder="板・地合い・裁量判断など"></label>
+            <button class="btn sm" type="submit">実弾ログを保存</button>
+          </form>
+
+          <form method="post" action="/web/h5/mistakes" class="js-disable-on-submit" style="display:grid;gap:8px;margin-top:14px">
+            <input type="hidden" name="code" value="{{ r.code }}">
+            <input type="hidden" name="name" value="{{ r.name or '' }}">
+            <input type="hidden" name="case_key" value="{{ r.h5_case_key or r.case_key or '' }}">
+            <input type="hidden" name="virtual_trade_id" value="{{ r.virtual_trade_id or '' }}">
+            <input type="hidden" name="trade_date" value="{{ (r.drop_detected_at or r.buy_date or '')[:10] }}">
+            <input type="hidden" name="signal_price" value="{{ r.signal_price if r.h5_primary_match else r.entry_price }}">
+            <input type="hidden" name="actual_price" value="{{ r.current_price_yf or '' }}">
+            <input type="hidden" name="missed_entry_price" value="{{ r.current_price_yf or '' }}">
+            <div class="ta-entry-check-grid">
+              <label><span>ミス種別</span>
+                <select name="mistake_type">
+                  <option value="missed_entry">条件成立を見送り</option>
+                  <option value="early_stop">早すぎる損切り</option>
+                  <option value="late_entry">遅れてentry</option>
+                  <option value="gap_chase_entry">飛びつきentry</option>
+                  <option value="manual_override_error">裁量でルール破り</option>
+                </select>
+              </label>
+              <label><span>機会損失%</span><input name="opportunity_loss_pct" type="number" step="0.01"></label>
+            </div>
+            <input name="expected_action" value="H5 Live Limited条件なら、価格乖離を確認して最低ロットで判断する">
+            <input name="actual_action" placeholder="実際にした行動">
+            <input name="reason_emotion" placeholder="怖さ・焦り・違和感など">
+            <input name="result_summary" placeholder="結果">
+            <input name="lesson" value="怖い場合は見送りではなく、最低ロットに落とす">
+            <input name="prevention_rule" value="signal_price以下または+1%以内は、悪材料がなければ最低ロット候補にする">
+            <button class="btn sm" type="submit">ミスとして記録</button>
+          </form>
+        </details>
+        {% endif %}
+
         <div class="ta-chart">
           <img src="{{ url_for('web_trade_assist_chart', code=r.code) }}" alt="{{ r.code }} 日足チャート" loading="lazy">
         </div>

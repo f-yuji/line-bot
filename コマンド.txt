@@ -21,12 +21,12 @@ python send_news.py --dry-run
 # ===== Git 基本 =====
 git status
 git add .
-git commit -m "050１９"
+git commit -m "0528"
 git push
 git pull
 
 
-fly deploy --remote-only
+& "$env:USERPROFILE\.fly\bin\flyctl.exe" deploy --remote-only
 
 # ===== ブランチ =====
 git checkout dev

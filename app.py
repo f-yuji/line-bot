@@ -2117,7 +2117,7 @@ def web_dashboard():
     try:
         h5_open_trades = (
             supabase.table("virtual_trades")
-            .select("id,code,name,buy_price,buy_date,peak_price,current_price,unrealized_pnl_pct,case_key,is_primary_h5,is_live_candidate,selected_rank,signal_probability")
+            .select("id,code,name,buy_price,buy_date,peak_price,current_price,unrealized_pnl_pct,case_key,is_primary_h5,is_live_candidate,selected_rank,entry_probability")
             .in_("case_key", list(H5_ACTIVE_CASE_KEYS))
             .eq("status", "open")
             .is_("sell_date", "null")
@@ -2147,6 +2147,31 @@ def web_dashboard():
         )
     except Exception as e:
         logger.warning("h5 today evals fetch failed: %s", e)
+
+    mistake_logs: list[dict] = []
+    actual_trade_logs: list[dict] = []
+    try:
+        mistake_logs = (
+            supabase.table("trade_mistake_logs")
+            .select("*")
+            .order("created_at", desc=True)
+            .limit(20)
+            .execute()
+            .data or []
+        )
+    except Exception as e:
+        logger.warning("mistake logs fetch failed: %s", e)
+    try:
+        actual_trade_logs = (
+            supabase.table("actual_trade_logs")
+            .select("*")
+            .order("created_at", desc=True)
+            .limit(20)
+            .execute()
+            .data or []
+        )
+    except Exception as e:
+        logger.warning("actual trade logs fetch failed: %s", e)
 
     # AI diary (latest rebound_ai_daily log)
     ai_diary: dict = {}
@@ -2181,6 +2206,8 @@ def web_dashboard():
         entry_mode_context=entry_mode_context,
         h5_open_trades=h5_open_trades,
         h5_today_evals=h5_today_evals,
+        mistake_logs=mistake_logs,
+        actual_trade_logs=actual_trade_logs,
         ai_diary=ai_diary,
     )
 
@@ -3657,6 +3684,119 @@ def web_trade_assist_generate_reason():
     return redirect(url_for("web_trade_assist"))
 
 
+def _form_float(name: str, default=None):
+    try:
+        value = request.form.get(name)
+        if value in (None, ""):
+            return default
+        return float(value)
+    except Exception:
+        return default
+
+
+def _form_text(name: str, default: str = "") -> str:
+    return str(request.form.get(name) or default).strip()
+
+
+@app.route("/web/h5/mistakes", methods=["POST"])
+def web_h5_mistake_create():
+    code = _form_text("code")
+    if not code:
+        flash("ミス記録の銘柄コードがありません。", "warning")
+        return redirect(url_for("web_trade_assist"))
+    payload = {
+        "trade_date": _form_text("trade_date") or None,
+        "code": code,
+        "name": _form_text("name") or code,
+        "mistake_type": _form_text("mistake_type", "missed_entry"),
+        "case_key": _form_text("case_key") or H5_PRIMARY_CASE_KEY,
+        "virtual_trade_id": _form_text("virtual_trade_id") or None,
+        "signal_price": _form_float("signal_price"),
+        "actual_price": _form_float("actual_price"),
+        "missed_entry_price": _form_float("missed_entry_price"),
+        "expected_action": _form_text("expected_action"),
+        "actual_action": _form_text("actual_action"),
+        "reason_emotion": _form_text("reason_emotion"),
+        "result_summary": _form_text("result_summary"),
+        "opportunity_loss_pct": _form_float("opportunity_loss_pct"),
+        "lesson": _form_text("lesson"),
+        "prevention_rule": _form_text("prevention_rule"),
+        "status": _form_text("status", "open"),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    try:
+        supabase.table("trade_mistake_logs").insert(payload).execute()
+        flash(f"{code} のミス記録を保存しました。", "success")
+    except Exception as e:
+        logger.exception("h5 mistake create failed")
+        flash(f"ミス記録の保存に失敗しました。db/h5_primary_virtual_trades.sql を再実行してください: {e}", "warning")
+    return redirect(url_for("web_trade_assist"))
+
+
+@app.route("/web/h5/actual-trades", methods=["POST"])
+def web_h5_actual_trade_create():
+    code = _form_text("code")
+    if not code:
+        flash("実弾ログの銘柄コードがありません。", "warning")
+        return redirect(url_for("web_trade_assist"))
+    virtual_entry_price = _form_float("virtual_entry_price")
+    actual_entry_price = _form_float("actual_entry_price")
+    actual_exit_price = _form_float("actual_exit_price")
+    virtual_exit_price = _form_float("virtual_exit_price")
+    entry_slippage_pct = None
+    if virtual_entry_price and actual_entry_price:
+        entry_slippage_pct = (actual_entry_price / virtual_entry_price - 1.0) * 100.0
+    payload = {
+        "virtual_trade_id": _form_text("virtual_trade_id") or None,
+        "case_key": _form_text("case_key") or H5_PRIMARY_CASE_KEY,
+        "trade_date": _form_text("trade_date") or None,
+        "code": code,
+        "name": _form_text("name") or code,
+        "virtual_entry_price": virtual_entry_price,
+        "actual_entry_price": actual_entry_price,
+        "actual_entry_date": _form_text("actual_entry_date") or None,
+        "actual_order_type": _form_text("actual_order_type"),
+        "actual_fill_status": _form_text("actual_fill_status"),
+        "virtual_exit_price": virtual_exit_price,
+        "actual_exit_price": actual_exit_price,
+        "actual_exit_date": _form_text("actual_exit_date") or None,
+        "virtual_pnl_pct": _form_float("virtual_pnl_pct"),
+        "actual_pnl_pct": _form_float("actual_pnl_pct"),
+        "entry_slippage_pct": entry_slippage_pct,
+        "lot_amount": _form_float("lot_amount"),
+        "quantity": _form_float("quantity"),
+        "skip_reason": _form_text("skip_reason"),
+        "note": _form_text("note"),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    try:
+        supabase.table("actual_trade_logs").insert(payload).execute()
+        vt_id = payload.get("virtual_trade_id")
+        if vt_id:
+            update_payload = {
+                "actual_entry_price": actual_entry_price,
+                "actual_entry_date": payload.get("actual_entry_date"),
+                "actual_order_type": payload.get("actual_order_type"),
+                "actual_fill_status": payload.get("actual_fill_status"),
+                "actual_exit_price": actual_exit_price,
+                "actual_exit_date": payload.get("actual_exit_date"),
+                "actual_pnl_pct": payload.get("actual_pnl_pct"),
+                "entry_slippage_pct": entry_slippage_pct,
+                "skip_reason": payload.get("skip_reason"),
+                "actual_note": payload.get("note"),
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }
+            try:
+                supabase.table("virtual_trades").update(update_payload).eq("id", vt_id).execute()
+            except Exception as e:
+                logger.warning("virtual trade actual fields update failed: %s", e)
+        flash(f"{code} の実弾ログを保存しました。", "success")
+    except Exception as e:
+        logger.exception("h5 actual trade create failed")
+        flash(f"実弾ログの保存に失敗しました。db/h5_primary_virtual_trades.sql を再実行してください: {e}", "warning")
+    return redirect(url_for("web_trade_assist"))
+
+
 def _entry_mode_migration_status() -> bool:
     try:
         supabase.table("strategy_settings").select("entry_mode").limit(1).execute()
@@ -3672,11 +3812,15 @@ def _h5_primary_migration_status() -> bool:
     try:
         supabase.table("virtual_trades").select(
             "case_key,is_primary_h5,exit_rule,peak_pullback_pct,initial_sl_pct,max_holding_days,"
-            "position_limit_mode,is_live_candidate,selected_rank,live_skip_reason"
+            "position_limit_mode,is_live_candidate,is_h5_research_candidate,is_h5_live_candidate,"
+            "live_candidate_rank,selected_rank,live_skip_reason,actual_entry_price,actual_exit_date"
         ).limit(1).execute()
         supabase.table("stock_drop_watchlist").select(
-            "position_limit_mode,is_live_candidate,selected_rank,live_skip_reason"
+            "position_limit_mode,is_live_candidate,is_h5_research_candidate,is_h5_live_candidate,"
+            "live_candidate_rank,selected_rank,live_skip_reason"
         ).limit(1).execute()
+        supabase.table("trade_mistake_logs").select("id").limit(1).execute()
+        supabase.table("actual_trade_logs").select("id").limit(1).execute()
         return True
     except Exception as e:
         logger.warning("H5 Primary migration check failed: %s", e)

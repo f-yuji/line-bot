@@ -29,10 +29,19 @@ ALTER TABLE virtual_trades
     ADD COLUMN IF NOT EXISTS actual_exit_price numeric,
     ADD COLUMN IF NOT EXISTS virtual_pnl_pct numeric,
     ADD COLUMN IF NOT EXISTS actual_pnl_pct numeric,
+    ADD COLUMN IF NOT EXISTS actual_exit_date timestamptz,
+    ADD COLUMN IF NOT EXISTS actual_note text,
     ADD COLUMN IF NOT EXISTS position_limit_mode text,
     ADD COLUMN IF NOT EXISTS is_h5_research boolean DEFAULT false,
     ADD COLUMN IF NOT EXISTS is_h5_live_limited boolean DEFAULT false,
     ADD COLUMN IF NOT EXISTS is_live_candidate boolean DEFAULT false,
+    ADD COLUMN IF NOT EXISTS is_h5_research_candidate boolean DEFAULT false,
+    ADD COLUMN IF NOT EXISTS is_h5_live_candidate boolean DEFAULT false,
+    ADD COLUMN IF NOT EXISTS live_candidate_rank integer,
+    ADD COLUMN IF NOT EXISTS live_case_key text,
+    ADD COLUMN IF NOT EXISTS h5_base_case_key text,
+    ADD COLUMN IF NOT EXISTS h5_research_case_key text,
+    ADD COLUMN IF NOT EXISTS h5_live_case_key text,
     ADD COLUMN IF NOT EXISTS selected_rank integer,
     ADD COLUMN IF NOT EXISTS live_skip_reason text,
     ADD COLUMN IF NOT EXISTS h5_candidate_count integer,
@@ -47,6 +56,13 @@ ALTER TABLE stock_drop_watchlist
     ADD COLUMN IF NOT EXISTS is_h5_research boolean DEFAULT false,
     ADD COLUMN IF NOT EXISTS is_h5_live_limited boolean DEFAULT false,
     ADD COLUMN IF NOT EXISTS is_live_candidate boolean DEFAULT false,
+    ADD COLUMN IF NOT EXISTS is_h5_research_candidate boolean DEFAULT false,
+    ADD COLUMN IF NOT EXISTS is_h5_live_candidate boolean DEFAULT false,
+    ADD COLUMN IF NOT EXISTS live_candidate_rank integer,
+    ADD COLUMN IF NOT EXISTS live_case_key text,
+    ADD COLUMN IF NOT EXISTS h5_base_case_key text,
+    ADD COLUMN IF NOT EXISTS h5_research_case_key text,
+    ADD COLUMN IF NOT EXISTS h5_live_case_key text,
     ADD COLUMN IF NOT EXISTS selected_rank integer,
     ADD COLUMN IF NOT EXISTS live_skip_reason text,
     ADD COLUMN IF NOT EXISTS h5_candidate_count integer,
@@ -54,5 +70,69 @@ ALTER TABLE stock_drop_watchlist
 
 CREATE INDEX IF NOT EXISTS idx_virtual_trades_case_key_status
     ON virtual_trades (case_key, status, buy_date DESC);
+
+CREATE TABLE IF NOT EXISTS trade_mistake_logs (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  created_at timestamptz DEFAULT now(),
+  updated_at timestamptz DEFAULT now(),
+  trade_date date,
+  code text,
+  name text,
+  mistake_type text,
+  case_key text,
+  virtual_trade_id uuid,
+  signal_price numeric,
+  actual_price numeric,
+  missed_entry_price numeric,
+  exit_price_after numeric,
+  expected_action text,
+  actual_action text,
+  reason_emotion text,
+  result_summary text,
+  opportunity_loss_pct numeric,
+  actual_loss_pct numeric,
+  lesson text,
+  prevention_rule text,
+  status text DEFAULT 'open',
+  reviewed_at timestamptz
+);
+
+CREATE INDEX IF NOT EXISTS idx_trade_mistake_logs_status_created
+    ON trade_mistake_logs (status, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_trade_mistake_logs_code_date
+    ON trade_mistake_logs (code, trade_date DESC);
+
+CREATE TABLE IF NOT EXISTS actual_trade_logs (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  created_at timestamptz DEFAULT now(),
+  updated_at timestamptz DEFAULT now(),
+  virtual_trade_id uuid,
+  case_key text,
+  trade_date date,
+  code text,
+  name text,
+  virtual_entry_price numeric,
+  actual_entry_price numeric,
+  actual_entry_date timestamptz,
+  actual_order_type text,
+  actual_fill_status text,
+  virtual_exit_price numeric,
+  actual_exit_price numeric,
+  actual_exit_date timestamptz,
+  virtual_pnl_pct numeric,
+  actual_pnl_pct numeric,
+  entry_slippage_pct numeric,
+  lot_amount numeric,
+  quantity numeric,
+  skip_reason text,
+  note text
+);
+
+CREATE INDEX IF NOT EXISTS idx_actual_trade_logs_code_date
+    ON actual_trade_logs (code, trade_date DESC);
+
+CREATE INDEX IF NOT EXISTS idx_actual_trade_logs_virtual_trade_id
+    ON actual_trade_logs (virtual_trade_id);
 
 NOTIFY pgrst, 'reload schema';
