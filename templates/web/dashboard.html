@@ -245,10 +245,8 @@
         <button class="btn sm" type="submit">H5 Watchlist作成</button>
       </form>
       <form method="post" action="/web/actions/h5/watchlist/refresh_prices" class="js-disable-on-submit">
-        <button class="btn primary sm" type="submit">H5予備軍 現在値更新</button>
-      </form>
-      <form method="post" action="/web/actions/h5/watchlist/recheck_intraday" class="js-disable-on-submit">
-        <button class="btn sm" type="submit">Intraday H5判定</button>
+        <input type="hidden" name="force" value="1">
+        <button class="btn primary sm" type="submit">H5予備軍 更新＆判定</button>
       </form>
     </div>
   </div>
