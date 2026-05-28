@@ -803,9 +803,10 @@ def _entry_limit_state(sb) -> tuple[int, int, dict[str, int]]:
     try:
         rows = (
             sb.table("virtual_trades")
-            .select("id,sector,status,sell_date")
+            .select("id,sector,status,sell_date,is_live_candidate")
             .eq("status", "open")
             .is_("sell_date", "null")
+            .eq("is_live_candidate", True)
             .execute()
             .data or []
         )
@@ -821,6 +822,7 @@ def _entry_limit_state(sb) -> tuple[int, int, dict[str, int]]:
         rows = (
             sb.table("virtual_trades")
             .select("id")
+            .eq("is_live_candidate", True)
             .gte("created_at", start.astimezone(timezone.utc).isoformat())
             .lt("created_at", end.astimezone(timezone.utc).isoformat())
             .execute()
@@ -1082,8 +1084,8 @@ def _create_ranked_virtual_trades(
         result["live_skip_reason"] = reason
         if reason is None:
             live_selected += 1
-            result["case_key"] = H5_LIVE_LIMITED_CASE_KEY
-            result["case_label"] = H5_PRIMARY_DISPLAY_NAME
+            result["case_key"] = H5_RESEARCH_CASE_KEY
+            result["case_label"] = H5_RESEARCH_DISPLAY_NAME
             result["is_primary_h5"] = True
         else:
             result["case_key"] = H5_RESEARCH_CASE_KEY

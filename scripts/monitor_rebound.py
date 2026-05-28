@@ -802,9 +802,10 @@ def _entry_limit_state(now_utc: datetime) -> tuple[int, int, dict[str, int]]:
     try:
         rows = (
             supabase.table("virtual_trades")
-            .select("id,sector,status,sell_date")
+            .select("id,sector,status,sell_date,is_live_candidate")
             .eq("status", "open")
             .is_("sell_date", "null")
+            .eq("is_live_candidate", True)
             .execute()
             .data or []
         )
@@ -819,6 +820,7 @@ def _entry_limit_state(now_utc: datetime) -> tuple[int, int, dict[str, int]]:
         rows = (
             supabase.table("virtual_trades")
             .select("id")
+            .eq("is_live_candidate", True)
             .gte("created_at", start)
             .lt("created_at", end)
             .execute()
@@ -922,8 +924,8 @@ def _create_ranked_virtual_trades(
             item["is_h5_research"] = False
             item["is_h5_live_limited"] = True
             item["is_live_candidate"] = True
-            item["case_key"] = H5_LIVE_LIMITED_CASE_KEY
-            item["case_label"] = H5_PRIMARY_DISPLAY_NAME
+            item["case_key"] = H5_RESEARCH_CASE_KEY
+            item["case_label"] = H5_RESEARCH_DISPLAY_NAME
             item["is_primary_h5"] = True
             live_selected += 1
             sector_counts[sector] = sector_counts.get(sector, 0) + 1
