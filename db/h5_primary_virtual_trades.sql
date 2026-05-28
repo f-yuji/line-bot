@@ -71,6 +71,41 @@ ALTER TABLE stock_drop_watchlist
 CREATE INDEX IF NOT EXISTS idx_virtual_trades_case_key_status
     ON virtual_trades (case_key, status, buy_date DESC);
 
+CREATE TABLE IF NOT EXISTS trade_execution_reviews (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  created_at timestamptz DEFAULT now(),
+  updated_at timestamptz DEFAULT now(),
+  trade_date date,
+  code text,
+  name text,
+  review_type text NOT NULL,
+  case_key text,
+  virtual_trade_id uuid,
+  signal_price numeric,
+  actual_price numeric,
+  missed_entry_price numeric,
+  exit_price_after numeric,
+  expected_action text,
+  actual_action text,
+  reason_category text,
+  reason_emotion text,
+  result_summary text,
+  opportunity_loss_pct numeric,
+  actual_loss_pct numeric,
+  lesson text,
+  prevention_rule text,
+  free_text text,
+  status text DEFAULT 'open',
+  reviewed_at timestamptz
+);
+
+CREATE INDEX IF NOT EXISTS idx_trade_execution_reviews_status_created
+    ON trade_execution_reviews (status, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_trade_execution_reviews_code_date
+    ON trade_execution_reviews (code, trade_date DESC);
+
+-- Kept for old environments. The app now writes trade_execution_reviews.
 CREATE TABLE IF NOT EXISTS trade_mistake_logs (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   created_at timestamptz DEFAULT now(),
@@ -96,12 +131,6 @@ CREATE TABLE IF NOT EXISTS trade_mistake_logs (
   status text DEFAULT 'open',
   reviewed_at timestamptz
 );
-
-CREATE INDEX IF NOT EXISTS idx_trade_mistake_logs_status_created
-    ON trade_mistake_logs (status, created_at DESC);
-
-CREATE INDEX IF NOT EXISTS idx_trade_mistake_logs_code_date
-    ON trade_mistake_logs (code, trade_date DESC);
 
 CREATE TABLE IF NOT EXISTS actual_trade_logs (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),

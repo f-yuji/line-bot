@@ -2148,11 +2148,11 @@ def web_dashboard():
     except Exception as e:
         logger.warning("h5 today evals fetch failed: %s", e)
 
-    mistake_logs: list[dict] = []
+    execution_reviews: list[dict] = []
     actual_trade_logs: list[dict] = []
     try:
-        mistake_logs = (
-            supabase.table("trade_mistake_logs")
+        execution_reviews = (
+            supabase.table("trade_execution_reviews")
             .select("*")
             .order("created_at", desc=True)
             .limit(20)
@@ -2160,7 +2160,7 @@ def web_dashboard():
             .data or []
         )
     except Exception as e:
-        logger.warning("mistake logs fetch failed: %s", e)
+        logger.warning("execution reviews fetch failed: %s", e)
     try:
         actual_trade_logs = (
             supabase.table("actual_trade_logs")
@@ -2206,7 +2206,7 @@ def web_dashboard():
         entry_mode_context=entry_mode_context,
         h5_open_trades=h5_open_trades,
         h5_today_evals=h5_today_evals,
-        mistake_logs=mistake_logs,
+        execution_reviews=execution_reviews,
         actual_trade_logs=actual_trade_logs,
         ai_diary=ai_diary,
     )
@@ -3698,38 +3698,43 @@ def _form_text(name: str, default: str = "") -> str:
     return str(request.form.get(name) or default).strip()
 
 
+@app.route("/web/h5/execution-reviews", methods=["POST"])
 @app.route("/web/h5/mistakes", methods=["POST"])
-def web_h5_mistake_create():
+def web_h5_execution_review_create():
     code = _form_text("code")
     if not code:
-        flash("ミス記録の銘柄コードがありません。", "warning")
+        flash("執行レビューの銘柄コードがありません。", "warning")
         return redirect(url_for("web_trade_assist"))
     payload = {
         "trade_date": _form_text("trade_date") or None,
         "code": code,
         "name": _form_text("name") or code,
-        "mistake_type": _form_text("mistake_type", "missed_entry"),
+        "review_type": _form_text("review_type", _form_text("mistake_type", "missed_entry")),
         "case_key": _form_text("case_key") or H5_PRIMARY_CASE_KEY,
         "virtual_trade_id": _form_text("virtual_trade_id") or None,
         "signal_price": _form_float("signal_price"),
         "actual_price": _form_float("actual_price"),
         "missed_entry_price": _form_float("missed_entry_price"),
+        "exit_price_after": _form_float("exit_price_after"),
         "expected_action": _form_text("expected_action"),
         "actual_action": _form_text("actual_action"),
+        "reason_category": _form_text("reason_category"),
         "reason_emotion": _form_text("reason_emotion"),
         "result_summary": _form_text("result_summary"),
         "opportunity_loss_pct": _form_float("opportunity_loss_pct"),
+        "actual_loss_pct": _form_float("actual_loss_pct"),
         "lesson": _form_text("lesson"),
         "prevention_rule": _form_text("prevention_rule"),
+        "free_text": _form_text("free_text"),
         "status": _form_text("status", "open"),
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
     try:
-        supabase.table("trade_mistake_logs").insert(payload).execute()
-        flash(f"{code} のミス記録を保存しました。", "success")
+        supabase.table("trade_execution_reviews").insert(payload).execute()
+        flash(f"{code} の執行レビューを保存しました。", "success")
     except Exception as e:
-        logger.exception("h5 mistake create failed")
-        flash(f"ミス記録の保存に失敗しました。db/h5_primary_virtual_trades.sql を再実行してください: {e}", "warning")
+        logger.exception("h5 execution review create failed")
+        flash(f"執行レビューの保存に失敗しました。db/h5_primary_virtual_trades.sql を再実行してください: {e}", "warning")
     return redirect(url_for("web_trade_assist"))
 
 
@@ -3819,7 +3824,7 @@ def _h5_primary_migration_status() -> bool:
             "position_limit_mode,is_live_candidate,is_h5_research_candidate,is_h5_live_candidate,"
             "live_candidate_rank,selected_rank,live_skip_reason"
         ).limit(1).execute()
-        supabase.table("trade_mistake_logs").select("id").limit(1).execute()
+        supabase.table("trade_execution_reviews").select("id").limit(1).execute()
         supabase.table("actual_trade_logs").select("id").limit(1).execute()
         return True
     except Exception as e:

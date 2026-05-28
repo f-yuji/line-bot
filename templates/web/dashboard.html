@@ -301,25 +301,29 @@
 </div>
 
 <div class="section-h" style="color:var(--accent);margin-top:12px">
-  H5 ミス記録掲示板
+  H5 執行レビュー
 </div>
 <div class="panel">
-  {% if mistake_logs %}
+  <div class="muted" style="padding:12px 16px 0;white-space:normal">
+    売買判断・見送り・撤退・ルール逸脱・良い執行を記録し、次回の執行精度を上げるためのレビュー欄です。
+  </div>
+  {% if execution_reviews %}
   <div class="table-wrap">
     <table class="tbl">
       <thead><tr>
-        <th>日付</th><th>コード</th><th>銘柄</th><th>種別</th><th>本来</th><th>実際</th><th>教訓</th><th>状態</th>
+        <th>日付</th><th>コード</th><th>銘柄</th><th>レビュー</th><th>本来</th><th>実際</th><th>理由</th><th>補足</th><th>状態</th>
       </tr></thead>
       <tbody>
-      {% for m in mistake_logs %}
+      {% for m in execution_reviews %}
       <tr>
         <td class="muted num">{{ m.trade_date or (m.created_at | jst("%Y-%m-%d")) }}</td>
         <td class="code">{{ m.code }}</td>
         <td class="name">{{ m.name or "" }}</td>
-        <td><span class="tag">{{ m.mistake_type or "-" }}</span></td>
+        <td><span class="tag">{{ m.review_type or "-" }}</span></td>
         <td class="muted" style="font-size:12px;white-space:normal">{{ m.expected_action or "—" }}</td>
-        <td class="muted" style="font-size:12px;white-space:normal">{{ m.actual_action or m.reason_emotion or "—" }}</td>
-        <td style="font-size:12px;white-space:normal">{{ m.lesson or "—" }}</td>
+        <td class="muted" style="font-size:12px;white-space:normal">{{ m.actual_action or "—" }}</td>
+        <td class="muted" style="font-size:12px;white-space:normal">{{ m.reason_category or m.reason_emotion or "—" }}</td>
+        <td style="font-size:12px;white-space:normal">{{ m.free_text or m.lesson or "—" }}</td>
         <td>{{ m.status or "open" }}</td>
       </tr>
       {% endfor %}
@@ -327,7 +331,7 @@
     </table>
   </div>
   {% else %}
-  <div class="muted" style="padding:16px">ミス記録はまだありません。H5候補カードから「ミスとして記録」できます。</div>
+  <div class="muted" style="padding:16px">執行レビューはまだありません。H5候補カードから「執行レビューに記録」できます。</div>
   {% endif %}
 </div>
 

@@ -660,7 +660,7 @@
         {% if r.h5_primary_match %}
         <details class="ta-h5-note" style="margin:12px 0 0">
           <summary>H5運用ログを記録</summary>
-          <div class="muted" style="margin:8px 0">自動発注ではありません。実弾判断・見送り・ミスを後で検証するための手入力ログです。</div>
+          <div class="muted" style="margin:8px 0">自動発注ではありません。実弾判断・見送り・執行レビューを後で検証するための手入力ログです。</div>
           <form method="post" action="/web/h5/actual-trades" class="js-disable-on-submit" style="display:grid;gap:8px;margin-top:8px">
             <input type="hidden" name="code" value="{{ r.code }}">
             <input type="hidden" name="name" value="{{ r.name or '' }}">
@@ -683,7 +683,7 @@
             <button class="btn sm" type="submit">実弾ログを保存</button>
           </form>
 
-          <form method="post" action="/web/h5/mistakes" class="js-disable-on-submit" style="display:grid;gap:8px;margin-top:14px">
+          <form method="post" action="/web/h5/execution-reviews" class="js-disable-on-submit" style="display:grid;gap:8px;margin-top:14px">
             <input type="hidden" name="code" value="{{ r.code }}">
             <input type="hidden" name="name" value="{{ r.name or '' }}">
             <input type="hidden" name="case_key" value="{{ r.h5_case_key or r.case_key or '' }}">
@@ -693,24 +693,108 @@
             <input type="hidden" name="actual_price" value="{{ r.current_price_yf or '' }}">
             <input type="hidden" name="missed_entry_price" value="{{ r.current_price_yf or '' }}">
             <div class="ta-entry-check-grid">
-              <label><span>ミス種別</span>
-                <select name="mistake_type">
-                  <option value="missed_entry">条件成立を見送り</option>
-                  <option value="early_stop">早すぎる損切り</option>
+              <label><span>レビュー種別</span>
+                <select name="review_type">
+                  <option value="rule_based_skip">ルール通り見送り</option>
+                  <option value="missed_entry">入るべき場面の見送り</option>
+                  <option value="early_exit">早すぎる撤退</option>
                   <option value="late_entry">遅れてentry</option>
                   <option value="gap_chase_entry">飛びつきentry</option>
-                  <option value="manual_override_error">裁量でルール破り</option>
+                  <option value="rule_break_entry">ルール外entry</option>
+                  <option value="ignored_exit">exit無視</option>
+                  <option value="size_error">ロットミス</option>
+                  <option value="panic_exit">感情的撤退</option>
+                  <option value="good_execution">良い執行</option>
+                  <option value="other">その他</option>
+                </select>
+              </label>
+              <label><span>本来の行動</span>
+                <select name="expected_action">
+                  <option value="skip_by_rule">ルール通り見送り</option>
+                  <option value="enter_min_lot">最低ロットで入る</option>
+                  <option value="enter_normal_lot">通常ロットで入る</option>
+                  <option value="hold_to_hd3">3営業日まで保有</option>
+                  <option value="exit_by_rule">ルール通り撤退</option>
+                  <option value="reduce_size">ロットを下げる</option>
+                  <option value="do_nothing">何もしない</option>
+                  <option value="record_only">記録のみ</option>
+                  <option value="wait_for_price">価格条件待ち</option>
+                  <option value="other">その他</option>
+                </select>
+              </label>
+              <label><span>実際の行動</span>
+                <select name="actual_action">
+                  <option value="skipped">見送った</option>
+                  <option value="entered">入った</option>
+                  <option value="exited_early">早く切った</option>
+                  <option value="held">保有した</option>
+                  <option value="chased">飛びついた</option>
+                  <option value="overrode_rule">ルールを上書きした</option>
+                  <option value="reduced_size">ロットを下げた</option>
+                  <option value="recorded_only">記録のみ</option>
+                  <option value="other">その他</option>
+                </select>
+              </label>
+              <label><span>客観理由</span>
+                <select name="reason_category">
+                  <option value="lot_size_exceeds_allowed_risk">単元金額・ロットが許容リスク超過</option>
+                  <option value="insufficient_validation_stage">検証不十分段階</option>
+                  <option value="unit_size_too_large">単元金額が大きすぎる</option>
+                  <option value="signal_price_gap_too_large">シグナル価格から乖離しすぎ</option>
+                  <option value="panic_selloff_detected">panic_selloff化</option>
+                  <option value="bad_news_detected">個別悪材料あり</option>
+                  <option value="liquidity_too_low">流動性・板が薄い</option>
+                  <option value="order_unavailable">注文不能</option>
+                  <option value="emotional_fear">恐怖・不安</option>
+                  <option value="emotional_fomo">乗り遅れ焦り</option>
+                  <option value="rule_confusion">ルール理解不足</option>
+                  <option value="manual_override">手動判断の上書き</option>
+                  <option value="good_rule_execution">ルール通り実行</option>
+                  <option value="other">その他</option>
+                </select>
+              </label>
+              <label><span>感情要因</span>
+                <select name="reason_emotion">
+                  <option value="not_emotional">感情要因なし</option>
+                  <option value="fear_crash">ナイアガラ警戒</option>
+                  <option value="chart_looks_high">高すぎて怖い</option>
+                  <option value="loss_pain">含み損が痛い</option>
+                  <option value="profit_fear">利益を失いたくない</option>
+                  <option value="fomo">乗り遅れ焦り</option>
+                  <option value="uncertainty">判断に迷った</option>
+                  <option value="confidence">ルールを信じた</option>
+                  <option value="other">その他</option>
+                </select>
+              </label>
+              <label><span>再発防止ルール</span>
+                <select name="prevention_rule">
+                  <option value="lot_over_limit_skip">許容ロット超過なら見送り</option>
+                  <option value="validation_stage_keep_small">検証不十分段階では小ロット維持</option>
+                  <option value="signal_price_or_below_enter_min_lot">H5 Live Limited かつ signal_price以下なら最低ロットで入る</option>
+                  <option value="gap_over_3_skip">+3%超GUは原則見送り</option>
+                  <option value="gap_over_2_caution">+2%超は飛びつき警戒</option>
+                  <option value="no_manual_stop_before_est12">-12%前の裁量損切り禁止</option>
+                  <option value="hd3_exit_no_extension">3営業日で延長せず撤退</option>
+                  <option value="check_bad_news_before_entry">個別悪材料確認後にentry</option>
+                  <option value="record_actual_entry">実弾entry価格を必ず記録</option>
+                  <option value="other">その他</option>
+                </select>
+              </label>
+              <label><span>状態</span>
+                <select name="status">
+                  <option value="reviewed">レビュー済み</option>
+                  <option value="open">未レビュー</option>
+                  <option value="converted_to_rule">ルール化済み</option>
+                  <option value="closed">完了</option>
+                  <option value="archived">保管</option>
                 </select>
               </label>
               <label><span>機会損失%</span><input name="opportunity_loss_pct" type="number" step="0.01"></label>
             </div>
-            <input name="expected_action" value="H5 Live Limited条件なら、価格乖離を確認して最低ロットで判断する">
-            <input name="actual_action" placeholder="実際にした行動">
-            <input name="reason_emotion" placeholder="怖さ・焦り・違和感など">
-            <input name="result_summary" placeholder="結果">
-            <input name="lesson" value="怖い場合は見送りではなく、最低ロットに落とす">
-            <input name="prevention_rule" value="signal_price以下または+1%以内は、悪材料がなければ最低ロット候補にする">
-            <button class="btn sm" type="submit">ミスとして記録</button>
+            <input name="free_text" placeholder="補足メモ: 検証不十分段階での許容ロットオーバーにつき本銘柄見送り">
+            <input name="result_summary" value="H5候補だったが、初期実弾検証の許容ロットを超過したため見送り。">
+            <input name="lesson" value="これは怖さによる見送りではなく、資金管理上の正当な見送り。">
+            <button class="btn sm" type="submit">執行レビューに記録</button>
           </form>
         </details>
         {% endif %}
