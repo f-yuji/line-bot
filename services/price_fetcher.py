@@ -1,7 +1,7 @@
-"""Display-only current-price support for H5 Primary purchase decisions.
+"""Display-only current-price support for H5 purchase decisions.
 
-The values returned here must not be used to create or reprice virtual trades.
-They are delayed/best-effort yfinance quotes for a human execution check only.
+The values returned here must not be used to create, reprice, or close virtual
+trades. They are delayed/best-effort quotes for a human execution check only.
 """
 
 from __future__ import annotations
@@ -109,44 +109,80 @@ def judge_h5_entry_status(entry_gap_pct: float | None) -> tuple[str, str]:
     if entry_gap_pct is None:
         return "price_fetch_failed", "現在値取得失敗。証券口座の現在値・板で確認。"
     if abs(entry_gap_pct) > 30:
-        return "price_fetch_suspect", "現在値が異常値の可能性。証券口座の現在値・板で確認。"
+        return "price_fetch_suspect", "現在値が異常値の可能性。証券口座で確認。"
     if entry_gap_pct <= 0:
-        return "entry_favorable", "シグナル価格以下。価格面は有利。ただし地合い・悪材料は確認。"
+        return "entry_favorable", "シグナル価格以下。価格面は有利。H5候補維持。"
     if entry_gap_pct <= 1:
         return "entry_ok", "エントリー可。シグナル価格からの乖離は小さい。"
     if entry_gap_pct <= 2:
-        return "entry_caution", "許容範囲内だが慎重。H5の期待値はやや低下。"
+        return "entry_caution", "許容範囲内だが慎重。H5期待値はやや低下。"
     if entry_gap_pct <= 3:
         return "gap_chase_warning", "+2%超。飛びつき警戒。小ロットまたは見送り検討。"
     return "entry_ng", "+3%超。原則見送り。"
 
 
+def signal_price_from_row(row: dict[str, Any]) -> float | None:
+    """Return the H5 signal/virtual-entry price from known field names."""
+    return (
+        _number(row.get("signal_price"))
+        or _number(row.get("virtual_entry_price"))
+        or _number(row.get("entry_price"))
+        or _number(row.get("entry_price_at_signal"))
+        or _number(row.get("buy_price"))
+    )
+
+
+def build_h5_price_assist_fields(
+    row: dict[str, Any],
+    quote: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build display-only H5 execution price fields for a candidate/trade."""
+    signal_price = signal_price_from_row(row)
+    result: dict[str, Any] = {
+        "signal_price": signal_price,
+        "entry_limit_2pct": signal_price * 1.02 if signal_price else None,
+        "entry_limit_3pct": signal_price * 1.03 if signal_price else None,
+        "price_source": (quote or {}).get("source") or row.get("price_source") or "yfinance",
+        "current_price_yf": row.get("current_price_yf"),
+        "current_price_fetched_at": row.get("current_price_fetched_at"),
+        "entry_gap_pct": row.get("entry_gap_pct"),
+        "entry_status": row.get("entry_status"),
+        "entry_status_label": row.get("entry_status_label"),
+        "price_fetch_error": row.get("price_fetch_error"),
+    }
+    if signal_price is None:
+        result["entry_status"] = "price_fetch_failed"
+        result["entry_status_label"] = "シグナル価格を取得できません。証券口座で確認。"
+        result["price_fetch_error"] = result["price_fetch_error"] or "signal_price_missing"
+        return result
+
+    if quote is not None:
+        result["current_price_yf"] = quote.get("current_price")
+        result["current_price_fetched_at"] = quote.get("fetched_at")
+        result["price_fetch_error"] = quote.get("error")
+        if quote.get("status") == "ok" and _number(quote.get("current_price")) is not None:
+            result["entry_gap_pct"] = round((float(quote["current_price"]) / signal_price - 1.0) * 100.0, 6)
+        else:
+            result["entry_gap_pct"] = None
+
+    try:
+        gap = float(result["entry_gap_pct"]) if result["entry_gap_pct"] is not None else None
+    except Exception:
+        gap = None
+    result["entry_status"], result["entry_status_label"] = judge_h5_entry_status(gap)
+    return result
+
+
 def decorate_h5_price_assist_cards(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Attach display fields only to H5 Primary cards."""
+    """Attach display fields only to H5 Live Limited cards.
+
+    This function intentionally does not fetch yfinance quotes. Quotes are
+    updated by explicit manual refresh actions and then displayed here.
+    """
     for row in rows:
         if not row.get("h5_primary_match") or not row.get("is_live_candidate"):
             continue
-        signal_price = _number(row.get("virtual_entry_price")) or _number(row.get("entry_price"))
-        row["signal_price"] = signal_price
-        row["entry_limit_2pct"] = signal_price * 1.02 if signal_price else None
-        row["entry_limit_3pct"] = signal_price * 1.03 if signal_price else None
-        row["price_source"] = "yfinance"
-        row["current_price_yf"] = None
-        row["current_price_fetched_at"] = None
-        row["entry_gap_pct"] = None
-        row["price_fetch_error"] = None
-        if signal_price is None:
-            row["entry_status"] = "price_fetch_failed"
-            row["entry_status_label"] = "シグナル価格を取得できません。証券口座で確認。"
-            row["price_fetch_error"] = "signal_price_missing"
-            continue
-        quote = get_yfinance_current_price(str(row.get("code") or ""))
-        row["current_price_yf"] = quote.get("current_price")
-        row["current_price_fetched_at"] = quote.get("fetched_at")
-        row["price_fetch_error"] = quote.get("error")
-        if quote.get("status") == "ok" and _number(quote.get("current_price")) is not None:
-            row["entry_gap_pct"] = round((float(quote["current_price"]) / signal_price - 1.0) * 100.0, 6)
-        row["entry_status"], row["entry_status_label"] = judge_h5_entry_status(row["entry_gap_pct"])
+        row.update(build_h5_price_assist_fields(row))
     return rows
 
 

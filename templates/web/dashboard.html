@@ -230,6 +230,78 @@
 {% endif %}
 
 {# ── H5 オープンポジション ── #}
+<div class="section-h" style="color:var(--accent);margin-top:12px">
+  H5 Watch：翌日監視候補
+</div>
+<div class="panel" style="border-color:var(--accent-dim)">
+  <div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start;flex-wrap:wrap;padding:12px 16px;border-bottom:1px solid var(--line-dim)">
+    <div class="muted" style="font-size:12px;line-height:1.6;white-space:normal">
+      まだ買わない予備軍です。大引け後にH5未満の近い銘柄を作り、翌日はこの一覧だけ現在値更新します。
+      NearはH5成立価格まで+1%以内、Pre-Signalは価格条件達成です。
+      Watch / Pre-Signal段階では仮想売買を作りません。
+    </div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      <form method="post" action="/web/actions/h5/build_watchlist" class="js-disable-on-submit">
+        <button class="btn sm" type="submit">H5 Watchlist作成</button>
+      </form>
+      <form method="post" action="/web/actions/h5/watchlist/refresh_prices" class="js-disable-on-submit">
+        <button class="btn primary sm" type="submit">H5予備軍 現在値更新</button>
+      </form>
+    </div>
+  </div>
+  <div style="display:flex;gap:8px;flex-wrap:wrap;padding:10px 16px">
+    <span class="tag">全{{ h5_watch_stats.total or 0 }}件</span>
+    <span class="tag">Near {{ h5_watch_stats.near_trigger or 0 }}件</span>
+    <span class="tag">Pre-Signal {{ h5_watch_stats.pre_signal or 0 }}件</span>
+  </div>
+  {% if h5_watch_rows %}
+  <div class="table-wrap">
+    <table class="tbl">
+      <thead><tr>
+        <th>状態</th><th>コード</th><th>銘柄</th><th class="right">AI</th><th>段階</th>
+        <th class="right">H5成立価格</th><th class="right">終値</th><th class="right">H5まで</th>
+        <th class="right">現在値</th><th class="right">現在H5まで</th>
+        <th>地合い</th><th class="right">過熱</th><th class="right">信用</th><th>更新</th><th></th>
+      </tr></thead>
+      <tbody>
+      {% for r in h5_watch_rows %}
+      <tr>
+        <td>
+          {% if r.watch_status == "pre_signal" %}<span class="badge notified">Pre-Signal</span>
+          {% elif r.watch_status == "near_trigger" %}<span class="badge signal">Near</span>
+          {% else %}<span class="badge watching">Watch</span>{% endif %}
+        </td>
+        <td class="code">{{ r.code }}</td>
+        <td class="name">{{ r.name or "" }}</td>
+        <td class="right num">{% if r.ai_score is not none %}{{ "%.0f"|format(r.ai_score * 100) }}{% else %}-{% endif %}</td>
+        <td class="muted">{{ r.signal_stage or "-" }}</td>
+        <td class="right num">{{ "{:,.0f}".format(r.h5_trigger_price) if r.h5_trigger_price else "-" }}</td>
+        <td class="right num">{{ "{:,.0f}".format(r.close_price) if r.close_price else "-" }}</td>
+        <td class="right num">{% if r.distance_to_trigger_pct is not none %}{{ "%+.2f"|format(r.distance_to_trigger_pct) }}%{% else %}-{% endif %}</td>
+        <td class="right num">{{ "{:,.0f}".format(r.current_price_yf) if r.current_price_yf else "-" }}</td>
+        <td class="right num {% if r.current_distance_to_trigger_pct is not none and r.current_distance_to_trigger_pct <= 0 %}down-text{% elif r.current_distance_to_trigger_pct is not none and r.current_distance_to_trigger_pct <= 1 %}up-text{% endif %}">
+          {% if r.current_distance_to_trigger_pct is not none %}{{ "%+.2f"|format(r.current_distance_to_trigger_pct) }}%{% else %}-{% endif %}
+        </td>
+        <td class="muted">{{ r.market_regime or "-" }}</td>
+        <td class="right num">{{ r.overheat_score if r.overheat_score is not none else "-" }}</td>
+        <td class="right num">{% if r.margin_ratio is not none %}{{ "%.1f"|format(r.margin_ratio) }}{% else %}-{% endif %}</td>
+        <td class="muted" style="font-size:11px">{{ r.current_price_fetched_at | jst("%m-%d %H:%M") if r.current_price_fetched_at else "-" }}</td>
+        <td>
+          <form method="post" action="/web/actions/h5/watchlist/refresh_price" class="js-disable-on-submit">
+            <input type="hidden" name="watchlist_id" value="{{ r.id }}">
+            <button class="btn sm" type="submit">更新</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="muted" style="padding:16px">H5 Watchlistはまだありません。大引け後データ更新後に「H5 Watchlist作成」を押してください。</div>
+  {% endif %}
+</div>
+
 <div class="section-h" style="color:var(--accent);margin-top:{% if signal_rows %}12px{% else %}20px{% endif %}">
   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:12px;height:12px"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 7V5a2 2 0 0 0-4 0v2"/></svg>
   H5 保有中

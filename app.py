@@ -10,7 +10,7 @@ from typing import List, Optional
 from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
-from flask import Flask, request, abort, render_template, redirect, url_for, session, flash, Response
+from flask import Flask, request, abort, render_template, redirect, url_for, session, flash, Response, jsonify
 from openai import OpenAI
 from supabase import create_client
 from services.signal_stage import SIGNAL_STAGES, STAGE_RANK, evaluate_signal_stage
@@ -24,8 +24,14 @@ from services.h5_primary import (
     H5_PRIMARY_RULES,
     H5_RESEARCH_CASE_KEY,
     evaluate_h5_primary_entry,
+    h5_overheat_score,
 )
-from services.price_fetcher import H5_ENTRY_STATUS_PRIORITY, decorate_h5_price_assist_cards
+from services.price_fetcher import (
+    H5_ENTRY_STATUS_PRIORITY,
+    build_h5_price_assist_fields,
+    decorate_h5_price_assist_cards,
+    get_yfinance_current_price,
+)
 from services.trade_assist_history import decorate_history_rows
 from services.nikkei_correlation import decorate_nikkei_correlation
 from services.rebound_diagnostics import decorate_rebound_diagnostics
@@ -1997,6 +2003,255 @@ def get_watchlist_counts(rows: list[dict], open_trade_codes: set[str] | None = N
     }
 
 
+H5_WATCH_ACTIVE_STATUSES = ("watch", "near_trigger", "pre_signal")
+H5_WATCH_AI_MIN = 0.60
+H5_WATCH_DROP20_MAX = -6.5
+H5_WATCH_OVERHEAT_MAX = 2
+
+
+def _h5_float(value) -> float | None:
+    try:
+        if value is None or value == "":
+            return None
+        return float(value)
+    except Exception:
+        return None
+
+
+def _h5_watch_status(current_price: float | None, trigger_price: float | None) -> tuple[str, float | None]:
+    if current_price is None or trigger_price is None or trigger_price <= 0:
+        return "watch", None
+    distance = (current_price / trigger_price - 1) * 100
+    if distance <= 0:
+        return "pre_signal", distance
+    if distance <= 1.0:
+        return "near_trigger", distance
+    return "watch", distance
+
+
+def _latest_snapshot_trade_date() -> str | None:
+    try:
+        rows = (
+            supabase.table("stock_feature_snapshots")
+            .select("trade_date")
+            .order("trade_date", desc=True)
+            .limit(1)
+            .execute()
+            .data or []
+        )
+        return str(rows[0].get("trade_date")) if rows else None
+    except Exception as e:
+        logger.warning("[h5_watch] latest snapshot date fetch failed: %s", e)
+        return None
+
+
+def _fetch_all_ranges(table_name: str, *, select: str = "*", page_size: int = 1000, max_rows: int = 5000, **filters) -> list[dict]:
+    rows: list[dict] = []
+    offset = 0
+    while offset < max_rows:
+        query = supabase.table(table_name).select(select)
+        for op, key, value in filters.get("conditions", []):
+            if op == "eq":
+                query = query.eq(key, value)
+            elif op == "gte":
+                query = query.gte(key, value)
+            elif op == "lt":
+                query = query.lt(key, value)
+            elif op == "in":
+                query = query.in_(key, value)
+        page = query.range(offset, offset + page_size - 1).execute().data or []
+        rows.extend(page)
+        if len(page) < page_size:
+            break
+        offset += page_size
+    return rows
+
+
+def _fetch_h5_watchlist_rows(limit: int = 80) -> list[dict]:
+    try:
+        return (
+            supabase.table("h5_watchlist")
+            .select("*")
+            .in_("watch_status", list(H5_WATCH_ACTIVE_STATUSES))
+            .order("watch_date", desc=True)
+            .order("distance_to_trigger_pct", desc=False)
+            .limit(limit)
+            .execute()
+            .data or []
+        )
+    except Exception as e:
+        logger.warning("[h5_watch] fetch failed: %s", e)
+        return []
+
+
+def _build_h5_watchlist() -> dict:
+    watch_date = _latest_snapshot_trade_date()
+    if not watch_date:
+        return {"ok": False, "error": "latest_snapshot_missing", "created": 0, "watch_date": None}
+
+    try:
+        next_day = (datetime.fromisoformat(watch_date).date() + timedelta(days=1)).isoformat()
+    except Exception:
+        next_day = watch_date
+
+    snapshots = _fetch_all_ranges(
+        "stock_feature_snapshots",
+        conditions=[("eq", "trade_date", watch_date)],
+        max_rows=4000,
+    )
+    snapshot_by_code = {str(r.get("code")): r for r in snapshots if r.get("code")}
+    if not snapshot_by_code:
+        return {"ok": False, "error": "snapshot_rows_missing", "created": 0, "watch_date": watch_date}
+
+    watch_rows = _fetch_all_ranges(
+        "stock_drop_watchlist",
+        conditions=[("gte", "drop_detected_at", watch_date), ("lt", "drop_detected_at", next_day)],
+        max_rows=4000,
+    )
+    market_adjustment = _current_market_adjustment()
+    candidates: list[dict] = []
+    skipped_exact_h5 = 0
+    rejected = 0
+
+    for row in watch_rows:
+        code = str(row.get("code") or "").strip()
+        if not code:
+            continue
+        snapshot = snapshot_by_code.get(code) or {}
+        combined = {**snapshot, **row}
+        enriched = _with_ai_priority_stage(combined, market_adjustment)
+        probability = _h5_float(enriched.get("signal_probability") or enriched.get("ai_probability") or enriched.get("probability"))
+        stage = str(enriched.get("signal_stage") or row.get("signal_stage") or "")
+        drop20 = _h5_float(enriched.get("drop_from_20d_high_pct") or snapshot.get("drop_from_20d_high_pct"))
+        close_price = _h5_float(enriched.get("close") or snapshot.get("close") or row.get("price_at_drop"))
+        margin = _h5_float(enriched.get("margin_ratio") or snapshot.get("margin_ratio"))
+        regime = str(enriched.get("market_regime") or market_adjustment.get("regime") or "normal")
+        overheat = h5_overheat_score(enriched)
+
+        if probability is None or probability < H5_WATCH_AI_MIN:
+            rejected += 1
+            continue
+        if stage not in {"early", "confirmed", "strong_confirmed"}:
+            rejected += 1
+            continue
+        if drop20 is None or drop20 > H5_WATCH_DROP20_MAX:
+            rejected += 1
+            continue
+        if regime == "panic_selloff":
+            rejected += 1
+            continue
+        if overheat > H5_WATCH_OVERHEAT_MAX:
+            rejected += 1
+            continue
+        if margin is not None and (margin < 3 or margin > 30):
+            rejected += 1
+            continue
+        if close_price is None or close_price <= 0:
+            rejected += 1
+            continue
+
+        is_h5, _, _ = evaluate_h5_primary_entry({**enriched, "signal_probability": probability, "signal_stage": stage})
+        if is_h5:
+            skipped_exact_h5 += 1
+            continue
+
+        denominator = 1 + (drop20 / 100)
+        if denominator <= 0:
+            rejected += 1
+            continue
+        high20 = close_price / denominator
+        trigger_price = high20 * 0.92
+        distance = (close_price / trigger_price - 1) * 100 if trigger_price > 0 else None
+        if trigger_price <= 0 or distance is None:
+            rejected += 1
+            continue
+
+        candidates.append({
+            "watch_date": watch_date,
+            "code": code,
+            "name": row.get("name") or snapshot.get("name"),
+            "ai_score": probability,
+            "signal_stage": stage,
+            "high_20d": round(high20, 4),
+            "close_price": close_price,
+            "h5_trigger_price": round(trigger_price, 4),
+            "distance_to_trigger_pct": round(distance, 4),
+            "drop_from_20d_high_pct": drop20,
+            "market_regime": regime,
+            "overheat_score": overheat,
+            "overheat_bucket": "hot" if overheat >= 2 else ("mild" if overheat == 1 else "cool"),
+            "margin_ratio": margin,
+            "volume_ratio": _h5_float(enriched.get("volume_ratio_20d") or enriched.get("volume_ratio")),
+            "liquidity": _h5_float(enriched.get("turnover_value") or enriched.get("liquidity")),
+            "watch_status": "watch",
+            "reject_reason": None,
+            "memo": "h5_watch_candidate",
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        })
+
+    if candidates:
+        supabase.table("h5_watchlist").upsert(candidates, on_conflict="watch_date,code").execute()
+    return {
+        "ok": True,
+        "watch_date": watch_date,
+        "created": len(candidates),
+        "skipped_exact_h5": skipped_exact_h5,
+        "rejected": rejected,
+    }
+
+
+def _refresh_h5_watchlist_rows(rows: list[dict], *, force: bool = False) -> dict:
+    updated = 0
+    failed = 0
+    near_trigger = 0
+    pre_signal = 0
+    now_utc = datetime.now(timezone.utc).isoformat()
+    for row in rows:
+        code = str(row.get("code") or "").strip()
+        trigger_price = _h5_float(row.get("h5_trigger_price"))
+        if not code or not trigger_price:
+            failed += 1
+            continue
+        quote = get_yfinance_current_price(code, force=force)
+        current = _h5_float(quote.get("current_price"))
+        if quote.get("status") != "ok" or current is None:
+            failed += 1
+            try:
+                supabase.table("h5_watchlist").update({
+                    "memo": f"price_fetch_failed: {quote.get('error') or 'unknown'}",
+                    "updated_at": now_utc,
+                }).eq("id", row["id"]).execute()
+            except Exception:
+                logger.warning("[h5_watch] failed memo update code=%s", code)
+            continue
+        status, distance = _h5_watch_status(current, trigger_price)
+        payload = {
+            "current_price_yf": current,
+            "current_price_source": quote.get("source") or "yfinance",
+            "current_price_fetched_at": quote.get("fetched_at") or now_utc,
+            "current_distance_to_trigger_pct": round(distance, 4) if distance is not None else None,
+            "watch_status": status,
+            "memo": None,
+            "updated_at": now_utc,
+        }
+        try:
+            supabase.table("h5_watchlist").update(payload).eq("id", row["id"]).execute()
+            updated += 1
+            if status == "near_trigger":
+                near_trigger += 1
+            elif status == "pre_signal":
+                pre_signal += 1
+        except Exception as e:
+            failed += 1
+            logger.warning("[h5_watch] update failed code=%s error=%s", code, e)
+    return {
+        "updated": updated,
+        "failed": failed,
+        "near_trigger": near_trigger,
+        "pre_signal": pre_signal,
+    }
+
+
 @app.route("/web/")
 @app.route("/web/dashboard")
 @app.route("/lab/rebound")
@@ -2112,6 +2367,18 @@ def web_dashboard():
     stats = get_watchlist_counts(rows, open_trade_codes)
     stats["holding"] = holding_count
 
+    h5_watch_rows: list[dict] = []
+    h5_watch_stats = {"total": 0, "near_trigger": 0, "pre_signal": 0}
+    try:
+        h5_watch_rows = _fetch_h5_watchlist_rows(limit=80)
+        h5_watch_stats = {
+            "total": len(h5_watch_rows),
+            "near_trigger": sum(1 for r in h5_watch_rows if r.get("watch_status") == "near_trigger"),
+            "pre_signal": sum(1 for r in h5_watch_rows if r.get("watch_status") == "pre_signal"),
+        }
+    except Exception as e:
+        logger.warning("h5 watchlist fetch failed: %s", e)
+
     # H5 open positions
     h5_open_trades: list[dict] = []
     try:
@@ -2206,6 +2473,8 @@ def web_dashboard():
         entry_mode_context=entry_mode_context,
         h5_open_trades=h5_open_trades,
         h5_today_evals=h5_today_evals,
+        h5_watch_rows=h5_watch_rows,
+        h5_watch_stats=h5_watch_stats,
         execution_reviews=execution_reviews,
         actual_trade_logs=actual_trade_logs,
         ai_diary=ai_diary,
@@ -2370,13 +2639,33 @@ def _fetch_latest_price(code: str, market: str | None = None) -> float | None:
         return None
 
 
+def _h5_price_assist_update_payload(trade: dict, quote: dict, now_utc: str) -> dict:
+    fields = build_h5_price_assist_fields(trade, quote)
+    return {
+        "signal_price": fields.get("signal_price"),
+        "entry_limit_2pct": fields.get("entry_limit_2pct"),
+        "entry_limit_3pct": fields.get("entry_limit_3pct"),
+        "current_price_yf": fields.get("current_price_yf"),
+        "current_price_fetched_at": fields.get("current_price_fetched_at"),
+        "entry_gap_pct": fields.get("entry_gap_pct"),
+        "entry_status": fields.get("entry_status"),
+        "entry_status_label": fields.get("entry_status_label"),
+        "price_source": fields.get("price_source"),
+        "price_fetch_error": fields.get("price_fetch_error"),
+        "updated_at": now_utc,
+    }
+
+
 @app.route("/web/actions/refresh-prices", methods=["POST"])
 def web_refresh_prices():
     now_utc = datetime.now(timezone.utc).isoformat()
     try:
         open_trades = (
             supabase.table("virtual_trades")
-            .select("id,code,market,buy_price,quantity,status,sell_date")
+            .select(
+                "id,code,market,buy_price,quantity,status,sell_date,"
+                "is_live_candidate,live_case_key,case_key,virtual_entry_price"
+            )
             .eq("status", "open")
             .is_("sell_date", "null")
             .limit(200)
@@ -2413,12 +2702,14 @@ def web_refresh_prices():
 
     updated_trades = 0
     updated_watch = 0
+    updated_h5 = 0
     errors = 0
     for code, meta in targets.items():
         current = _fetch_latest_price(code, meta.get("market"))
         if current is None:
             errors += 1
             continue
+        h5_quote: dict | None = None
 
         try:
             watch_rows = [r for r in active_watch if str(r.get("code")) == code]
@@ -2438,25 +2729,171 @@ def web_refresh_prices():
                 qty = int(trade.get("quantity") or 100)
                 pnl = (current - buy) * qty if buy > 0 else None
                 pnl_pct = (current - buy) / buy * 100 if buy > 0 else None
-                supabase.table("virtual_trades").update({
+                update_payload = {
                     "current_price": current,
                     "unrealized_pnl": round(pnl, 0) if pnl is not None else None,
                     "unrealized_pnl_pct": round(pnl_pct, 2) if pnl_pct is not None else None,
                     "updated_at": now_utc,
-                }).eq("id", trade["id"]).execute()
+                }
+                if trade.get("is_live_candidate") or trade.get("live_case_key") == H5_LIVE_LIMITED_CASE_KEY:
+                    if h5_quote is None:
+                        h5_quote = {
+                            "code": code,
+                            "ticker": _price_refresh_ticker(code, trade.get("market")),
+                            "current_price": current,
+                            "fetched_at": now_utc,
+                            "source": "yfinance",
+                            "status": "ok",
+                            "error": None,
+                        }
+                    update_payload.update(_h5_price_assist_update_payload(trade, h5_quote, now_utc))
+                    updated_h5 += 1
+                supabase.table("virtual_trades").update(update_payload).eq("id", trade["id"]).execute()
                 updated_trades += 1
             except Exception as e:
                 errors += 1
                 logger.warning("[refresh_prices] trade update failed code=%s error=%s", code, e)
 
     logger.info(
-        "[refresh_prices] target_codes=%d updated_watchlist=%d updated_trades=%d errors=%d",
-        len(targets), updated_watch, updated_trades, errors,
+        "[refresh_prices] target_codes=%d updated_watchlist=%d updated_trades=%d updated_h5=%d errors=%d",
+        len(targets), updated_watch, updated_trades, updated_h5, errors,
     )
     if errors:
-        flash(f"株価更新: {updated_trades}保有 / {updated_watch}監視を更新（一部失敗 {errors}）", "warning")
+        flash(f"株価更新: {updated_trades}保有 / {updated_watch}監視 / H5補助{updated_h5}件を更新（一部失敗 {errors}）", "warning")
     else:
-        flash(f"株価更新: {updated_trades}保有 / {updated_watch}監視を更新", "success")
+        flash(f"株価更新: {updated_trades}保有 / {updated_watch}監視 / H5補助{updated_h5}件を更新", "success")
+    return redirect(request.referrer or url_for("web_dashboard"))
+
+
+@app.route("/web/actions/h5/refresh_price", methods=["POST"])
+def web_h5_refresh_price():
+    virtual_trade_id = str(
+        request.form.get("virtual_trade_id")
+        or (request.get_json(silent=True) or {}).get("virtual_trade_id")
+        or ""
+    ).strip()
+    wants_json = request.is_json or "application/json" in str(request.headers.get("Accept") or "")
+    if not virtual_trade_id:
+        if wants_json:
+            return jsonify({"ok": False, "error": "virtual_trade_id_missing"}), 400
+        flash("H5現在値更新に失敗しました: virtual_trade_idがありません。", "warning")
+        return redirect(request.referrer or url_for("web_trade_assist"))
+    try:
+        rows = (
+            supabase.table("virtual_trades")
+            .select("*")
+            .eq("id", virtual_trade_id)
+            .limit(1)
+            .execute()
+            .data or []
+        )
+    except Exception as e:
+        logger.exception("[h5_price_refresh] trade fetch failed")
+        if wants_json:
+            return jsonify({"ok": False, "error": str(e)}), 500
+        flash(f"H5現在値更新に失敗しました: {e}", "warning")
+        return redirect(request.referrer or url_for("web_trade_assist"))
+    trade = rows[0] if rows else None
+    if not trade:
+        if wants_json:
+            return jsonify({"ok": False, "error": "virtual_trade_not_found"}), 404
+        flash("H5現在値更新に失敗しました: 対象の仮想売買が見つかりません。", "warning")
+        return redirect(request.referrer or url_for("web_trade_assist"))
+    if not (trade.get("is_live_candidate") or trade.get("live_case_key") == H5_LIVE_LIMITED_CASE_KEY):
+        if wants_json:
+            return jsonify({"ok": False, "error": "not_h5_live_limited"}), 400
+        flash("H5 Live Limited候補ではないため、補助価格更新は行いませんでした。", "warning")
+        return redirect(request.referrer or url_for("web_trade_assist"))
+
+    quote = get_yfinance_current_price(str(trade.get("code") or ""), force=bool(request.form.get("force")))
+    now_utc = datetime.now(timezone.utc).isoformat()
+    fields = _h5_price_assist_update_payload(trade, quote, now_utc)
+    try:
+        supabase.table("virtual_trades").update(fields).eq("id", virtual_trade_id).execute()
+    except Exception as e:
+        logger.exception("[h5_price_refresh] update failed")
+        if wants_json:
+            return jsonify({"ok": False, "error": str(e), **fields}), 500
+        flash(f"H5現在値更新の保存に失敗しました。db/h5_primary_virtual_trades.sql を再実行してください: {e}", "warning")
+        return redirect(request.referrer or url_for("web_trade_assist"))
+
+    response = {
+        "ok": quote.get("status") == "ok",
+        "virtual_trade_id": virtual_trade_id,
+        "code": trade.get("code"),
+        "name": trade.get("name"),
+        **fields,
+    }
+    if wants_json:
+        return jsonify(response)
+    status = fields.get("entry_status_label") or "更新しました。"
+    flash(f"H5現在値を更新しました: {trade.get('code')} / {status}", "success" if quote.get("status") == "ok" else "warning")
+    return redirect(request.referrer or url_for("web_trade_assist"))
+
+
+@app.route("/web/actions/h5/build_watchlist", methods=["POST"])
+def web_h5_build_watchlist():
+    try:
+        result = _build_h5_watchlist()
+    except Exception as e:
+        logger.exception("[h5_watch] build failed")
+        flash(f"H5 Watchlist作成に失敗しました。db/h5_primary_virtual_trades.sql を再実行してください: {e}", "warning")
+        return redirect(request.referrer or url_for("web_dashboard"))
+    if not result.get("ok"):
+        flash(f"H5 Watchlist作成に失敗しました: {result.get('error')}", "warning")
+        return redirect(request.referrer or url_for("web_dashboard"))
+    flash(
+        f"H5 Watchlist作成: {result.get('watch_date')} / 予備軍{result.get('created', 0)}件 "
+        f"(確定H5除外{result.get('skipped_exact_h5', 0)}件)",
+        "success",
+    )
+    return redirect(request.referrer or url_for("web_dashboard"))
+
+
+@app.route("/web/actions/h5/watchlist/refresh_prices", methods=["POST"])
+def web_h5_watchlist_refresh_prices():
+    force = bool(request.form.get("force"))
+    rows = _fetch_h5_watchlist_rows(limit=200)
+    if not rows:
+        flash("H5 Watchlistの更新対象がありません。先にWatchlistを作成してください。", "warning")
+        return redirect(request.referrer or url_for("web_dashboard"))
+    result = _refresh_h5_watchlist_rows(rows, force=force)
+    flash(
+        f"H5予備軍 現在値更新: 更新{result['updated']}件 / Near {result['near_trigger']}件 / "
+        f"Pre-Signal {result['pre_signal']}件 / 失敗{result['failed']}件",
+        "success" if result["failed"] == 0 else "warning",
+    )
+    return redirect(request.referrer or url_for("web_dashboard"))
+
+
+@app.route("/web/actions/h5/watchlist/refresh_price", methods=["POST"])
+def web_h5_watchlist_refresh_price():
+    watchlist_id = str(request.form.get("watchlist_id") or "").strip()
+    if not watchlist_id:
+        flash("H5予備軍の現在値更新に失敗しました: watchlist_idがありません。", "warning")
+        return redirect(request.referrer or url_for("web_dashboard"))
+    try:
+        rows = (
+            supabase.table("h5_watchlist")
+            .select("*")
+            .eq("id", watchlist_id)
+            .limit(1)
+            .execute()
+            .data or []
+        )
+    except Exception as e:
+        logger.exception("[h5_watch] fetch one failed")
+        flash(f"H5予備軍の取得に失敗しました: {e}", "warning")
+        return redirect(request.referrer or url_for("web_dashboard"))
+    if not rows:
+        flash("H5予備軍が見つかりません。", "warning")
+        return redirect(request.referrer or url_for("web_dashboard"))
+    result = _refresh_h5_watchlist_rows(rows, force=bool(request.form.get("force")))
+    flash(
+        f"H5予備軍 現在値更新: 更新{result['updated']}件 / Near {result['near_trigger']}件 / "
+        f"Pre-Signal {result['pre_signal']}件 / 失敗{result['failed']}件",
+        "success" if result["failed"] == 0 else "warning",
+    )
     return redirect(request.referrer or url_for("web_dashboard"))
 
 
@@ -3832,7 +4269,8 @@ def _h5_primary_migration_status() -> bool:
         supabase.table("virtual_trades").select(
             "case_key,is_primary_h5,exit_rule,peak_pullback_pct,initial_sl_pct,max_holding_days,"
             "position_limit_mode,is_live_candidate,is_h5_research_candidate,is_h5_live_candidate,"
-            "live_candidate_rank,selected_rank,live_skip_reason,actual_entry_price,actual_exit_date"
+            "live_candidate_rank,selected_rank,live_skip_reason,actual_entry_price,actual_exit_date,"
+            "signal_price,current_price_yf,current_price_fetched_at,entry_gap_pct,entry_status"
         ).limit(1).execute()
         supabase.table("stock_drop_watchlist").select(
             "position_limit_mode,is_live_candidate,is_h5_research_candidate,is_h5_live_candidate,"

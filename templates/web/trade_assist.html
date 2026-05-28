@@ -654,6 +654,12 @@
             {% if r.price_fetch_error %} / 取得エラー{% endif %}
             <br>参考価格のみです。仮想売買のentry価格はシグナル価格で固定されます。
           </div>
+          {% if r.virtual_trade_id %}
+          <form method="post" action="/web/actions/h5/refresh_price" class="js-disable-on-submit">
+            <input type="hidden" name="virtual_trade_id" value="{{ r.virtual_trade_id }}">
+            <button class="btn sm" type="submit">現在値を更新</button>
+          </form>
+          {% endif %}
         </div>
         {% endif %}
 

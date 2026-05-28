@@ -45,7 +45,17 @@ ALTER TABLE virtual_trades
     ADD COLUMN IF NOT EXISTS selected_rank integer,
     ADD COLUMN IF NOT EXISTS live_skip_reason text,
     ADD COLUMN IF NOT EXISTS h5_candidate_count integer,
-    ADD COLUMN IF NOT EXISTS h5_selected_count integer;
+    ADD COLUMN IF NOT EXISTS h5_selected_count integer,
+    ADD COLUMN IF NOT EXISTS signal_price numeric,
+    ADD COLUMN IF NOT EXISTS entry_limit_2pct numeric,
+    ADD COLUMN IF NOT EXISTS entry_limit_3pct numeric,
+    ADD COLUMN IF NOT EXISTS current_price_yf numeric,
+    ADD COLUMN IF NOT EXISTS current_price_fetched_at timestamptz,
+    ADD COLUMN IF NOT EXISTS entry_gap_pct numeric,
+    ADD COLUMN IF NOT EXISTS entry_status text,
+    ADD COLUMN IF NOT EXISTS entry_status_label text,
+    ADD COLUMN IF NOT EXISTS price_source text,
+    ADD COLUMN IF NOT EXISTS price_fetch_error text;
 
 ALTER TABLE stock_drop_watchlist
     ADD COLUMN IF NOT EXISTS h5_case_key text,
@@ -70,6 +80,52 @@ ALTER TABLE stock_drop_watchlist
 
 CREATE INDEX IF NOT EXISTS idx_virtual_trades_case_key_status
     ON virtual_trades (case_key, status, buy_date DESC);
+
+CREATE TABLE IF NOT EXISTS h5_watchlist (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    created_at timestamptz DEFAULT now(),
+    updated_at timestamptz DEFAULT now(),
+
+    watch_date date NOT NULL,
+    code text NOT NULL,
+    name text,
+
+    ai_score numeric,
+    signal_stage text,
+
+    high_20d numeric,
+    close_price numeric,
+    h5_trigger_price numeric,
+    distance_to_trigger_pct numeric,
+    drop_from_20d_high_pct numeric,
+
+    market_regime text,
+    overheat_score integer,
+    overheat_bucket text,
+    margin_ratio numeric,
+    volume_ratio numeric,
+    liquidity numeric,
+
+    current_price_yf numeric,
+    current_price_source text,
+    current_price_fetched_at timestamptz,
+    current_distance_to_trigger_pct numeric,
+
+    watch_status text DEFAULT 'watch',
+    promoted_virtual_trade_id uuid,
+    promoted_at timestamptz,
+
+    reject_reason text,
+    memo text,
+
+    UNIQUE (watch_date, code)
+);
+
+CREATE INDEX IF NOT EXISTS idx_h5_watchlist_status_date
+    ON h5_watchlist (watch_status, watch_date DESC);
+
+CREATE INDEX IF NOT EXISTS idx_h5_watchlist_code_date
+    ON h5_watchlist (code, watch_date DESC);
 
 CREATE TABLE IF NOT EXISTS trade_execution_reviews (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
