@@ -624,6 +624,26 @@ table.tbl tbody td {
   white-space: nowrap;
   vertical-align: middle;
 }
+.execution-review-table {
+  min-width: 980px;
+}
+.execution-review-note {
+  min-width: 220px;
+  max-width: 360px;
+  font-size: 12px;
+  white-space: nowrap !important;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  word-break: keep-all;
+}
+.execution-review-modal-note {
+  min-height: 48px;
+  max-width: 100%;
+  white-space: pre-wrap !important;
+  overflow-wrap: break-word;
+  word-break: normal;
+  line-break: strict;
+}
 table.tbl tbody tr {
   cursor: pointer;
   transition: background 0.05s;

@@ -309,7 +309,7 @@
   </div>
   {% if execution_reviews %}
   <div class="table-wrap">
-    <table class="tbl">
+    <table class="tbl execution-review-table">
       <thead><tr>
         <th>日付</th><th>コード</th><th>銘柄</th><th>レビュー</th><th>本来</th><th>実際</th><th>理由</th><th>補足</th><th>状態</th>
       </tr></thead>
@@ -323,7 +323,7 @@
         <td class="muted" style="font-size:12px;white-space:normal">{{ m.expected_action or "—" }}</td>
         <td class="muted" style="font-size:12px;white-space:normal">{{ m.actual_action or "—" }}</td>
         <td class="muted" style="font-size:12px;white-space:normal">{{ m.reason_category or m.reason_emotion or "—" }}</td>
-        <td style="font-size:12px;white-space:normal">{{ m.free_text or m.lesson or "—" }}</td>
+        <td class="execution-review-note">{{ m.free_text or m.lesson or "—" }}</td>
         <td>{{ m.status or "open" }}</td>
       </tr>
       {% endfor %}
@@ -347,7 +347,7 @@
     <div id="reviewModalBody" style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;padding:16px"></div>
     <div style="padding:0 16px 16px">
       <div class="muted" style="font-size:12px;margin-bottom:6px">補足メモ</div>
-      <div id="reviewModalFreeText" style="white-space:pre-wrap;line-height:1.7;background:rgba(255,255,255,.03);border:1px solid var(--line-dim);padding:12px;border-radius:8px"></div>
+      <div id="reviewModalFreeText" class="execution-review-modal-note" style="white-space:pre-wrap;line-height:1.7;background:rgba(255,255,255,.03);border:1px solid var(--line-dim);padding:12px;border-radius:8px"></div>
     </div>
     <div style="display:flex;justify-content:flex-end;gap:8px;padding:12px 16px;border-top:1px solid var(--line-dim)">
       <form id="reviewDeleteForm" method="post" class="js-disable-on-submit" onsubmit="return confirm('この執行レビューを削除しますか？');">
