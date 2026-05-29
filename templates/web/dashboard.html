@@ -267,7 +267,7 @@
         <th>状態</th><th>コード</th><th>銘柄</th><th class="right">AI</th><th>段階</th>
         <th class="right">H5成立価格</th><th class="right">終値</th><th class="right">H5まで</th>
         <th class="right">現在値</th><th class="right">現在H5まで</th>
-        <th>地合い</th><th class="right">過熱</th><th class="right">信用</th><th>判定理由</th><th>更新</th><th></th>
+        <th>地合い</th><th class="right">過熱</th><th class="right">信用</th><th>判定理由</th><th>更新</th><th></th><th></th>
       </tr></thead>
       <tbody>
       {% for r in h5_watch_rows %}
@@ -299,6 +299,19 @@
             <input type="hidden" name="watchlist_id" value="{{ r.id }}">
             <button class="btn sm" type="submit">更新</button>
           </form>
+        </td>
+        <td>
+          <button class="btn sm{% if r.watch_status == 'intraday_h5' %} primary{% endif %}"
+                  type="button"
+                  onclick="openActualEntryModal({
+                    code: {{ r.code | tojson }},
+                    name: {{ (r.name or '') | tojson }},
+                    watchlist_id: {{ r.id | tojson }},
+                    signal_price: {{ r.h5_trigger_price or '' }},
+                    watch_status: {{ r.watch_status | tojson }}
+                  })">
+            実弾entry記録
+          </button>
         </td>
       </tr>
       {% endfor %}
@@ -438,38 +451,101 @@
   </div>
 </div>
 
-<div class="section-h" style="margin-top:12px">
-  H5 実弾ログ
+{# ── H5実弾保有中 ── #}
+<div class="section-h" style="color:var(--accent);margin-top:12px">
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:12px;height:12px"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+  H5実弾保有中
+  <button class="btn sm" type="button" onclick="openActualEntryModal({})" style="margin-left:12px">+ 手動で記録</button>
 </div>
-<div class="panel">
-  {% if actual_trade_logs %}
+<div class="panel" style="border-color:var(--accent-dim)">
+  {% if actual_holdings %}
   <div class="table-wrap">
     <table class="tbl">
       <thead><tr>
-        <th>日付</th><th>コード</th><th>銘柄</th><th class="right">仮想entry</th><th class="right">実弾entry</th><th class="right">乖離</th><th>状態</th><th>メモ</th>
+        <th>状態</th><th>コード</th><th>銘柄</th>
+        <th class="right">entry価格</th><th class="right">事故停止</th><th>種別</th>
+        <th>day1</th><th>day2</th><th class="right">day3期限</th>
+        <th class="right">仮想比</th><th>メモ</th><th></th>
       </tr></thead>
       <tbody>
-      {% for a in actual_trade_logs %}
-      <tr>
-        <td class="muted num">{{ a.trade_date or (a.created_at | jst("%Y-%m-%d")) }}</td>
+      {% for a in actual_holdings %}
+        {%- set d3 = (a.actual_day3_exit_due_date or '')[:10] -%}
+        {%- set is_today_day3 = d3 == today_jst_str -%}
+        {%- set is_overdue = d3 and d3 < today_jst_str -%}
+      <tr{% if is_overdue %} style="background:rgba(220,50,50,.08)"{% elif is_today_day3 %} style="background:rgba(255,160,0,.08)"{% endif %}>
+        <td>
+          {% if is_overdue %}<span class="badge down-text" title="H5の3営業日ルールを超過">期限超過</span>
+          {% elif is_today_day3 %}<span class="badge" style="background:var(--warning,#f90);color:#000" title="本日がday3期限。終値で撤退。">本日day3</span>
+          {% else %}<span class="badge watching">保有中</span>{% endif %}
+        </td>
         <td class="code">{{ a.code }}</td>
         <td class="name">{{ a.name or "" }}</td>
-        <td class="right num">{{ "{:,.0f}".format(a.virtual_entry_price) if a.virtual_entry_price else "—" }}</td>
         <td class="right num">{{ "{:,.0f}".format(a.actual_entry_price) if a.actual_entry_price else "—" }}</td>
+        <td class="right num down-text" title="-12%事故停止価格">
+          {{ "{:,.0f}".format(a.actual_emergency_stop_price) if a.actual_emergency_stop_price else "—" }}
+        </td>
+        <td class="muted" style="font-size:11px">{{ a.actual_entry_model or "—" }}</td>
+        <td class="muted num" style="font-size:12px">{{ (a.actual_day1_date or '')[:10] or "—" }}</td>
+        <td class="muted num" style="font-size:12px">{{ (a.actual_day2_date or '')[:10] or "—" }}</td>
+        <td class="right num{% if is_today_day3 %} down-text{% elif is_overdue %} down-text{% endif %}" style="font-size:12px;font-weight:600">
+          {{ d3 or "—" }}
+        </td>
         <td class="right num {% if a.entry_slippage_pct is not none %}{% if a.entry_slippage_pct > 2 %}down-text{% elif a.entry_slippage_pct <= 0 %}up-text{% endif %}{% endif %}">
           {% if a.entry_slippage_pct is not none %}{{ "%+.2f"|format(a.entry_slippage_pct) }}%{% else %}—{% endif %}
         </td>
-        <td>{{ a.actual_fill_status or a.skip_reason or "—" }}</td>
-        <td class="muted" style="font-size:12px;white-space:normal">{{ a.note or "—" }}</td>
+        <td class="muted" style="font-size:11px;max-width:140px;white-space:normal">{{ a.note or "—" }}</td>
+        <td>
+          <button class="btn sm" type="button"
+                  onclick="openActualExitModal({{ a | tojson }})">exit記録</button>
+        </td>
       </tr>
       {% endfor %}
       </tbody>
     </table>
   </div>
   {% else %}
-  <div class="muted" style="padding:16px">実弾ログはまだありません。H5候補カードからentry・見送り・exitを記録できます。</div>
+  <div class="muted" style="padding:16px">保有中の実弾トレードはありません。上の「+ 手動で記録」またはH5 Watchlistの「実弾entry記録」から登録できます。</div>
   {% endif %}
 </div>
+
+{# ── H5実弾 完了ログ ── #}
+{% set closed_logs = actual_trade_logs | selectattr("actual_exit_date") | list %}
+{% if closed_logs %}
+<div class="section-h" style="margin-top:12px">
+  H5実弾 完了ログ
+</div>
+<div class="panel">
+  <div class="table-wrap">
+    <table class="tbl">
+      <thead><tr>
+        <th>exit日</th><th>コード</th><th>銘柄</th>
+        <th class="right">entry</th><th class="right">exit</th>
+        <th class="right">損益%</th><th class="right">損益額</th>
+        <th>理由</th><th>メモ</th>
+      </tr></thead>
+      <tbody>
+      {% for a in closed_logs %}
+      <tr>
+        <td class="muted num">{{ (a.actual_exit_date or '')[:10] }}</td>
+        <td class="code">{{ a.code }}</td>
+        <td class="name">{{ a.name or "" }}</td>
+        <td class="right num">{{ "{:,.0f}".format(a.actual_entry_price) if a.actual_entry_price else "—" }}</td>
+        <td class="right num">{{ "{:,.0f}".format(a.actual_exit_price) if a.actual_exit_price else "—" }}</td>
+        <td class="right num {% if a.actual_pnl_pct is not none %}{% if a.actual_pnl_pct >= 0 %}up-text{% else %}down-text{% endif %}{% endif %}">
+          {% if a.actual_pnl_pct is not none %}{{ "%+.2f"|format(a.actual_pnl_pct) }}%{% else %}—{% endif %}
+        </td>
+        <td class="right num {% if a.actual_pnl_amount is not none %}{% if a.actual_pnl_amount >= 0 %}up-text{% else %}down-text{% endif %}{% endif %}">
+          {% if a.actual_pnl_amount is not none %}{{ "{:+,.0f}".format(a.actual_pnl_amount) }}円{% else %}—{% endif %}
+        </td>
+        <td class="muted" style="font-size:11px">{{ a.actual_exit_reason or a.actual_exit_status or "—" }}</td>
+        <td class="muted" style="font-size:11px;max-width:140px;white-space:normal">{{ a.note or "—" }}</td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
 
 {# ── AIダイアリー ── #}
 {% if ai_diary and ai_diary.text %}
@@ -579,5 +655,156 @@ document.querySelectorAll('.js-disable-on-submit').forEach(function(form) {
     }
   });
 });
+
+// ─── H5実弾entry記録モーダル ───
+function openActualEntryModal(r) {
+  r = r || {};
+  document.getElementById('ae-code').value = r.code || '';
+  document.getElementById('ae-name').value = r.name || '';
+  document.getElementById('ae-watchlist-id').value = r.watchlist_id || '';
+  document.getElementById('ae-signal-price').value = r.signal_price || '';
+  document.getElementById('ae-virtual-trade-id').value = r.virtual_trade_id || '';
+  document.getElementById('ae-virtual-entry-price').value = r.virtual_entry_price || '';
+  document.getElementById('ae-case-key').value = r.case_key || '';
+  // default entry date to today JST
+  var today = {{ today_jst_str | tojson }};
+  document.getElementById('ae-entry-date').value = today;
+  document.getElementById('actualEntryOverlay').style.display = 'grid';
+}
+function closeActualEntryModal() {
+  document.getElementById('actualEntryOverlay').style.display = 'none';
+}
+document.getElementById('actualEntryOverlay')?.addEventListener('click', function(e) {
+  if (e.target === this) closeActualEntryModal();
+});
+
+// ─── H5実弾exit記録モーダル ───
+function openActualExitModal(a) {
+  if (!a) return;
+  document.getElementById('ax-trade-id').value = a.id || '';
+  document.getElementById('ax-code-label').textContent = (a.code || '') + ' ' + (a.name || '');
+  document.getElementById('ax-entry-price').value = a.actual_entry_price || '';
+  document.getElementById('ax-quantity').value = a.quantity || '';
+  // default exit date to today JST
+  var today = {{ today_jst_str | tojson }};
+  document.getElementById('ax-exit-date').value = today;
+  document.getElementById('actualExitOverlay').style.display = 'grid';
+}
+function closeActualExitModal() {
+  document.getElementById('actualExitOverlay').style.display = 'none';
+}
+document.getElementById('actualExitOverlay')?.addEventListener('click', function(e) {
+  if (e.target === this) closeActualExitModal();
+});
 </script>
+
+{# ── 実弾entry記録モーダル ── #}
+<div id="actualEntryOverlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:200;place-items:center;padding:16px">
+  <div style="background:var(--bg-panel,#1e2030);border-radius:12px;padding:24px;width:100%;max-width:480px;max-height:90vh;overflow-y:auto">
+    <div style="font-weight:700;font-size:15px;margin-bottom:16px">H5実弾entry記録</div>
+    <div class="muted" style="font-size:12px;line-height:1.6;margin-bottom:16px;white-space:normal">
+      実際に資金を入れた日をday0として3営業日後をtime_stop期限に自動計算します。
+    </div>
+    <form method="post" action="/web/actions/h5/actual_entry" style="display:grid;gap:10px">
+      <input type="hidden" id="ae-watchlist-id" name="watchlist_id">
+      <input type="hidden" id="ae-virtual-trade-id" name="virtual_trade_id">
+      <input type="hidden" id="ae-case-key" name="case_key">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+        <label><span class="muted" style="font-size:12px;display:block;margin-bottom:4px">銘柄コード *</span>
+          <input id="ae-code" name="code" type="text" placeholder="6981" required style="width:100%">
+        </label>
+        <label><span class="muted" style="font-size:12px;display:block;margin-bottom:4px">銘柄名</span>
+          <input id="ae-name" name="name" type="text" placeholder="村田製作所" style="width:100%">
+        </label>
+        <label><span class="muted" style="font-size:12px;display:block;margin-bottom:4px">実弾entry日 * (day0)</span>
+          <input id="ae-entry-date" name="actual_entry_date" type="date" required style="width:100%">
+        </label>
+        <label><span class="muted" style="font-size:12px;display:block;margin-bottom:4px">実弾entry価格 *</span>
+          <input name="actual_entry_price" type="number" step="0.01" placeholder="7700" required style="width:100%">
+        </label>
+        <label><span class="muted" style="font-size:12px;display:block;margin-bottom:4px">entry種別</span>
+          <select name="actual_entry_model" style="width:100%">
+            <option value="">—</option>
+            <option value="same_day_close">同日引け（same_day_close）</option>
+            <option value="next_open">翌日寄り（next_open）</option>
+            <option value="manual_intraday">ザラバ手動（manual_intraday）</option>
+            <option value="manual_close">引け手動（manual_close）</option>
+            <option value="other">その他</option>
+          </select>
+        </label>
+        <label><span class="muted" style="font-size:12px;display:block;margin-bottom:4px">株数</span>
+          <input name="quantity" type="number" step="1" placeholder="100" style="width:100%">
+        </label>
+        <label><span class="muted" style="font-size:12px;display:block;margin-bottom:4px">仮想entry価格（乖離計算用）</span>
+          <input id="ae-virtual-entry-price" name="virtual_entry_price" type="number" step="0.01" style="width:100%">
+        </label>
+        <label><span class="muted" style="font-size:12px;display:block;margin-bottom:4px">シグナル価格</span>
+          <input id="ae-signal-price" name="signal_price" type="number" step="0.01" style="width:100%">
+        </label>
+        <label><span class="muted" style="font-size:12px;display:block;margin-bottom:4px">注文種別</span>
+          <select name="actual_order_type" style="width:100%">
+            <option value="">—</option>
+            <option value="market">成行</option>
+            <option value="limit">指値</option>
+            <option value="close_market">引け成行</option>
+            <option value="close_limit">引け指値</option>
+            <option value="manual">手動</option>
+          </select>
+        </label>
+        <label><span class="muted" style="font-size:12px;display:block;margin-bottom:4px">約定状態</span>
+          <select name="actual_fill_status" style="width:100%">
+            <option value="filled">filled（約定）</option>
+            <option value="partial">partial（一部）</option>
+            <option value="not_filled">not_filled（未約定）</option>
+            <option value="skipped">skipped（見送り）</option>
+          </select>
+        </label>
+      </div>
+      <label><span class="muted" style="font-size:12px;display:block;margin-bottom:4px">メモ</span>
+        <input name="note" type="text" placeholder="H5 Live Limited候補。signal_price以下で寄ったためentry。" style="width:100%">
+      </label>
+      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:8px">
+        <button type="button" class="btn sm" onclick="closeActualEntryModal()">キャンセル</button>
+        <button type="submit" class="btn primary sm">記録する（day3自動計算）</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+{# ── 実弾exit記録モーダル ── #}
+<div id="actualExitOverlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:200;place-items:center;padding:16px">
+  <div style="background:var(--bg-panel,#1e2030);border-radius:12px;padding:24px;width:100%;max-width:400px">
+    <div style="font-weight:700;font-size:15px;margin-bottom:4px">H5実弾exit記録</div>
+    <div id="ax-code-label" class="muted" style="font-size:13px;margin-bottom:16px"></div>
+    <form method="post" action="/web/actions/h5/actual_exit" style="display:grid;gap:10px">
+      <input type="hidden" id="ax-trade-id" name="actual_trade_id">
+      <input type="hidden" id="ax-entry-price" name="actual_entry_price">
+      <input type="hidden" id="ax-quantity" name="quantity">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+        <label><span class="muted" style="font-size:12px;display:block;margin-bottom:4px">exit日 *</span>
+          <input id="ax-exit-date" name="actual_exit_date" type="date" required style="width:100%">
+        </label>
+        <label><span class="muted" style="font-size:12px;display:block;margin-bottom:4px">exit価格 *</span>
+          <input name="actual_exit_price" type="number" step="0.01" required style="width:100%">
+        </label>
+      </div>
+      <label><span class="muted" style="font-size:12px;display:block;margin-bottom:4px">exit理由</span>
+        <select name="actual_exit_reason" style="width:100%">
+          <option value="hd3_time_stop">hd3_time_stop（day3終値撤退）</option>
+          <option value="emergency_stop_12">emergency_stop_12（-12%事故停止）</option>
+          <option value="peak_pullback_2">peak_pullback_2（peak-2%反落）</option>
+          <option value="manual_exit">manual_exit（手動撤退）</option>
+          <option value="other">other</option>
+        </select>
+      </label>
+      <label><span class="muted" style="font-size:12px;display:block;margin-bottom:4px">メモ</span>
+        <input name="exit_note" type="text" placeholder="day3終値撤退など" style="width:100%">
+      </label>
+      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:8px">
+        <button type="button" class="btn sm" onclick="closeActualExitModal()">キャンセル</button>
+        <button type="submit" class="btn primary sm">exit記録・PnL計算</button>
+      </div>
+    </form>
+  </div>
+</div>
 {% endblock %}

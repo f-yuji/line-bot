@@ -5,7 +5,7 @@ import logging
 import os
 import re
 import requests
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import List, Optional
 from zoneinfo import ZoneInfo
 
@@ -2513,12 +2513,21 @@ def web_dashboard():
             supabase.table("actual_trade_logs")
             .select("*")
             .order("created_at", desc=True)
-            .limit(20)
+            .limit(30)
             .execute()
             .data or []
         )
     except Exception as e:
         logger.warning("actual trade logs fetch failed: %s", e)
+
+    # separate holdings (no exit recorded yet)
+    actual_holdings = [
+        a for a in actual_trade_logs
+        if a.get("actual_exit_status") in (None, "holding")
+        and not a.get("actual_exit_date")
+        and a.get("actual_entry_price")
+    ]
+    today_jst_str = datetime.now(ZoneInfo("Asia/Tokyo")).strftime("%Y-%m-%d")
 
     # AI diary (latest rebound_ai_daily log)
     ai_diary: dict = {}
@@ -2557,6 +2566,8 @@ def web_dashboard():
         h5_watch_stats=h5_watch_stats,
         execution_reviews=execution_reviews,
         actual_trade_logs=actual_trade_logs,
+        actual_holdings=actual_holdings,
+        today_jst_str=today_jst_str,
         ai_diary=ai_diary,
     )
 
@@ -4355,6 +4366,163 @@ def web_h5_actual_trade_create():
         logger.exception("h5 actual trade create failed")
         flash(f"実弾ログの保存に失敗しました。db/h5_primary_virtual_trades.sql を再実行してください: {e}", "warning")
     return redirect(url_for("web_trade_assist"))
+
+
+def _get_next_trading_days(start_date: date, n: int) -> list[date]:
+    """Return the next n trading days after start_date.
+
+    Uses stock_feature_snapshots trade_dates (JPX actual calendar).
+    Falls back to weekday-only if DB query fails.
+    """
+    try:
+        rows = (
+            supabase.table("stock_feature_snapshots")
+            .select("trade_date")
+            .gt("trade_date", start_date.isoformat())
+            .order("trade_date")
+            .limit(n * 30)
+            .execute()
+            .data or []
+        )
+        seen: set = set()
+        dates: list[date] = []
+        for row in rows:
+            d = str(row.get("trade_date", ""))[:10]
+            if d and d not in seen:
+                seen.add(d)
+                try:
+                    dates.append(date.fromisoformat(d))
+                except ValueError:
+                    pass
+                if len(dates) >= n:
+                    break
+        if len(dates) >= n:
+            return dates
+    except Exception as e:
+        logger.warning("_get_next_trading_days failed: %s", e)
+    result: list[date] = []
+    current = start_date
+    while len(result) < n:
+        current += timedelta(days=1)
+        if current.weekday() < 5:
+            result.append(current)
+    return result
+
+
+def _build_actual_trade_fields(
+    actual_entry_date_str: str | None,
+    actual_entry_price: float | None,
+    virtual_entry_price: float | None,
+) -> dict:
+    """Calculate derived fields for a new actual trade entry."""
+    fields: dict = {}
+    if actual_entry_date_str and actual_entry_price:
+        try:
+            entry_date = date.fromisoformat(actual_entry_date_str[:10])
+            trading_days = _get_next_trading_days(entry_date, 3)
+            if len(trading_days) >= 1:
+                fields["actual_day1_date"] = trading_days[0].isoformat()
+            if len(trading_days) >= 2:
+                fields["actual_day2_date"] = trading_days[1].isoformat()
+            if len(trading_days) >= 3:
+                fields["actual_day3_exit_due_date"] = trading_days[2].isoformat()
+        except Exception as e:
+            logger.warning("actual trade date calc failed: %s", e)
+        fields["actual_emergency_stop_price"] = round(actual_entry_price * 0.88, 0)
+    if actual_entry_price and virtual_entry_price:
+        fields["entry_slippage_pct"] = round(
+            (actual_entry_price / virtual_entry_price - 1.0) * 100.0, 3
+        )
+    return fields
+
+
+@app.route("/web/actions/h5/actual_entry", methods=["POST"])
+def web_h5_actual_entry():
+    """Record a new H5 live trade entry with auto-computed day1/day2/day3 and emergency stop."""
+    code = _form_text("code")
+    if not code:
+        flash("銘柄コードが必要です。", "warning")
+        return redirect(url_for("web_dashboard"))
+    actual_entry_price = _form_float("actual_entry_price")
+    virtual_entry_price = _form_float("virtual_entry_price")
+    actual_entry_date_str = _form_text("actual_entry_date")
+    derived = _build_actual_trade_fields(actual_entry_date_str, actual_entry_price, virtual_entry_price)
+    payload = {
+        "code": code,
+        "name": _form_text("name") or code,
+        "case_key": _form_text("case_key") or H5_PRIMARY_CASE_KEY,
+        "virtual_trade_id": _form_text("virtual_trade_id") or None,
+        "watchlist_id": _form_text("watchlist_id") or None,
+        "signal_date": _form_text("signal_date") or None,
+        "signal_price": _form_float("signal_price"),
+        "virtual_entry_date": _form_text("virtual_entry_date") or None,
+        "virtual_entry_price": virtual_entry_price,
+        "virtual_exit_due_date": _form_text("virtual_exit_due_date") or None,
+        "actual_entry_date": actual_entry_date_str or None,
+        "actual_entry_price": actual_entry_price,
+        "actual_entry_model": _form_text("actual_entry_model") or None,
+        "actual_order_type": _form_text("actual_order_type") or None,
+        "actual_fill_status": _form_text("actual_fill_status") or "filled",
+        "quantity": _form_float("quantity"),
+        "lot_amount": _form_float("lot_amount"),
+        "actual_exit_status": "holding",
+        "actual_exit_due_reason": "hd3_time_stop",
+        "trade_date": (actual_entry_date_str or "")[:10] or None,
+        "note": _form_text("note"),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        **derived,
+    }
+    try:
+        supabase.table("actual_trade_logs").insert(payload).execute()
+        d3 = derived.get("actual_day3_exit_due_date", "?")
+        flash(f"{code} の実弾entryを記録しました。day3期限: {d3}", "success")
+    except Exception as e:
+        logger.exception("actual entry create failed")
+        flash(f"実弾entryの保存に失敗しました。db/actual_trade_logs_v2.sql を実行してください: {e}", "warning")
+    return redirect(url_for("web_dashboard"))
+
+
+@app.route("/web/actions/h5/actual_exit", methods=["POST"])
+def web_h5_actual_exit():
+    """Record exit for an existing H5 live trade, computing PnL."""
+    trade_id = _form_text("actual_trade_id")
+    if not trade_id:
+        flash("actual_trade_id がありません。", "warning")
+        return redirect(url_for("web_dashboard"))
+    actual_exit_price = _form_float("actual_exit_price")
+    actual_entry_price = _form_float("actual_entry_price")
+    quantity = _form_float("quantity")
+    actual_exit_reason = _form_text("actual_exit_reason") or "hd3_time_stop"
+    status_map = {
+        "hd3_time_stop": "time_stopped",
+        "emergency_stop_12": "stopped",
+        "peak_pullback_2": "peak_pullback_exited",
+        "manual_exit": "exited",
+        "other": "exited",
+    }
+    actual_exit_status = status_map.get(actual_exit_reason, "exited")
+    payload: dict = {
+        "actual_exit_date": _form_text("actual_exit_date") or None,
+        "actual_exit_price": actual_exit_price,
+        "actual_exit_reason": actual_exit_reason,
+        "actual_exit_status": actual_exit_status,
+        "note": _form_text("exit_note"),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    if actual_exit_price and actual_entry_price:
+        pnl_pct = (actual_exit_price / actual_entry_price - 1.0) * 100.0
+        payload["actual_pnl_pct"] = round(pnl_pct, 3)
+        if quantity:
+            payload["actual_pnl_amount"] = round(
+                (actual_exit_price - actual_entry_price) * quantity, 0
+            )
+    try:
+        supabase.table("actual_trade_logs").update(payload).eq("id", trade_id).execute()
+        flash("実弾exitを記録しました。", "success")
+    except Exception as e:
+        logger.exception("actual exit update failed")
+        flash(f"実弾exitの保存に失敗しました: {e}", "warning")
+    return redirect(url_for("web_dashboard"))
 
 
 def _entry_mode_migration_status() -> bool:
