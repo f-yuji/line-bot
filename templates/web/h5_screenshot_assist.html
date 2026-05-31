@@ -1,0 +1,113 @@
+{% extends "web/base.html" %}
+{% block title %}H5スクショ補助 - {{ "買い" if side == "buy" else "売り" }}{% endblock %}
+{% block page_label %}H5 SCREENSHOT{% endblock %}
+
+{% block content %}
+<div class="page-head">
+  <h1 class="page-title">H5スクショ補助<small>{{ "買い" if side == "buy" else "売り" }}スクショ読取</small></h1>
+  <a href="/web/dashboard" class="btn sm">← ダッシュボード</a>
+</div>
+
+<div class="panel" style="margin-bottom:14px;padding:14px 16px">
+  <div class="muted" style="font-size:12px;line-height:1.8;white-space:normal">
+    SBI証券の注文・約定スクショをAIで読み取り、実弾{{ "entry" if side == "buy" else "exit" }}記録フォームに仮入力します。<br>
+    AI読み取り結果は<strong>必ず目視確認</strong>してから登録してください。自動登録はされません。<br>
+    対応形式：PNG / JPG / WEBP　最大10MB
+  </div>
+</div>
+
+<div class="section-h">{{ "買い" if side == "buy" else "売り" }}スクショをアップロード</div>
+<div class="panel" style="margin-bottom:14px">
+  <form method="post"
+        action="/web/h5/screenshot-assist/{{ side }}/analyze"
+        enctype="multipart/form-data"
+        style="padding:20px 16px;display:grid;gap:16px">
+
+    <div id="drop-zone" style="
+      border:2px dashed var(--border,#333);
+      border-radius:8px;
+      padding:32px 16px;
+      text-align:center;
+      cursor:pointer;
+      transition:border-color .2s;
+    ">
+      <div style="font-size:13px;color:var(--fg-muted,#888);margin-bottom:12px">
+        ファイルをドロップ、またはクリックして選択
+      </div>
+      <input id="screenshot-input" type="file" name="screenshot"
+             accept=".png,.jpg,.jpeg,.webp"
+             required
+             style="display:none">
+      <button type="button" class="btn sm"
+              onclick="document.getElementById('screenshot-input').click()">
+        ファイルを選ぶ
+      </button>
+      <div id="file-name" class="muted" style="margin-top:10px;font-size:12px"></div>
+      <div id="preview-wrap" style="margin-top:12px;display:none">
+        <img id="preview-img" style="max-width:100%;max-height:240px;border-radius:6px;border:1px solid var(--border,#333)">
+      </div>
+    </div>
+
+    <div style="display:flex;gap:10px;align-items:center">
+      <span class="muted" style="font-size:12px">読取モード：</span>
+      <span class="tag {{ 'is-signal' if side == 'buy' else '' }}" style="font-size:13px;font-weight:600">
+        {{ "BUY（買いスクショ）" if side == "buy" else "SELL（売りスクショ）" }}
+      </span>
+      {% if side == "buy" %}
+        <a href="/web/h5/screenshot-assist/sell" class="btn sm" style="font-weight:normal">売りに切り替え</a>
+      {% else %}
+        <a href="/web/h5/screenshot-assist/buy" class="btn sm" style="font-weight:normal">買いに切り替え</a>
+      {% endif %}
+    </div>
+
+    <div>
+      <button type="submit" class="btn primary sm">AI読取を実行する</button>
+      <span class="muted" style="font-size:11px;margin-left:8px">GPT-4oで読み取ります。数秒かかります。</span>
+    </div>
+  </form>
+</div>
+
+<script>
+(function () {
+  var input = document.getElementById('screenshot-input');
+  var zone  = document.getElementById('drop-zone');
+  var fname = document.getElementById('file-name');
+  var wrap  = document.getElementById('preview-wrap');
+  var img   = document.getElementById('preview-img');
+
+  function handleFile(file) {
+    if (!file) return;
+    fname.textContent = file.name + ' (' + (file.size / 1024).toFixed(0) + ' KB)';
+    var reader = new FileReader();
+    reader.onload = function(e) {
+      img.src = e.target.result;
+      wrap.style.display = '';
+    };
+    reader.readAsDataURL(file);
+  }
+
+  input.addEventListener('change', function() {
+    handleFile(this.files[0]);
+  });
+
+  zone.addEventListener('dragover', function(e) {
+    e.preventDefault();
+    zone.style.borderColor = 'var(--accent,#4af)';
+  });
+  zone.addEventListener('dragleave', function() {
+    zone.style.borderColor = '';
+  });
+  zone.addEventListener('drop', function(e) {
+    e.preventDefault();
+    zone.style.borderColor = '';
+    var file = e.dataTransfer.files[0];
+    if (file) {
+      var dt = new DataTransfer();
+      dt.items.add(file);
+      input.files = dt.files;
+      handleFile(file);
+    }
+  });
+})();
+</script>
+{% endblock %}

@@ -1,0 +1,204 @@
+{% extends "web/base.html" %}
+{% block title %}H5 Stored Forward Test{% endblock %}
+{% block page_label %}H5 VERIFY{% endblock %}
+
+{% macro pct(v) -%}
+  {%- if v is none or v == "" -%}<span class="muted">-</span>
+  {%- else -%}
+    {%- set fv = v|float -%}
+    <span class="{{ 'up-text' if fv > 0 else ('down-text' if fv < 0 else 'muted') }} num">{{ "%+.2f"|format(fv) }}%</span>
+  {%- endif -%}
+{%- endmacro %}
+
+{% macro tag_val(v) -%}<span class="tag">{{ v if v is not none and v != "" else "-" }}</span>{%- endmacro %}
+
+{% block content %}
+{% set summary = sf.summary or {} %}
+
+<div class="page-head">
+  <h1 class="page-title">H5 Stored Forward Test<small>検証・ログ確認用</small></h1>
+  <a href="/web/research-db" class="btn sm">← 検証データベース</a>
+</div>
+
+<div class="panel" style="margin-bottom:10px;padding:12px 16px">
+  <div class="muted" style="font-size:12px;line-height:1.8;white-space:normal">
+    このページは検証・記録用です。保存済みAIスコア model_predictions を使ったforward-test候補を表示します。<br>
+    active_model再スコア候補とは分離しています。fallbackが発生した候補は本命扱いしません。<br>
+    <strong>Primary未昇格 / 自動購入対象ではありません。</strong>
+  </div>
+</div>
+
+{# ─── 1. 状態サマリー ─── #}
+<div class="section-h" style="color:var(--accent);margin-top:4px">Stored Forward Test 状態</div>
+<div class="panel" style="margin-bottom:10px">
+  {% if not sf.available %}
+  <div style="padding:14px 16px">
+    <div class="muted" style="white-space:normal">H5 Stored Forward Test出力がありません。先に以下を実行してください：</div>
+    <div class="mono" style="font-size:11px;margin-top:8px;white-space:normal;word-break:break-all">
+      python scripts/run_h5_stored_forward_test.py --trade-date YYYY-MM-DD --model-key rebound_lgbm_5d --model-version latest --score-source stored_predictions --allow-score-fallback false --write-latest true
+    </div>
+  </div>
+  {% else %}
+  <div style="padding:12px 16px">
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:6px">
+      {{ tag_val("trade_date " ~ (summary.trade_date or "-")) }}
+      {{ tag_val("model " ~ (summary.model_key or "-") ~ " / " ~ (summary.model_version or "-")) }}
+      {{ tag_val("score_source " ~ (summary.score_source or "stored_predictions")) }}
+      {{ tag_val("saved " ~ (summary.saved_predictions_count or "-")) }}
+      {{ tag_val("loaded " ~ (summary.loaded_candidates_total or "-")) }}
+      <span class="tag {{ 'is-signal' if (summary.fallback_used_count|int) > 0 else '' }}">fallback {{ summary.fallback_used_count or "0" }}</span>
+      <span class="tag {{ 'is-signal' if summary.active_model_called == 'true' else '' }}">active_model_called {{ summary.active_model_called or "false" }}</span>
+      <span class="tag {{ 'is-signal' if summary.result == 'PASS' else 'is-warn' }}">{{ summary.result or "-" }}</span>
+    </div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+      {{ tag_val("H5_full " ~ (summary.H5_full_count or (sf.h5_full_candidates|length))) }}
+      {{ tag_val("K_no_normal " ~ (summary.K_no_normal_count or (sf.k_no_normal_candidates|length))) }}
+      {{ tag_val("AI_plus_drop " ~ (summary.AI_plus_drop_count or (sf.ai_plus_drop_candidates|length))) }}
+      {{ tag_val("H5落選参考 " ~ (sf.h5_rejected_candidates|length)) }}
+      {{ tag_val("missing " ~ (summary.missing_prediction_count or "0")) }}
+    </div>
+    {% if sf.warnings %}
+    <div class="muted" style="color:var(--dn);font-size:12px;margin-top:8px;white-space:normal">
+      {% for w in sf.warnings %}<div>⚠ {{ w }}</div>{% endfor %}
+    </div>
+    {% endif %}
+  </div>
+  {% endif %}
+</div>
+
+{% macro candidate_table(rows, empty_text) -%}
+<div class="table-wrap">
+  <table class="tbl">
+    <thead><tr>
+      <th>code</th><th>name</th><th class="right">AI</th><th>stage</th>
+      <th class="right">drop20</th><th>regime</th><th class="right">overheat</th>
+      <th class="right">margin</th><th>sector</th>
+      <th>score_source</th><th>model_version</th><th>pred_date</th>
+      <th>manual</th><th>auto_buy</th>
+    </tr></thead>
+    <tbody>
+    {% for r in rows %}
+    <tr>
+      <td class="code">{{ r.code }}</td>
+      <td class="name">{{ r.name or "" }}</td>
+      <td class="right num">{% if r.signal_probability is not none %}{{ "%.4f"|format(r.signal_probability|float) }}{% else %}-{% endif %}</td>
+      <td><span class="tag">{{ r.signal_stage or "-" }}</span></td>
+      <td class="right num">{% if r.drop_from_20d_high_pct is not none %}{{ "%+.2f"|format(r.drop_from_20d_high_pct|float) }}%{% else %}-{% endif %}</td>
+      <td class="muted">{{ r.market_regime or "-" }}</td>
+      <td class="right num">{{ r.overheat_score if r.overheat_score is not none else "-" }}</td>
+      <td class="right num">{% if r.margin_ratio is not none %}{{ "%.2f"|format(r.margin_ratio|float) }}{% else %}-{% endif %}</td>
+      <td class="muted">{{ r.sector or "-" }}</td>
+      <td><span class="tag">{{ r.score_source or "-" }}</span>{% if r.score_fallback_used %}<span class="badge closed">fallback</span>{% endif %}</td>
+      <td class="muted" style="font-size:11px">{{ r.model_version or "-" }}</td>
+      <td class="muted" style="font-size:11px">{{ r.prediction_date or "-" }}</td>
+      <td>{% if r.manual_review_required %}<span class="badge signal">required</span>{% else %}<span class="muted">-</span>{% endif %}</td>
+      <td><span class="badge closed">false</span></td>
+    </tr>
+    {% else %}
+    <tr><td colspan="14" class="center muted" style="padding:14px">{{ empty_text }}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+{%- endmacro %}
+
+{# ─── 2. H5 Full ─── #}
+<div class="section-h" >H5 Full Candidates</div>
+<div class="panel" style="margin-bottom:10px">
+  <div style="padding:10px 16px 6px">
+    <div class="muted" style="font-size:12px;white-space:normal">
+      保存済みAIスコアでH5_full条件を満たしたforward-test候補。手動確認必須 / Primary未昇格 / 自動購入対象外。
+    </div>
+  </div>
+  {{ candidate_table(sf.h5_full_candidates or [], "H5 Full候補なし") }}
+</div>
+
+{# ─── 3. K_no_normal ─── #}
+<div class="section-h" >K_no_normal 比較候補</div>
+<div class="panel" style="margin-bottom:10px">
+  <div style="padding:10px 16px 6px">
+    <div class="muted" style="font-size:12px;white-space:normal">
+      H5_fullのうち market_regime が normal / euphoria ではない補助比較枠。Primaryではありません。
+    </div>
+  </div>
+  {{ candidate_table(sf.k_no_normal_candidates or [], "K_no_normal候補なし") }}
+</div>
+
+{# ─── 4. H5落選参考 ─── #}
+<div class="section-h" >H5落選参考（AI急落のみ通過）</div>
+<div class="panel" style="margin-bottom:10px">
+  <div style="padding:10px 16px 6px">
+    <div class="muted" style="font-size:12px;white-space:normal">
+      AI &gt;= 0.65 かつ 20日高値比 -8%以上は満たしたが、H5_full条件は未達の銘柄。購入候補ではありません。H5から落ちた理由の確認用です。
+    </div>
+  </div>
+  {{ candidate_table(sf.h5_rejected_candidates or [], "H5落選参考なし") }}
+</div>
+
+{# ─── 5. daily_summary ─── #}
+<div class="section-h" >forward_test_daily_summary（直近20件）</div>
+<div class="panel" style="margin-bottom:10px">
+  <div class="table-wrap">
+    <table class="tbl">
+      <thead><tr>
+        <th>trade_date</th><th>model_version</th><th>score_source</th>
+        <th class="right">saved</th><th class="right">loaded</th>
+        <th class="right">H5_full</th><th class="right">K_no_normal</th>
+        <th class="right">AI_plus_drop</th><th class="right">fallback</th>
+        <th>result</th>
+      </tr></thead>
+      <tbody>
+      {% for r in (sf.daily_summary or [])|reverse %}
+      <tr>
+        <td class="muted">{{ r.trade_date or "-" }}</td>
+        <td class="muted" style="font-size:11px">{{ r.model_version or "-" }}</td>
+        <td class="muted">{{ r.score_source or "-" }}</td>
+        <td class="right num">{{ r.saved_predictions_count or "-" }}</td>
+        <td class="right num">{{ r.loaded_candidates_total or "-" }}</td>
+        <td class="right num">{{ r.H5_full_count or "0" }}</td>
+        <td class="right num">{{ r.K_no_normal_count or "0" }}</td>
+        <td class="right num">{{ r.AI_plus_drop_count or "0" }}</td>
+        <td class="right num {{ 'down-text' if (r.fallback_used_count|int) > 0 else '' }}">{{ r.fallback_used_count or "0" }}</td>
+        <td><span class="tag {{ 'is-signal' if r.result == 'PASS' else 'is-warn' }}">{{ r.result or "-" }}</span></td>
+      </tr>
+      {% else %}
+      <tr><td colspan="10" class="center muted" style="padding:14px">daily_summaryなし</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+{# ─── 6. candidate_log ─── #}
+<div class="section-h" >forward_test_candidate_log（直近50件）</div>
+<div class="panel">
+  <div class="table-wrap">
+    <table class="tbl">
+      <thead><tr>
+        <th>trade_date</th><th>code</th><th>name</th><th>strategy_group</th>
+        <th class="right">AI</th><th>stage</th><th>score_source</th>
+        <th>model_version</th><th>exit</th><th>status</th>
+      </tr></thead>
+      <tbody>
+      {% for r in (sf.candidate_log or [])|reverse %}
+      <tr>
+        <td class="muted">{{ r.trade_date or "-" }}</td>
+        <td class="code">{{ r.code or "-" }}</td>
+        <td class="name">{{ r.name or "-" }}</td>
+        <td><span class="tag">{{ r.strategy_group or "-" }}</span></td>
+        <td class="right num">{{ "%.4f"|format(r.signal_probability|float) if r.signal_probability else "-" }}</td>
+        <td><span class="tag">{{ r.signal_stage or "-" }}</span></td>
+        <td class="muted">{{ r.score_source or "-" }}</td>
+        <td class="muted" style="font-size:11px">{{ r.model_version or "-" }}</td>
+        <td class="muted">{{ r.planned_exit_model or "-" }}</td>
+        <td><span class="tag">{{ r.result_status or "-" }}</span></td>
+      </tr>
+      {% else %}
+      <tr><td colspan="10" class="center muted" style="padding:14px">candidate_logなし</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+{% endblock %}

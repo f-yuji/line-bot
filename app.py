@@ -2016,6 +2016,7 @@ def _h5_float(value) -> float | None:
 
 
 H5_STORED_FORWARD_DIR = Path("outputs") / "h5_stored_forward_test"
+SCREENSHOT_UPLOAD_DIR = Path("uploads") / "h5_screenshots"
 
 
 def _csv_bool(value) -> bool:
@@ -2175,6 +2176,27 @@ def load_latest_h5_stored_candidates(base_dir: Path | None = None) -> dict:
         logger.warning("load latest h5 stored candidates failed: %s", e)
         result["error"] = str(e)
     return result
+
+
+def load_h5_stored_forward_test_context(base_dir: Path | None = None) -> dict:
+    """Load full H5 stored forward-test context for the verification page."""
+    base = load_latest_h5_stored_candidates(base_dir)
+    candidate_log_path = (base_dir or H5_STORED_FORWARD_DIR) / "forward_test_candidate_log.csv"
+    daily_summary_path = (base_dir or H5_STORED_FORWARD_DIR) / "forward_test_daily_summary.csv"
+
+    all_rows = base.get("h5_candidates") or []
+    h5_rejected = [
+        row for row in all_rows
+        if _csv_bool(row.get("AI_plus_drop")) and not _csv_bool(row.get("H5_full"))
+    ]
+
+    candidate_log = _read_csv_dicts(candidate_log_path)
+    daily_summary = _read_csv_dicts(daily_summary_path)
+
+    base["h5_rejected_candidates"] = h5_rejected
+    base["candidate_log"] = candidate_log[-50:]
+    base["daily_summary"] = daily_summary[-20:]
+    return base
 
 
 def _h5_intraday_static_check(row: dict) -> tuple[bool, str]:
@@ -2623,8 +2645,6 @@ def web_dashboard():
     except Exception as e:
         logger.warning("h5 watchlist fetch failed: %s", e)
 
-    h5_stored_forward = load_latest_h5_stored_candidates()
-
     # H5 open positions
     h5_open_trades: list[dict] = []
     try:
@@ -2730,7 +2750,6 @@ def web_dashboard():
         h5_today_evals=h5_today_evals,
         h5_watch_rows=h5_watch_rows,
         h5_watch_stats=h5_watch_stats,
-        h5_stored_forward=h5_stored_forward,
         execution_reviews=execution_reviews,
         actual_trade_logs=actual_trade_logs,
         actual_holdings=actual_holdings,
@@ -5726,6 +5745,97 @@ def web_research_db():
         daily_logs=daily_logs,
         cron_logs=cron_logs,
         market_adjustment=_current_market_adjustment(),
+    )
+
+
+@app.route("/web/research-db/h5-stored-forward-test")
+def web_h5_stored_forward_test():
+    ctx = load_h5_stored_forward_test_context()
+    return render_template("web/h5_stored_forward_test.html", sf=ctx)
+
+
+@app.route("/web/h5/screenshot-assist/<side>")
+def web_h5_screenshot_assist(side):
+    if side not in ("buy", "sell"):
+        flash("side は buy または sell のみ有効です。", "warning")
+        return redirect(url_for("web_dashboard"))
+    return render_template("web/h5_screenshot_assist.html", side=side)
+
+
+@app.route("/web/h5/screenshot-assist/<side>/analyze", methods=["POST"])
+def web_h5_screenshot_assist_analyze(side):
+    import uuid as _uuid
+    from services.h5_screenshot_assist import (
+        allowed_file,
+        analyze_sbi_screenshot_with_ai,
+        normalize_screenshot_extract,
+        validate_screenshot_extract,
+        match_buy_h5_candidate,
+        match_sell_open_position,
+        build_entry_prefill,
+        build_exit_prefill,
+    )
+
+    if side not in ("buy", "sell"):
+        flash("side は buy または sell のみ有効です。", "warning")
+        return redirect(url_for("web_dashboard"))
+
+    f = request.files.get("screenshot")
+    if not f or not f.filename:
+        flash("スクショファイルが選択されていません。", "warning")
+        return redirect(url_for("web_h5_screenshot_assist", side=side))
+
+    if not allowed_file(f.filename):
+        flash("対応していないファイル形式です（png / jpg / jpeg / webp）。", "warning")
+        return redirect(url_for("web_h5_screenshot_assist", side=side))
+
+    data = f.read()
+    if len(data) > 10 * 1024 * 1024:
+        flash("ファイルサイズが10MBを超えています。", "warning")
+        return redirect(url_for("web_h5_screenshot_assist", side=side))
+
+    ext = Path(f.filename).suffix.lstrip(".").lower()
+    fname = f"{_uuid.uuid4().hex}.{ext}"
+    upload_path = SCREENSHOT_UPLOAD_DIR / fname
+    SCREENSHOT_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    upload_path.write_bytes(data)
+
+    try:
+        raw = analyze_sbi_screenshot_with_ai(upload_path, side, openai_client)
+    except Exception as e:
+        logger.exception("screenshot AI call failed")
+        flash(f"AI Vision 呼び出しに失敗しました: {e}", "warning")
+        return redirect(url_for("web_h5_screenshot_assist", side=side))
+
+    result = normalize_screenshot_extract(raw)
+    errors, warnings_list = validate_screenshot_extract(result, side)
+
+    if side == "buy":
+        match = match_buy_h5_candidate(result)
+        prefill = build_entry_prefill(result, match)
+    else:
+        try:
+            resp = (
+                supabase.table("actual_trade_logs")
+                .select("*")
+                .eq("actual_exit_status", "holding")
+                .execute()
+            )
+            open_positions = resp.data or []
+        except Exception as e:
+            logger.warning("screenshot assist: open positions load failed: %s", e)
+            open_positions = []
+        match = match_sell_open_position(result, open_positions)
+        prefill = build_exit_prefill(result, match)
+
+    return render_template(
+        "web/h5_screenshot_assist_result.html",
+        side=side,
+        result=result,
+        errors=errors,
+        warnings=warnings_list,
+        match=match,
+        prefill=prefill,
     )
 
 
