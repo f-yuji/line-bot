@@ -570,12 +570,13 @@
   {% if h5_primary %}
   {% set h5_primary_rows = rows | selectattr('h5_primary_match') | list %}
   <div class="ta-h5-note">
-    <strong>H5 Live Limited 実弾候補: {{ h5_primary_rows|selectattr('is_live_candidate')|list|length }}件 / H5 Research: {{ h5_primary_rows|length }}件</strong>
+    <strong>H5 購入検討候補: {{ h5_primary_rows|length }}件 / 手動確認 / Primary未昇格</strong>
     <div>AI 65%以上 / 20日高値比 -8%以上 / panic_selloff除外 / 過熱 cool・mild / 信用倍率3〜30倍 / 3営業日目終値撤退 / -12%事故停止（ピーク反落なし）</div>
     {% if not h5_primary_rows %}
-    <div>本日のH5条件に一致する購入候補はありません。現行ロジック候補は比較・観察用として下に表示します。</div>
+    <div>本日のH5条件に一致する候補はありません。</div>
     {% endif %}
     <div class="muted">{{ h5_primary.entry_execution_note }} 翌日終値でのentryは非推奨です。yfinance現在値は遅延・欠損のあり得る参考値なので、発注判断は証券口座の現在値・板で確認してください。</div>
+    <div class="muted" style="margin-top:4px">実購入判断は <span class="mono">outputs/h5_stored_forward_test/latest_h5_full_candidates.csv</span> を確認してください。auto_buy_enabled=false / stored_predictions基準。</div>
   </div>
   {% endif %}
 
@@ -593,7 +594,7 @@
           <div>
             {% if r.source_label %}<div class="ta-source">{{ r.source_label }}</div>{% endif %}
             {% if r.h5_primary_match %}
-              <div class="ta-h5-tag">{{ 'H5 LIVE' if r.is_live_candidate else 'H5 RESEARCH' }}</div>
+              <div class="ta-h5-tag">H5</div>
             {% endif %}
             <div class="ta-status {{ 'is-strong' if strong else '' }}">{{ r.display_status }}</div>
           </div>
@@ -601,15 +602,9 @@
 
         {% if r.h5_primary_match %}
         <div class="ta-h5-note" style="margin:0">
-          <strong>{{ '実弾候補 / 同日終値付近entry前提' if r.is_live_candidate else '研究枠 / 制限なし仮想追跡' }}</strong>
+          <strong>購入検討候補 / 手動確認 / 保存済AIスコア基準</strong>
           <div>20日高値比 {{ pct(r.drop_from_20d_high_pct) }} / 過熱 {{ r.h5_overheat_score }} / 出口 3営業日終値・事故停止-12%（ピーク反落なし）</div>
-          <div class="muted">
-            {% if r.is_live_candidate %}
-              Live順位 {{ r.selected_rank or '-' }} / {{ r.h5_candidate_count or '-' }}件中。翌日寄りが前日終値比 +2% を超える場合は飛びつき警戒。
-            {% else %}
-              Research枠です。実弾対象外として仮想追跡します。{% if r.live_skip_reason %}Live対象外理由: {{ r.live_skip_reason }}{% endif %}
-            {% endif %}
-          </div>
+          <div class="muted">翌日寄りが前日終値比 +2% を超える場合は飛びつき警戒。実購入はlatest_h5_full_candidates.csvで確認。</div>
         </div>
         {% elif r.h5_skip_reason %}
         <div class="muted" style="font-size:12px">H5対象外: {{ r.h5_skip_reason }}</div>
@@ -626,9 +621,9 @@
           </div>
         </div>
 
-        {% if r.h5_primary_match and r.is_live_candidate %}
+        {% if r.h5_primary_match %}
         <div class="ta-entry-check">
-          <div class="ta-section-label" style="margin:0">実弾エントリー価格チェック</div>
+          <div class="ta-section-label" style="margin:0">エントリー価格チェック（参考）</div>
           <div class="ta-entry-check-grid">
             <div>
               <span>yfinance現在値</span>
