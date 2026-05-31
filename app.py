@@ -5764,7 +5764,8 @@ def web_h5_screenshot_assist(side):
 
 @app.route("/web/h5/screenshot-assist/<side>/analyze", methods=["POST"])
 def web_h5_screenshot_assist_analyze(side):
-    import uuid as _uuid
+    import re as _re
+    from datetime import datetime as _dt
     from services.h5_screenshot_assist import (
         allowed_file,
         analyze_sbi_screenshot_with_ai,
@@ -5795,7 +5796,9 @@ def web_h5_screenshot_assist_analyze(side):
         return redirect(url_for("web_h5_screenshot_assist", side=side))
 
     ext = Path(f.filename).suffix.lstrip(".").lower()
-    fname = f"{_uuid.uuid4().hex}.{ext}"
+    safe_orig = _re.sub(r"[^\w\-]", "_", Path(f.filename).stem)[:40]
+    ts = _dt.now().strftime("%Y%m%d_%H%M%S")
+    fname = f"{ts}_{safe_orig}.{ext}"
     upload_path = SCREENSHOT_UPLOAD_DIR / fname
     SCREENSHOT_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
     upload_path.write_bytes(data)
@@ -5812,7 +5815,8 @@ def web_h5_screenshot_assist_analyze(side):
 
     if side == "buy":
         match = match_buy_h5_candidate(result)
-        prefill = build_entry_prefill(result, match)
+        prefill = build_entry_prefill(result, match, screenshot_filename=fname)
+        entry_gap = prefill.pop("_entry_gap", {})
     else:
         try:
             resp = (
@@ -5826,7 +5830,8 @@ def web_h5_screenshot_assist_analyze(side):
             logger.warning("screenshot assist: open positions load failed: %s", e)
             open_positions = []
         match = match_sell_open_position(result, open_positions)
-        prefill = build_exit_prefill(result, match)
+        prefill = build_exit_prefill(result, match, screenshot_filename=fname)
+        entry_gap = {}
 
     return render_template(
         "web/h5_screenshot_assist_result.html",
@@ -5836,6 +5841,8 @@ def web_h5_screenshot_assist_analyze(side):
         warnings=warnings_list,
         match=match,
         prefill=prefill,
+        entry_gap=entry_gap,
+        screenshot_filename=fname,
     )
 
 

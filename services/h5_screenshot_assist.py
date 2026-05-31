@@ -238,19 +238,62 @@ def match_sell_open_position(result: dict, actual_trade_logs: list[dict]) -> dic
     return {"matched": False, "position": None}
 
 
-def build_entry_prefill(result: dict, match: dict) -> dict:
+def compute_entry_gap(actual_price: float, candidate: dict) -> dict:
+    """Compute actual entry price gap vs candidate reference price.
+
+    Returns dict with gap_pct, reference_price, reference_field, warning.
+    warning values: None | "warning" (>=2%) | "strong_warning" (>=3%) | "check_material" (<=-3%)
+    """
+    for field in ("entry_price", "close", "signal_price"):
+        ref_raw = candidate.get(field)
+        try:
+            ref_f = float(str(ref_raw or "").replace(",", "").replace("円", "").strip())
+            if ref_f > 0:
+                gap = round((actual_price / ref_f - 1.0) * 100.0, 3)
+                warning = None
+                if gap >= 3.0:
+                    warning = "strong_warning"
+                elif gap >= 2.0:
+                    warning = "warning"
+                elif gap <= -3.0:
+                    warning = "check_material"
+                return {"gap_pct": gap, "reference_price": ref_f, "reference_field": field, "warning": warning}
+        except (ValueError, TypeError):
+            continue
+    return {"gap_pct": None, "reference_price": None, "reference_field": None, "warning": "no_reference"}
+
+
+def build_entry_prefill(result: dict, match: dict, screenshot_filename: str | None = None) -> dict:
     """Build prefill dict for actual entry form."""
     candidate = match.get("candidate") or {}
+    matched = match.get("matched", False)
+    actual_price = result.get("price")
+
+    entry_gap: dict = {}
+    if matched and actual_price:
+        try:
+            entry_gap = compute_entry_gap(float(actual_price), candidate)
+        except (ValueError, TypeError):
+            entry_gap = {}
+
+    strategy_group = candidate.get("strategy_group") or ("H5_full" if matched else "manual_unmatched")
     note_parts = [
-        "H5 Screenshot Assist buy",
-        "broker=" + str(result.get("broker") or "SBI"),
-        "source=screenshot_ai",
-        f"model_result_confidence={result.get('confidence', 0):.2f}",
-        f"matched_h5_candidate={match.get('matched', False)}",
+        "H5 Stored screenshot entry",
+        f"candidate_trade_date={candidate.get('trade_date') or ''}",
+        f"score_source={candidate.get('score_source') or ''}",
+        f"model_version={candidate.get('model_version') or ''}",
+        f"signal_probability={candidate.get('signal_probability') or ''}",
+        f"strategy_group={strategy_group}",
+        f"ai_confidence={result.get('confidence', 0):.2f}",
     ]
+    if entry_gap.get("gap_pct") is not None:
+        note_parts.append(f"actual_entry_gap_pct={entry_gap['gap_pct']:+.3f}")
+    if screenshot_filename:
+        note_parts.append(f"screenshot={screenshot_filename}")
+
     return {
         "code": result.get("code") or "",
-        "name": result.get("name") or "",
+        "name": result.get("name") or candidate.get("name") or "",
         "actual_entry_price": result.get("price") or "",
         "quantity": result.get("quantity") or "",
         "actual_order_type": result.get("order_type") or "market",
@@ -259,11 +302,12 @@ def build_entry_prefill(result: dict, match: dict) -> dict:
         "case_key": "h5_ai65_hd3_est12_cm_range330_live_limited",
         "actual_entry_model": "H5_stored_predictions",
         "signal_price": candidate.get("close") or candidate.get("signal_price") or "",
-        "note": " / ".join(note_parts),
+        "note": "\n".join(note_parts),
+        "_entry_gap": entry_gap,
     }
 
 
-def build_exit_prefill(result: dict, match: dict) -> dict:
+def build_exit_prefill(result: dict, match: dict, screenshot_filename: str | None = None) -> dict:
     """Build prefill dict for actual exit form."""
     position = match.get("position") or {}
     entry_price = float(position.get("actual_entry_price") or 0) or None
@@ -272,12 +316,12 @@ def build_exit_prefill(result: dict, match: dict) -> dict:
     if entry_price and exit_price:
         pnl_pct = round((exit_price / entry_price - 1.0) * 100.0, 3)
     note_parts = [
-        "H5 Screenshot Assist sell",
-        "broker=" + str(result.get("broker") or "SBI"),
-        "source=screenshot_ai",
-        f"model_result_confidence={result.get('confidence', 0):.2f}",
+        "H5 Stored screenshot exit",
         f"matched_open_position={match.get('matched', False)}",
+        f"ai_confidence={result.get('confidence', 0):.2f}",
     ]
+    if screenshot_filename:
+        note_parts.append(f"screenshot={screenshot_filename}")
     return {
         "actual_trade_id": position.get("id") or "",
         "code": result.get("code") or "",
@@ -288,5 +332,5 @@ def build_exit_prefill(result: dict, match: dict) -> dict:
         "actual_entry_price": position.get("actual_entry_price") or "",
         "actual_exit_reason": "manual_exit",
         "estimated_pnl_pct": pnl_pct,
-        "exit_note": " / ".join(note_parts),
+        "exit_note": "\n".join(note_parts),
     }
