@@ -323,6 +323,109 @@
   {% endif %}
 </div>
 
+{% set sf = h5_stored_forward or {} %}
+{% set sf_summary = sf.summary or {} %}
+<div class="section-h" style="color:var(--accent);margin-top:12px">
+  H5 Stored Forward Test
+</div>
+<div class="panel" style="border-color:var(--accent-dim)">
+  <div style="padding:12px 16px;border-bottom:1px solid var(--line-dim)">
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:8px">
+      <span class="tag">trade_date {{ sf_summary.trade_date or "-" }}</span>
+      <span class="tag">model {{ sf_summary.model_key or "-" }} / {{ sf_summary.model_version or "-" }}</span>
+      <span class="tag">score_source {{ sf_summary.score_source or "stored_predictions" }}</span>
+      <span class="tag">saved {{ sf_summary.saved_predictions_count or "-" }}</span>
+      <span class="tag">loaded {{ sf_summary.loaded_candidates_total or "-" }}</span>
+      <span class="tag">fallback {{ sf_summary.fallback_used_count or "0" }}</span>
+      <span class="tag">active_model_called {{ sf_summary.active_model_called or sf_summary.active_model_predict_proba_called or "false" }}</span>
+      <span class="tag">result {{ sf_summary.result or "-" }}</span>
+    </div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:8px">
+      <span class="tag">AI_plus_drop {{ sf_summary.AI_plus_drop_count or (sf.ai_plus_drop_candidates|length if sf.ai_plus_drop_candidates is defined else 0) }}</span>
+      <span class="tag">H5_full {{ sf_summary.H5_full_count or (sf.h5_full_candidates|length if sf.h5_full_candidates is defined else 0) }}</span>
+      <span class="tag">K_no_normal {{ sf_summary.K_no_normal_count or (sf.k_no_normal_candidates|length if sf.k_no_normal_candidates is defined else 0) }}</span>
+      <span class="tag">missing {{ sf_summary.missing_prediction_count or "0" }}</span>
+    </div>
+    {% if sf.warnings %}
+      <div class="muted" style="color:var(--dn);font-size:12px;line-height:1.6;white-space:normal">
+        {% for w in sf.warnings %}<div>{{ w }}</div>{% endfor %}
+      </div>
+    {% endif %}
+    {% if not sf.available %}
+      <div class="muted" style="font-size:12px;line-height:1.6;white-space:normal">
+        保存済みH5 forward-test出力がありません。先に
+        <span class="mono">python scripts/run_h5_stored_forward_test.py --trade-date YYYY-MM-DD --model-key rebound_lgbm_5d --model-version latest --score-source stored_predictions --allow-score-fallback false --write-latest true</span>
+        を実行してください。UI側ではactive_model補完しません。
+      </div>
+    {% else %}
+      <div class="muted" style="font-size:12px;line-height:1.6;white-space:normal">
+        この表示は保存済みAIスコア model_predictions を使ったforward-test候補です。active_model再スコアではありません。
+        Primary未昇格 / 自動購入対象外 / 手動確認必須です。出口想定は HD3 + EST12、PBなしです。
+      </div>
+    {% endif %}
+  </div>
+
+  {% macro stored_candidate_table(rows, empty_text) -%}
+  <div class="table-wrap">
+    <table class="tbl">
+      <thead><tr>
+        <th>code</th><th>name</th><th class="right">AI</th><th>stage</th>
+        <th class="right">drop20</th><th>regime</th><th class="right">overheat</th>
+        <th class="right">margin</th><th class="right">volume</th><th>sector</th>
+        <th>score_source</th><th>model</th><th>exit</th><th>manual</th><th>auto</th>
+      </tr></thead>
+      <tbody>
+      {% for r in rows %}
+      <tr>
+        <td class="code">{{ r.code }}</td>
+        <td class="name">{{ r.name or "" }}</td>
+        <td class="right num">{% if r.signal_probability is not none %}{{ "%.4f"|format(r.signal_probability) }}{% else %}-{% endif %}</td>
+        <td><span class="tag">{{ r.signal_stage or "-" }}</span></td>
+        <td class="right num">{% if r.drop_from_20d_high_pct is not none %}{{ "%+.2f"|format(r.drop_from_20d_high_pct) }}%{% else %}-{% endif %}</td>
+        <td class="muted">{{ r.market_regime or "-" }}</td>
+        <td class="right num">{{ r.overheat_score if r.overheat_score is not none else "-" }}</td>
+        <td class="right num">{% if r.margin_ratio is not none %}{{ "%.2f"|format(r.margin_ratio) }}{% else %}-{% endif %}</td>
+        <td class="right num">{% if r.volume_ratio is not none %}{{ "%.2f"|format(r.volume_ratio) }}{% else %}-{% endif %}</td>
+        <td class="muted">{{ r.sector or "-" }}</td>
+        <td><span class="tag">{{ r.score_source or "-" }}</span>{% if r.score_fallback_used %}<span class="badge closed">fallback</span>{% endif %}</td>
+        <td class="muted" style="font-size:11px;white-space:normal">{{ r.model_key or "-" }} / {{ r.model_version or "-" }}<br>{{ r.prediction_date or "-" }}<br>{{ r.prediction_source or r.source or "-" }}</td>
+        <td class="muted" style="font-size:11px;white-space:normal">{{ r.suggested_exit_model or "HD3_EST12" }} / emergency {{ r.emergency_stop_pct or -12 }}% / PBなし</td>
+        <td>{% if r.manual_review_required %}<span class="badge signal">required</span>{% else %}<span class="muted">-</span>{% endif %}</td>
+        <td><span class="badge closed">false</span></td>
+      </tr>
+      {% else %}
+      <tr><td colspan="15" class="center muted" style="padding:16px">{{ empty_text }}</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {%- endmacro %}
+
+  <div style="padding:12px 16px 6px">
+    <div class="section-h" style="margin:0 0 8px;color:var(--accent)">H5 Stored Full 候補</div>
+    <div class="muted" style="font-size:12px;margin-bottom:8px;white-space:normal">
+      保存済みAIスコアでH5_full条件を満たしたforward-test候補です。購入候補候補であり、手動確認必須です。
+    </div>
+  </div>
+  {{ stored_candidate_table(sf.h5_full_candidates or [], "H5 Stored Full候補なし") }}
+
+  <div style="padding:12px 16px 6px;border-top:1px solid var(--line-dim)">
+    <div class="section-h" style="margin:0 0 8px;color:var(--accent)">H5 Stored No Normal 候補</div>
+    <div class="muted" style="font-size:12px;margin-bottom:8px;white-space:normal">
+      H5_fullの補助比較枠です。Primaryではありません。normal / euphoriaを除外した研究候補です。
+    </div>
+  </div>
+  {{ stored_candidate_table(sf.k_no_normal_candidates or [], "K_no_normal候補なし") }}
+
+  <div style="padding:12px 16px 6px;border-top:1px solid var(--line-dim)">
+    <div class="section-h" style="margin:0 0 8px;color:var(--accent)">AI Plus Drop 参考候補</div>
+    <div class="muted" style="font-size:12px;margin-bottom:8px;white-space:normal">
+      AI >= 0.65 かつ drop20 <= -8% の参考枠です。H5_full条件を満たすとは限りません。
+    </div>
+  </div>
+  {{ stored_candidate_table(sf.ai_plus_drop_candidates or [], "AI Plus Drop候補なし") }}
+</div>
+
 <div class="section-h" style="color:var(--accent);margin-top:{% if signal_rows %}12px{% else %}20px{% endif %}">
   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:12px;height:12px"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 7V5a2 2 0 0 0-4 0v2"/></svg>
   H5 保有中
@@ -792,7 +895,7 @@ document.getElementById('actualExitOverlay')?.addEventListener('click', function
         <select name="actual_exit_reason" style="width:100%">
           <option value="hd3_time_stop">hd3_time_stop（day3終値撤退）</option>
           <option value="emergency_stop_12">emergency_stop_12（-12%事故停止）</option>
-          <option value="peak_pullback_2">peak_pullback_2（peak-2%反落）</option>
+          <option value="peak_pullback_2">peak_pullback_2（旧PB20: peak-2%反落）</option>
           <option value="manual_exit">manual_exit（手動撤退）</option>
           <option value="other">other</option>
         </select>

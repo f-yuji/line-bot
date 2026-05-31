@@ -5,20 +5,41 @@ from __future__ import annotations
 import math
 from typing import Any
 
+# New HD3+EST12 primary keys (no peak pullback)
+H5_LIVE_LIMITED_CASE_KEY = "h5_ai65_hd3_est12_cm_range330_live_limited"
+H5_RESEARCH_CASE_KEY = "h5_ai65_hd3_est12_cm_range330_research"
+
+# Legacy PB20 keys kept for comparison / backward compatibility
+H5_OLD_PB20_LIVE_LIMITED_CASE_KEY = "h5_ai65_pb20_hd3_est12_cm_range330_live_limited"
+H5_OLD_PB20_RESEARCH_CASE_KEY = "h5_ai65_pb20_hd3_est12_cm_range330_research"
 H5_LEGACY_PRIMARY_CASE_KEY = "h5_ai65_pb20_hd3_est12_cm_range330"
-H5_RESEARCH_CASE_KEY = "h5_ai65_pb20_hd3_est12_cm_range330_research"
-H5_LIVE_LIMITED_CASE_KEY = "h5_ai65_pb20_hd3_est12_cm_range330_live_limited"
+
+# Extension research keys. These are comparison/forward-test cases only.
+H5_EXTENSION_D3RET_M1_LIVE_LIMITED_CASE_KEY = "h5_ai65_hd5_ext_d3ret_m1_est12_cm_range330_live_limited"
+H5_EXTENSION_D3RET_M1_RESEARCH_CASE_KEY = "h5_ai65_hd5_ext_d3ret_m1_est12_cm_range330_research"
+H5_EXTENSION_D3RET_M1_CASE_KEY = H5_EXTENSION_D3RET_M1_LIVE_LIMITED_CASE_KEY
+
+H5_EXTENSION_BAN_LIVE_LIMITED_CASE_KEY = "h5_ai65_hd5_ext_m1_ban_uwrsi_est12_range330_live_limited"
+H5_EXTENSION_BAN_RESEARCH_CASE_KEY = "h5_ai65_hd5_ext_m1_ban_uwrsi_est12_range330_research"
+H5_EXTENSION_BAN_CASE_KEY = H5_EXTENSION_BAN_LIVE_LIMITED_CASE_KEY
+
+H5_EXTENSION_ALLOW_LIVE_LIMITED_CASE_KEY = "h5_ai65_hd5_ext_m1_allow_d1bodyvol_est12_range330_live_limited"
+H5_EXTENSION_ALLOW_RESEARCH_CASE_KEY = "h5_ai65_hd5_ext_m1_allow_d1bodyvol_est12_range330_research"
+H5_EXTENSION_ALLOW_CASE_KEY = H5_EXTENSION_ALLOW_LIVE_LIMITED_CASE_KEY
+
 H5_PRIMARY_CASE_KEY = H5_LIVE_LIMITED_CASE_KEY
 H5_ACTIVE_CASE_KEYS = {
-    H5_LEGACY_PRIMARY_CASE_KEY,
-    H5_RESEARCH_CASE_KEY,
     H5_LIVE_LIMITED_CASE_KEY,
+    H5_RESEARCH_CASE_KEY,
+    H5_OLD_PB20_LIVE_LIMITED_CASE_KEY,
+    H5_OLD_PB20_RESEARCH_CASE_KEY,
+    H5_LEGACY_PRIMARY_CASE_KEY,
 }
 
-H5_PRIMARY_LABEL = "H5 Live Limited: AI65 / PB2 / HD3 / EST12 / Credit 3-30"
-H5_RESEARCH_LABEL = "H5 Research: AI65 / PB2 / HD3 / EST12 / Credit 3-30"
-H5_PRIMARY_DISPLAY_NAME = "H5 Live Limited: AI65 / PB2 / HD3 / EST12 / 信用3-30"
-H5_RESEARCH_DISPLAY_NAME = "H5 Research: AI65 / PB2 / HD3 / EST12 / 信用3-30 / 制限なし"
+H5_PRIMARY_LABEL = "H5 Live Limited: AI65 / HD3 / EST12 / Credit 3-30"
+H5_RESEARCH_LABEL = "H5 Research: AI65 / HD3 / EST12 / Credit 3-30"
+H5_PRIMARY_DISPLAY_NAME = "H5 Live Limited: AI65 / HD3 / EST12 / 信用3-30"
+H5_RESEARCH_DISPLAY_NAME = "H5 Research: AI65 / HD3 / EST12 / 信用3-30 / 制限なし"
 H5_ENTRY_EXECUTION_NOTE = (
     "同日終値付近のentry前提。翌日寄りは期待値が低下するため、"
     "+2%超GUは飛びつき警戒。"
@@ -29,8 +50,7 @@ H5_BASE_RULES: dict[str, Any] = {
     "allowed_stages": ["confirmed", "strong_confirmed"],
     "min_drop_from_20d_high": -8.0,
     "excluded_regimes": ["panic_selloff"],
-    "exit_type": "peak_pullback_exit",
-    "peak_pullback_pct": -0.02,
+    "exit_type": "time_stop",          # HD3 time stop + EST12 emergency stop. No peak pullback.
     "initial_sl_pct": -0.12,
     "max_holding_days": 3,
     "max_overheat_score": 1,
@@ -39,6 +59,15 @@ H5_BASE_RULES: dict[str, Any] = {
     "min_margin_ratio": 3.0,
     "max_margin_ratio": 30.0,
     "entry_execution_note": H5_ENTRY_EXECUTION_NOTE,
+    "h5_exit_model": "hd3_est12_no_pullback",
+}
+
+# PB20 rules preserved for comparison / legacy trades. Not used for new entries.
+H5_PB20_COMPARISON_RULES: dict[str, Any] = {
+    **H5_BASE_RULES,
+    "exit_type": "peak_pullback_exit",
+    "peak_pullback_pct": -0.02,
+    "h5_exit_model": "pb20_hd3_est12_comparison",
 }
 
 H5_RESEARCH_RULES: dict[str, Any] = {
@@ -67,6 +96,132 @@ H5_LIVE_LIMITED_RULES: dict[str, Any] = {
     "is_h5_research": False,
     "is_h5_live_limited": True,
     "is_live_candidate": True,
+}
+
+H5_EXTENSION_D3RET_M1_BASE_RULES: dict[str, Any] = {
+    **H5_BASE_RULES,
+    "exit_type": "conditional_extension",
+    "base_holding_days": 3,
+    "extension_holding_days": 5,
+    "extension_rule": "day3_return_lte",
+    "extension_day": 3,
+    "extension_return_threshold_pct": -1.0,
+    "max_holding_days": 5,
+    "is_primary_h5": False,
+    "is_live_candidate": False,
+    "is_extension_research": True,
+    "h5_exit_model": "hd5_extension_d3ret_lte_m1_no_pullback",
+}
+
+H5_EXTENSION_D3RET_M1_RESEARCH_RULES: dict[str, Any] = {
+    **H5_EXTENSION_D3RET_M1_BASE_RULES,
+    "position_limit_mode": "research",
+    "ignore_global_position_limits": True,
+    "is_h5_research": True,
+    "is_h5_live_limited": False,
+}
+
+H5_EXTENSION_D3RET_M1_LIVE_LIMITED_RULES: dict[str, Any] = {
+    **H5_EXTENSION_D3RET_M1_BASE_RULES,
+    "position_limit_mode": "live_limited",
+    "max_open_positions": 2,
+    "max_daily_entries": 2,
+    "max_sector_positions": 2,
+    "entry_rank_limit": 10,
+    "entry_sort": [
+        "signal_probability_desc",
+        "overheat_score_asc",
+        "volume_ratio_desc",
+    ],
+    "is_h5_research": False,
+    "is_h5_live_limited": True,
+}
+
+H5_EXTENSION_BAN_BASE_RULES: dict[str, Any] = {
+    **H5_BASE_RULES,
+    "exit_type": "conditional_extension_with_ban",
+    "base_holding_days": 3,
+    "extension_holding_days": 5,
+    "extension_rule": "day3_return_lte",
+    "extension_day": 3,
+    "extension_return_threshold_pct": -1.0,
+    "extension_ban_rule": "deep_loss_upper_shadow_rsi_20_35",
+    "ban_day3_return_lte_pct": -3.0,
+    "ban_day3_upper_shadow_gte_pct": 1.0,
+    "ban_day3_rsi_min": 20.0,
+    "ban_day3_rsi_max": 35.0,
+    "max_holding_days": 5,
+    "is_primary_h5": False,
+    "is_live_candidate": False,
+    "is_extension_research": True,
+    "h5_exit_model": "hd5_extension_d3ret_lte_m1_ban_deep_upper_rsi_no_pullback",
+}
+
+H5_EXTENSION_BAN_RESEARCH_RULES: dict[str, Any] = {
+    **H5_EXTENSION_BAN_BASE_RULES,
+    "position_limit_mode": "research",
+    "ignore_global_position_limits": True,
+    "is_h5_research": True,
+    "is_h5_live_limited": False,
+}
+
+H5_EXTENSION_BAN_LIVE_LIMITED_RULES: dict[str, Any] = {
+    **H5_EXTENSION_BAN_BASE_RULES,
+    "position_limit_mode": "live_limited",
+    "max_open_positions": 2,
+    "max_daily_entries": 2,
+    "max_sector_positions": 2,
+    "entry_rank_limit": 10,
+    "entry_sort": [
+        "signal_probability_desc",
+        "overheat_score_asc",
+        "volume_ratio_desc",
+    ],
+    "is_h5_research": False,
+    "is_h5_live_limited": True,
+}
+
+H5_EXTENSION_ALLOW_BASE_RULES: dict[str, Any] = {
+    **H5_BASE_RULES,
+    "exit_type": "conditional_extension_allow",
+    "base_holding_days": 3,
+    "extension_holding_days": 5,
+    "extension_rule": "day3_return_lte",
+    "extension_day": 3,
+    "extension_return_threshold_pct": -1.0,
+    "extension_allow_rule": "stable_day1_small_day3_body_low_volume",
+    "allow_day1_return_gte_pct": -2.22,
+    "allow_day3_body_lte_pct": 3.74,
+    "allow_day3_volume_ratio_lte": 2.0,
+    "max_holding_days": 5,
+    "is_primary_h5": False,
+    "is_live_candidate": False,
+    "is_extension_research": True,
+    "h5_exit_model": "hd5_extension_m1_allow_d1bodyvol_no_pullback",
+}
+
+H5_EXTENSION_ALLOW_RESEARCH_RULES: dict[str, Any] = {
+    **H5_EXTENSION_ALLOW_BASE_RULES,
+    "position_limit_mode": "research",
+    "ignore_global_position_limits": True,
+    "is_h5_research": True,
+    "is_h5_live_limited": False,
+}
+
+H5_EXTENSION_ALLOW_LIVE_LIMITED_RULES: dict[str, Any] = {
+    **H5_EXTENSION_ALLOW_BASE_RULES,
+    "position_limit_mode": "live_limited",
+    "max_open_positions": 2,
+    "max_daily_entries": 2,
+    "max_sector_positions": 2,
+    "entry_rank_limit": 10,
+    "entry_sort": [
+        "signal_probability_desc",
+        "overheat_score_asc",
+        "volume_ratio_desc",
+    ],
+    "is_h5_research": False,
+    "is_h5_live_limited": True,
 }
 
 # Backwards-compatible name used by existing code paths.
@@ -149,7 +304,7 @@ def evaluate_h5_primary_entry(
         "is_h5_live_limited": is_live_limited,
         "is_live_candidate": is_live_limited,
         "exit_rule": rules["exit_type"],
-        "peak_pullback_pct": rules["peak_pullback_pct"],
+        "peak_pullback_pct": rules.get("peak_pullback_pct"),
         "initial_sl_pct": rules["initial_sl_pct"],
         "max_holding_days": rules["max_holding_days"],
         "entry_drop_from_20d_high_pct": drop20,

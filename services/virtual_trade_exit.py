@@ -261,7 +261,11 @@ def evaluate_h5_primary_exit(
             dry_log={"case_key": H5_PRIMARY_CASE_KEY, "message": "no post-entry close yet"},
         )
 
-    peak_pullback_pct = _to_float(trade.get("peak_pullback_pct"), H5_PRIMARY_RULES["peak_pullback_pct"])
+    # Route by exit_rule stored on the trade: new HD3-only vs legacy PB20 trades.
+    exit_rule = str(trade.get("exit_rule") or "")
+    use_pb = exit_rule == "peak_pullback_exit"
+
+    peak_pullback_pct = _to_float(trade.get("peak_pullback_pct"), -0.02 if use_pb else None)
     initial_sl_pct = _to_float(trade.get("initial_sl_pct"), H5_PRIMARY_RULES["initial_sl_pct"])
     max_holding_days = int(_to_float(trade.get("max_holding_days"), H5_PRIMARY_RULES["max_holding_days"]) or 3)
     use_sl = initial_sl_pct is not None and initial_sl_pct > -0.49
@@ -297,7 +301,7 @@ def evaluate_h5_primary_exit(
             exit_mode = "h5_emergency_stop"
             exit_price = stop_price
             exit_trigger_value = initial_sl_pct * 100.0 if initial_sl_pct is not None else None
-        elif peak_price > buy * min_peak_ratio and close <= peak_price * (1.0 + float(peak_pullback_pct or -0.02)):
+        elif use_pb and peak_price > buy * min_peak_ratio and close <= peak_price * (1.0 + float(peak_pullback_pct or -0.02)):
             exit_reason = "peak_pullback_exit"
             exit_mode = "h5_peak_pullback"
             exit_price = close
@@ -329,9 +333,10 @@ def evaluate_h5_primary_exit(
         update["unrealized_pnl"] = round((latest_close - buy) * qty, 0)
         update["unrealized_pnl_pct"] = round((latest_close / buy - 1.0) * 100.0, 2)
     dry_log = {
-        "case_key": H5_PRIMARY_CASE_KEY,
+        "case_key": trade.get("case_key") or H5_PRIMARY_CASE_KEY,
+        "exit_rule": exit_rule or "time_stop",
         "peak_price": round(peak_price, 4),
-        "peak_pullback_pct": peak_pullback_pct,
+        "peak_pullback_pct": peak_pullback_pct if use_pb else None,
         "initial_sl_pct": initial_sl_pct,
         "stop_price": round(stop_price, 4) if stop_price is not None else None,
         "max_holding_days": max_holding_days,

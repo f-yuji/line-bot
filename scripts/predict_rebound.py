@@ -47,6 +47,7 @@ from services.h5_primary import (
     h5_overheat_score,
 )
 from services.model_storage import download_model_artifact
+from services.model_predictions import save_model_predictions
 from services.signal_stage import SIGNAL_STAGES, evaluate_signal_stage
 from services.signal_history import record_rebound_signal
 from services.trading_calendar import latest_feature_matches_today, should_skip_today_cron
@@ -1444,6 +1445,7 @@ def run(args: argparse.Namespace) -> None:
     notify_items: list[tuple[dict, dict]] = []
     entry_candidates: list[tuple[dict, dict, dict]] = []
     h5_watch_rows: list[dict] = []
+    prediction_save_rows: list[dict] = []
     for row, prob in zip(snapshots, probabilities):
         row["market_regime_adjustment"] = market_adjustment
         ev = _expected_value(prob, target["take_profit_pct"], target["stop_loss_pct"])
@@ -1472,6 +1474,22 @@ def run(args: argparse.Namespace) -> None:
             "market_topix_pct": market_adjustment.get("topix_pct_used"),
             "market_nikkei_change_yen": market_adjustment.get("nikkei_change_yen_used"),
         }
+        prediction_save_rows.append({
+            "code": row.get("code"),
+            "trade_date": target_date,
+            "signal_probability": result["probability"],
+            "signal_stage": result["signal_stage"],
+            "prediction_label": result.get("prediction_horizon"),
+            "feature_snapshot_trade_date": row.get("trade_date") or target_date,
+            "feature_snapshot_id": row.get("id"),
+            "feature_version": "predict_rebound_snapshot_v1",
+            "metadata": {
+                "model_path": (model_row or {}).get("model_path") if model_row else None,
+                "target_label": args.target_label,
+                "market_regime": result.get("market_regime"),
+                "fallback_rule": bool(not using_model),
+            },
+        })
         _passed_mode, mode_reason, mode_meta = entry_mode_filter(row, effective_entry_mode)
         result.update(mode_meta)
         result["entry_mode_used"] = effective_entry_mode
@@ -1524,6 +1542,32 @@ def run(args: argparse.Namespace) -> None:
         if args.notify and not args.dry_run and _notification_allowed(row, result, cfg):
             notify_items.append((row, result))
     _upsert_h5_pre_signal_watchlist(sb, h5_watch_rows, dry_run=args.dry_run)
+    if not args.dry_run and prediction_save_rows:
+        model_key = ((model_row or {}).get("model_name") or target["model_name"]) if using_model else f"{target['model_name']}_fallback"
+        model_version = (model_row or {}).get("model_version") if using_model else "fallback_rule"
+        save_result = save_model_predictions(
+            sb,
+            prediction_save_rows,
+            model_key=str(model_key),
+            model_version=str(model_version),
+            source="daily_prediction" if using_model else "fallback_rule",
+            metadata={
+                "script": "predict_rebound.py",
+                "target_date": str(target_date),
+                "point_in_time_save": True,
+                "using_model": bool(using_model),
+            },
+        )
+        logger.info(
+            "model_predictions save result: model_key=%s model_version=%s trade_date=%s source=%s inserted=%d skipped=%d errors=%d",
+            model_key,
+            model_version,
+            target_date,
+            "daily_prediction" if using_model else "fallback_rule",
+            save_result.get("inserted", 0),
+            save_result.get("skipped", 0),
+            save_result.get("errors", 0),
+        )
     _create_ranked_virtual_trades(sb, entry_candidates, cfg, market_adjustment, long_term_market, dry_run=args.dry_run)
     if args.notify and not args.dry_run:
         _notify_batch(sb, notify_items, target_date, mode)

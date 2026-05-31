@@ -1,11 +1,13 @@
 ﻿import functools
 import html
+import csv
 import json
 import logging
 import os
 import re
 import requests
 from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
 from typing import List, Optional
 from zoneinfo import ZoneInfo
 
@@ -2013,6 +2015,168 @@ def _h5_float(value) -> float | None:
         return None
 
 
+H5_STORED_FORWARD_DIR = Path("outputs") / "h5_stored_forward_test"
+
+
+def _csv_bool(value) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value or "").strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _csv_float(value) -> float | None:
+    try:
+        if value is None or value == "":
+            return None
+        return float(value)
+    except Exception:
+        return None
+
+
+def _read_csv_dicts(path: Path) -> list[dict]:
+    if not path.exists():
+        return []
+    with path.open("r", encoding="utf-8-sig", newline="") as f:
+        return [dict(row) for row in csv.DictReader(f)]
+
+
+def _parse_key_value_report(path: Path) -> dict:
+    values: dict = {}
+    if not path.exists():
+        return values
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        if ":" not in line or line.lstrip().startswith("-"):
+            continue
+        key, value = line.split(":", 1)
+        key = key.strip().lstrip("#").strip()
+        if key:
+            values[key] = value.strip()
+    return values
+
+
+def _normalize_h5_stored_row(row: dict) -> dict:
+    out = dict(row)
+    for key in (
+        "signal_probability",
+        "drop_from_20d_high_pct",
+        "overheat_score",
+        "margin_ratio",
+        "volume_ratio",
+        "emergency_stop_pct",
+    ):
+        out[key] = _csv_float(out.get(key))
+    for key in (
+        "score_missing",
+        "score_fallback_used",
+        "AI_only",
+        "drop_only",
+        "AI_plus_drop",
+        "AI_plus_drop_stage",
+        "H5_full",
+        "K_no_normal",
+        "K_no_normal_plus_no_overheat",
+        "peak_pullback_enabled",
+        "manual_review_required",
+    ):
+        out[key] = _csv_bool(out.get(key))
+    out["planned_holding_days"] = int(_csv_float(out.get("planned_holding_days")) or 3)
+    out["suggested_exit_model"] = out.get("suggested_exit_model") or "HD3_EST12"
+    out["manual_review_required"] = True
+    out["auto_buy_enabled"] = False
+    out["prediction_source"] = out.get("prediction_source") or out.get("source") or ""
+    return out
+
+
+def _is_valid_stored_candidate(row: dict) -> bool:
+    return (
+        str(row.get("score_source") or "") == "stored_predictions"
+        and not _csv_bool(row.get("score_fallback_used"))
+    )
+
+
+def load_latest_h5_stored_candidates(base_dir: Path | None = None) -> dict:
+    """Load display-only H5 stored forward-test outputs without recomputing scores."""
+    base_dir = base_dir or H5_STORED_FORWARD_DIR
+    report_path = base_dir / "latest_stored_forward_test_report.txt"
+    h5_candidates_path = base_dir / "latest_h5_candidates.csv"
+    h5_full_path = base_dir / "latest_h5_full_candidates.csv"
+    k_no_normal_path = base_dir / "latest_k_no_normal_candidates.csv"
+    summary_path = base_dir / "forward_test_daily_summary.csv"
+
+    result = {
+        "available": False,
+        "error": "",
+        "summary": {},
+        "warnings": [],
+        "h5_candidates": [],
+        "h5_full_candidates": [],
+        "k_no_normal_candidates": [],
+        "ai_plus_drop_candidates": [],
+        "files": {
+            "latest_h5_candidates": str(h5_candidates_path),
+            "latest_h5_full_candidates": str(h5_full_path),
+            "latest_k_no_normal_candidates": str(k_no_normal_path),
+            "latest_report": str(report_path),
+        },
+    }
+    try:
+        required = [h5_candidates_path, h5_full_path, k_no_normal_path, report_path]
+        missing = [str(p) for p in required if not p.exists()]
+        if missing:
+            result["error"] = "no stored forward-test latest files"
+            result["warnings"].append("Run scripts/run_h5_stored_forward_test.py before opening the UI.")
+            result["missing_files"] = missing
+            return result
+
+        summary = _parse_key_value_report(report_path)
+        daily_rows = _read_csv_dicts(summary_path)
+        if daily_rows:
+            latest_daily = daily_rows[-1]
+            summary.update({
+                "trade_date": latest_daily.get("trade_date") or summary.get("trade_date"),
+                "model_key": latest_daily.get("model_key") or summary.get("model_key"),
+                "model_version": latest_daily.get("model_version") or summary.get("model_version"),
+                "score_source": latest_daily.get("score_source") or summary.get("score_source"),
+                "saved_predictions_count": latest_daily.get("saved_predictions_count") or summary.get("saved_predictions_count"),
+                "loaded_candidates_total": latest_daily.get("loaded_candidates_total") or summary.get("loaded_candidates_total"),
+                "AI_only_count": latest_daily.get("AI_only_count") or summary.get("AI_only_count"),
+                "AI_plus_drop_count": latest_daily.get("AI_plus_drop_count") or summary.get("AI_plus_drop_count"),
+                "H5_full_count": latest_daily.get("H5_full_count") or summary.get("H5_full_count"),
+                "K_no_normal_count": latest_daily.get("K_no_normal_count") or summary.get("K_no_normal_count"),
+                "fallback_used_count": latest_daily.get("fallback_used_count") or summary.get("fallback_used_count"),
+                "missing_prediction_count": latest_daily.get("missing_prediction_count") or summary.get("missing_prediction_count"),
+                "active_model_called": latest_daily.get("active_model_called") or summary.get("active_model_predict_proba_called"),
+                "result": latest_daily.get("result") or summary.get("result"),
+            })
+
+        all_rows = [_normalize_h5_stored_row(row) for row in _read_csv_dicts(h5_candidates_path)]
+        full_rows = [_normalize_h5_stored_row(row) for row in _read_csv_dicts(h5_full_path)]
+        no_normal_rows = [_normalize_h5_stored_row(row) for row in _read_csv_dicts(k_no_normal_path)]
+
+        valid_all = [row for row in all_rows if _is_valid_stored_candidate(row)]
+        result["h5_candidates"] = valid_all
+        result["h5_full_candidates"] = [
+            row for row in full_rows if _is_valid_stored_candidate(row) and _csv_bool(row.get("H5_full"))
+        ]
+        result["k_no_normal_candidates"] = [
+            row for row in no_normal_rows if _is_valid_stored_candidate(row) and _csv_bool(row.get("K_no_normal"))
+        ]
+        result["ai_plus_drop_candidates"] = [
+            row for row in valid_all if _csv_bool(row.get("AI_plus_drop"))
+        ]
+        result["summary"] = summary
+        result["available"] = True
+
+        if int(_csv_float(summary.get("fallback_used_count")) or 0) > 0:
+            result["warnings"].append("fallback was used; stored candidates should not be treated as primary display.")
+        if _csv_bool(summary.get("active_model_called")) or _csv_bool(summary.get("active_model_predict_proba_called")):
+            result["warnings"].append("active_model was called; stored candidates are invalid for this display.")
+    except Exception as e:
+        logger.warning("load latest h5 stored candidates failed: %s", e)
+        result["error"] = str(e)
+    return result
+
+
 def _h5_intraday_static_check(row: dict) -> tuple[bool, str]:
     probability = _h5_float(row.get("signal_probability") or row.get("ai_score"))
     if probability is None or probability < H5_INTRADAY_AI_MIN:
@@ -2459,6 +2623,8 @@ def web_dashboard():
     except Exception as e:
         logger.warning("h5 watchlist fetch failed: %s", e)
 
+    h5_stored_forward = load_latest_h5_stored_candidates()
+
     # H5 open positions
     h5_open_trades: list[dict] = []
     try:
@@ -2564,6 +2730,7 @@ def web_dashboard():
         h5_today_evals=h5_today_evals,
         h5_watch_rows=h5_watch_rows,
         h5_watch_stats=h5_watch_stats,
+        h5_stored_forward=h5_stored_forward,
         execution_reviews=execution_reviews,
         actual_trade_logs=actual_trade_logs,
         actual_holdings=actual_holdings,
@@ -3650,7 +3817,6 @@ def web_trade_assist():
     h5_exit_display = {
         "case_key": H5_PRIMARY_CASE_KEY,
         "case_label": H5_PRIMARY_DISPLAY_NAME,
-        "peak_pullback_pct": abs(float(H5_PRIMARY_RULES["peak_pullback_pct"])) * 100,
         "stop_loss_pct": abs(float(H5_PRIMARY_RULES["initial_sl_pct"])) * 100,
         "holding_days": int(H5_PRIMARY_RULES["max_holding_days"]),
         "entry_execution_note": H5_ENTRY_EXECUTION_NOTE,
@@ -5084,8 +5250,16 @@ CASE_TEST_LABELS = {
     "rsi70_exit": "RSI70反落利確",
     "volume_fade": "出来高減衰利確",
     "atr_trailing_15": "ATRトレーリングx1.5",
-    "h5_ai65_pb20_hd3_est12_cm_range330_live_limited": "H5 Live Limited：AI65 / PB2 / HD3 / EST12 / 信用3-30",
-    "h5_ai65_pb20_hd3_est12_cm_range330_research": "H5 Research（制限なし）：AI65 / PB2 / HD3 / EST12 / 信用3-30",
+    "h5_ai65_hd3_est12_cm_range330_live_limited": "H5 Live Limited：AI65 / HD3 / EST12 / 信用3-30",
+    "h5_ai65_hd3_est12_cm_range330_research": "H5 Research（制限なし）：AI65 / HD3 / EST12 / 信用3-30",
+    "h5_ai65_hd5_ext_d3ret_m1_est12_cm_range330_live_limited": "H5 Extension研究：day3 -1%以下ならHD5延長",
+    "h5_ai65_hd5_ext_d3ret_m1_est12_cm_range330_research": "H5 Extension研究（制限なし）：day3 -1%以下ならHD5延長",
+    "h5_ai65_hd5_ext_m1_ban_uwrsi_est12_range330_live_limited": "H5 Ext Ban研究：D3<-1延長 / 深掘り上ヒゲRSI禁止",
+    "h5_ai65_hd5_ext_m1_ban_uwrsi_est12_range330_research": "H5 Ext Ban研究（制限なし）：D3<-1延長 / 深掘り上ヒゲRSI禁止",
+    "h5_ai65_hd5_ext_m1_allow_d1bodyvol_est12_range330_live_limited": "H5 Ext Allow研究：D1/Body/Vol条件でHD5延長",
+    "h5_ai65_hd5_ext_m1_allow_d1bodyvol_est12_range330_research": "H5 Ext Allow研究（制限なし）：D1/Body/Vol条件でHD5延長",
+    "h5_ai65_pb20_hd3_est12_cm_range330_live_limited": "H5比較 PB20 Live：AI65 / PB2 / HD3 / EST12 / 信用3-30",
+    "h5_ai65_pb20_hd3_est12_cm_range330_research": "H5比較 PB20 Research：AI65 / PB2 / HD3 / EST12 / 信用3-30",
     "h5_ai65_pb20_hd3_est12_cm_range330": "H5 Legacy：AI65 / PB2 / HD3 / EST12 / 信用3-30",
     "h5_ai65_pb20_hd3_nostop_cm_range330": "H5比較：NOSTOP / 信用3-30",
     "h5_ai65_pb20_hd3_est12_cm_mr20": "H5比較：EST12 / 信用20以下",
@@ -5116,6 +5290,7 @@ EXIT_PROFILE_LABELS = {
 
 EXIT_TYPE_LABELS = {
     "fixed_tp_sl": "固定利確/損切",
+    "time_stop": "期間タイムアウト+事故停止",
     "trailing_stop": "トレーリング",
     "pullback_exit": "反落検知",
     "ma_break_exit": "MA割れ",
@@ -5123,6 +5298,9 @@ EXIT_TYPE_LABELS = {
     "volume_fade_exit": "出来高減衰",
     "atr_trailing": "ATRトレーリング",
     "peak_pullback_exit": "ピーク反落利確",
+    "conditional_extension": "条件付き延長",
+    "conditional_extension_with_ban": "条件付き延長（禁止条件あり）",
+    "conditional_extension_allow": "条件付き延長（許可条件あり）",
 }
 
 CREDIT_PROFILE_LABELS = {
@@ -5211,6 +5389,60 @@ def _case_rule_summary(rules: dict) -> str:
             f"出口はATRトレーリングで、ATR x{float(rules.get('atr_multiplier') or 0):.1f} を基準に追随。"
             f"初期損切りは {float(rules.get('initial_sl_pct') or 0) * 100:.0f}%、"
             f"最大 {int(rules.get('max_holding_days') or 0)} 日保有。"
+        )
+    elif exit_type == "time_stop":
+        initial_sl = rules.get("initial_sl_pct")
+        stop_text = (
+            "事故停止なし"
+            if initial_sl is None or float(initial_sl) <= -0.49
+            else f"事故停止 {abs(float(initial_sl)) * 100:.0f}%"
+        )
+        parts.append(
+            f"出口は {int(rules.get('max_holding_days') or 0)} 営業日目終値で撤退。{stop_text}、ピーク反落なし。"
+        )
+    elif exit_type == "conditional_extension":
+        initial_sl = rules.get("initial_sl_pct")
+        stop_text = (
+            "事故停止なし"
+            if initial_sl is None or float(initial_sl) <= -0.49
+            else f"事故停止 {abs(float(initial_sl)) * 100:.0f}%"
+        )
+        parts.append(
+            f"出口は原則 {int(rules.get('base_holding_days') or 3)} 営業日目終値で撤退。"
+            f"day3損益が {float(rules.get('extension_return_threshold_pct') or -1.0):.1f}% 以下なら"
+            f"{int(rules.get('extension_holding_days') or 5)} 営業日まで延長。{stop_text}、ピーク反落なし。研究枠です。"
+        )
+    elif exit_type == "conditional_extension_with_ban":
+        initial_sl = rules.get("initial_sl_pct")
+        stop_text = (
+            "事故停止なし"
+            if initial_sl is None or float(initial_sl) <= -0.49
+            else f"事故停止 {abs(float(initial_sl)) * 100:.0f}%"
+        )
+        parts.append(
+            f"出口は原則 {int(rules.get('base_holding_days') or 3)} 営業日目終値で撤退。"
+            f"day3損益が {float(rules.get('extension_return_threshold_pct') or -1.0):.1f}% 以下なら"
+            f"{int(rules.get('extension_holding_days') or 5)} 営業日まで延長します。"
+            f"ただし day3損益 {float(rules.get('ban_day3_return_lte_pct') or -3.0):.1f}% 以下、"
+            f"上ヒゲ {float(rules.get('ban_day3_upper_shadow_gte_pct') or 1.0):.1f}% 以上、"
+            f"RSI {float(rules.get('ban_day3_rsi_min') or 20):.0f}〜{float(rules.get('ban_day3_rsi_max') or 35):.0f} は延長禁止。"
+            f"{stop_text}、ピーク反落なし。研究枠です。"
+        )
+    elif exit_type == "conditional_extension_allow":
+        initial_sl = rules.get("initial_sl_pct")
+        stop_text = (
+            "事故停止なし"
+            if initial_sl is None or float(initial_sl) <= -0.49
+            else f"事故停止 {abs(float(initial_sl)) * 100:.0f}%"
+        )
+        parts.append(
+            f"出口は原則 {int(rules.get('base_holding_days') or 3)} 営業日目終値で撤退。"
+            f"day3損益が {float(rules.get('extension_return_threshold_pct') or -1.0):.1f}% 以下、"
+            f"day1損益が {float(rules.get('allow_day1_return_gte_pct') or -2.22):.2f}% 以上、"
+            f"day3実体が {float(rules.get('allow_day3_body_lte_pct') or 3.74):.2f}% 以下、"
+            f"day3出来高倍率が {float(rules.get('allow_day3_volume_ratio_lte') or 2.0):.1f} 以下なら"
+            f"{int(rules.get('extension_holding_days') or 5)} 営業日まで延長。"
+            f"{stop_text}、ピーク反落なし。研究枠です。"
         )
     elif exit_type == "peak_pullback_exit":
         initial_sl = rules.get("initial_sl_pct")

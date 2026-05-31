@@ -180,7 +180,37 @@ def _proxy_ai_score(row: dict) -> float:
     return round(max(0.05, min(0.95, (rule / 100.0) - draw * 0.02)), 6)
 
 
+def _finalize_candidate_scores(
+    rows: list[dict],
+    *,
+    allow_proxy_score: bool,
+    default_score_source: str,
+    score_fallback_used: bool,
+) -> list[dict]:
+    """Fill rule/EV/stage fields after a score source has been selected."""
+
+    finalized: list[dict] = []
+    for row in rows:
+        if row.get("signal_probability") is None:
+            if not allow_proxy_score:
+                row["score_missing"] = True
+                continue
+            row["signal_probability"] = _proxy_ai_score(row)
+            row["score_fallback_used"] = True
+        else:
+            row.setdefault("score_fallback_used", score_fallback_used)
+        row.setdefault("score_source", default_score_source)
+        row["rule_score"] = _proxy_rule_score(row)
+        row["expected_value"] = round(_expected_value_for_rules(row, {"tp_pct": 0.06, "sl_pct": -0.04}), 3)
+        if not row.get("signal_stage"):
+            stage = evaluate_signal_stage(row["signal_probability"], row["rule_score"], row["expected_value"])
+            row["signal_stage"] = stage["stage"]
+        finalized.append(row)
+    return finalized
+
+
 def _score_candidates(rows: list[dict], bundle: dict | None) -> list[dict]:
+    model_scored = False
     if bundle and HAS_MODEL_DEPS and rows:
         try:
             df = pd.DataFrame(rows)
@@ -188,18 +218,20 @@ def _score_candidates(rows: list[dict], bundle: dict | None) -> list[dict]:
             probs = bundle["model"].predict_proba(x)[:, 1]
             for row, prob in zip(rows, probs):
                 row["signal_probability"] = round(float(prob), 6)
+                row["score_source"] = "active_model_rescore"
+                row["point_in_time_valid"] = False
+                row["score_fallback_used"] = False
+            model_scored = True
         except Exception as e:
             logger.warning("[case_test] model scoring failed; use proxy score: %s", e)
             bundle = None
 
-    for row in rows:
-        if row.get("signal_probability") is None:
-            row["signal_probability"] = _proxy_ai_score(row)
-        row["rule_score"] = _proxy_rule_score(row)
-        row["expected_value"] = round(_expected_value_for_rules(row, {"tp_pct": 0.06, "sl_pct": -0.04}), 3)
-        stage = evaluate_signal_stage(row["signal_probability"], row["rule_score"], row["expected_value"])
-        row["signal_stage"] = stage["stage"]
-    return rows
+    return _finalize_candidate_scores(
+        rows,
+        allow_proxy_score=True,
+        default_score_source="active_model_rescore" if model_scored else "proxy_score",
+        score_fallback_used=not model_scored,
+    )
 
 
 def _load_weekly_margin_rows(sb, period_start: date, period_end: date) -> list[dict]:
@@ -353,6 +385,85 @@ def _attach_weekly_margin(candidates: list[dict], margin_rows: list[dict]) -> No
         row["margin_long_change"] = _to_float(margin.get("long_margin_change"), None)
 
 
+def _load_future_day_snapshots(
+    sb,
+    codes: list[str],
+    period_start: date,
+    period_end: date,
+    max_days: int = 5,
+) -> dict[str, list[dict]]:
+    """Load open/volume_ratio_20d from stock_feature_snapshots for future trading days.
+
+    Returns {code: [rows sorted by trade_date]} covering period_start to period_end+buffer.
+    Used by Extension Allow to get real day3 open and volume_ratio instead of proxies.
+    Uses trading-day index (not calendar days) to match future_high_Nd etc.
+    """
+    start_s = period_start.isoformat()
+    end_s = (period_end + timedelta(days=max_days + 10)).isoformat()
+    cols = "id,code,trade_date,open,volume_ratio_20d"
+    by_code: dict[str, list[dict]] = defaultdict(list)
+    chunk_size = 50
+    total = 0
+    for i in range(0, len(codes), chunk_size):
+        chunk = codes[i:i + chunk_size]
+
+        def q(last_id: int, _chunk: list[str] = chunk) -> object:
+            base = (
+                sb.table("stock_feature_snapshots")
+                .select(cols)
+                .in_("code", _chunk)
+                .gte("trade_date", start_s)
+                .lte("trade_date", end_s)
+                .order("id")
+            )
+            return base.gt("id", last_id) if last_id else base
+
+        chunk_rows = _fetch_all(q, label=f"future_snaps_{i // chunk_size}")
+        for row in chunk_rows:
+            by_code[str(row.get("code") or "")].append(row)
+        total += len(chunk_rows)
+    for rows in by_code.values():
+        rows.sort(key=lambda r: str(r.get("trade_date") or ""))
+    logger.info("[case_test] future day snapshots codes=%d rows=%d", len(by_code), total)
+    return dict(by_code)
+
+
+def _attach_future_day_features(
+    candidates: list[dict],
+    snapshots_by_code: dict[str, list[dict]],
+    max_days: int = 5,
+) -> None:
+    """Attach future_open_Nd and future_volume_ratio_Nd to each candidate row.
+
+    Uses trading-day index: find entry_date in sorted code snapshots, then step
+    forward N positions to get trading day N's real open and volume_ratio_20d.
+    """
+    attached = 0
+    for row in candidates:
+        code = str(row.get("code") or "")
+        entry_date = str(row.get("trade_date") or "")
+        code_rows = snapshots_by_code.get(code)
+        if not code_rows:
+            continue
+        date_to_idx: dict[str, int] = {str(r.get("trade_date") or ""): i for i, r in enumerate(code_rows)}
+        idx = date_to_idx.get(entry_date)
+        if idx is None:
+            continue
+        for day in range(1, max_days + 1):
+            next_idx = idx + day
+            if next_idx >= len(code_rows):
+                break
+            snap = code_rows[next_idx]
+            open_val = _to_float(snap.get("open"), None)
+            vol_ratio = _to_float(snap.get("volume_ratio_20d"), None)
+            if open_val is not None:
+                row[f"future_open_{day}d"] = open_val
+            if vol_ratio is not None:
+                row[f"future_volume_ratio_{day}d"] = vol_ratio
+        attached += 1
+    logger.info("[case_test] future day features attached rows=%d/%d", attached, len(candidates))
+
+
 def _load_candidates(sb, period_start: date, period_end: date) -> list[dict]:
     snap_cols = sorted(set(
         [
@@ -439,24 +550,97 @@ def _expected_value_for_rules(row: dict, rules: dict) -> float:
     return round((ai * tp_pct) + ((1.0 - ai) * sl_pct) + rule_adjust - bad_adjust, 3)
 
 
-def _sort_candidates(rows: list[dict], sort_key: str, rules: dict) -> list[dict]:
-    if sort_key == "signal_probability_desc":
-        return sorted(
-            rows,
-            key=lambda r: (
-                _to_float(r.get("signal_probability"), 0) or 0,
-                _expected_value_for_rules(r, rules),
-            ),
-            reverse=True,
-        )
-    return sorted(
-        rows,
-        key=lambda r: (
-            _expected_value_for_rules(r, rules),
-            _to_float(r.get("signal_probability"), 0) or 0,
-        ),
-        reverse=True,
-    )
+_REGIME_PRIORITY: dict[str, int] = {
+    "panic_rebound": 0,
+    "risk_on": 1,
+    "strong_risk_on": 1,
+    "weak": 2,
+    "normal": 3,
+    "euphoria": 3,
+}
+
+
+def _sort_key_part(row: dict, sk: str, rules: dict) -> float:
+    """Return a single comparable float for one sort key (ascending = better)."""
+    import random as _random
+    INF = float("inf")
+    if sk == "signal_probability_desc":
+        v = _to_float(row.get("signal_probability"), None)
+        return -v if v is not None else INF
+    if sk == "signal_probability_asc":
+        v = _to_float(row.get("signal_probability"), None)
+        return v if v is not None else INF
+    if sk == "overheat_score_asc":
+        return float(_overheat_score(row))
+    if sk == "overheat_score_desc":
+        return -float(_overheat_score(row))
+    if sk == "volume_ratio_asc":
+        v = _to_float(row.get("volume_ratio_20d"), None)
+        return v if v is not None else INF
+    if sk == "volume_ratio_desc":
+        v = _to_float(row.get("volume_ratio_20d"), None)
+        return -v if v is not None else INF
+    if sk == "volume_ratio_moderate":
+        # Prefer volume_ratio close to 1.3. Bucket-weighted distance score.
+        v = _to_float(row.get("volume_ratio_20d"), None)
+        if v is None:
+            return 10.0
+        if 0.7 <= v <= 2.0:
+            return abs(v - 1.3)
+        if 0.5 <= v < 0.7:
+            return 1.0 + abs(v - 0.7)
+        if 2.0 < v <= 3.0:
+            return 2.0 + abs(v - 2.0)
+        if v < 0.5:
+            return 3.0 + abs(v - 0.5)
+        return 4.0 + abs(v - 3.0)
+    if sk == "entry_gap_pct_asc":
+        v = _to_float(row.get("entry_gap_pct"), None) or _to_float(row.get("ma5_gap_pct"), None)
+        return v if v is not None else INF
+    if sk == "entry_gap_pct_desc":
+        v = _to_float(row.get("entry_gap_pct"), None) or _to_float(row.get("ma5_gap_pct"), None)
+        return -v if v is not None else INF
+    if sk == "drop_from_20d_high_asc":
+        v = _to_float(row.get("drop_from_20d_high_pct"), None)
+        return v if v is not None else INF
+    if sk == "drop_from_20d_high_desc":
+        v = _to_float(row.get("drop_from_20d_high_pct"), None)
+        return -v if v is not None else INF
+    if sk == "market_regime_priority":
+        regime = str(row.get("market_regime") or "")
+        return float(_REGIME_PRIORITY.get(regime, 4))
+    if sk == "expected_value_desc":
+        return -_expected_value_for_rules(row, rules)
+    if sk.startswith("random_seed"):
+        try:
+            seed = int(sk[len("random_seed"):])
+        except ValueError:
+            seed = 0
+        row_seed = hash(str(row.get("code", "")) + str(row.get("trade_date", "")) + str(seed))
+        return _random.Random(row_seed).random()
+    logger.warning("[sort_candidates] unknown sort key: %r — skipped", sk)
+    return INF  # unknown keys sort last
+
+
+def _sort_candidates(rows: list[dict], sort_key_or_keys, rules: dict) -> list[dict]:
+    """Sort candidates by one or more sort keys.
+
+    sort_key_or_keys may be a str (single key) or a list[str] (priority-ordered
+    multi-key sort).  Each key contributes one element to a tuple used for
+    sorting (ascending — lower value = higher priority).
+    Falls back to expected_value_desc only when the key list is empty.
+    """
+    if isinstance(sort_key_or_keys, str):
+        keys: list[str] = [sort_key_or_keys]
+    elif isinstance(sort_key_or_keys, (list, tuple)):
+        keys = [str(k) for k in sort_key_or_keys]
+    else:
+        keys = [str(sort_key_or_keys)]
+
+    if not keys:
+        keys = ["expected_value_desc"]
+
+    return sorted(rows, key=lambda r: tuple(_sort_key_part(r, k, rules) for k in keys))
 
 
 def _case_rules(case: dict) -> dict:
@@ -551,6 +735,8 @@ def _price_path(row: dict, rules: dict) -> tuple[float | None, date | None, list
             "low": low,
             "close": close,
             "prev_close": prev_close,
+            "open": _to_float(row.get(f"future_open_{day}d"), None),
+            "volume_ratio": _to_float(row.get(f"future_volume_ratio_{day}d"), None),
         })
         prev_close = close
     return entry, entry_date, days
@@ -727,6 +913,339 @@ def simulate_peak_pullback_exit(row: dict, rules: dict) -> dict:
     return _timeout_or_open(entry, days, _to_int(rules.get("max_holding_days"), 3))
 
 
+def simulate_h5_hd3_est12_exit(row: dict, rules: dict) -> dict:
+    """HD3+EST12 exit: emergency stop at initial_sl_pct or day-3 close. No peak pullback check."""
+    entry, _entry_date, days = _price_path(row, rules)
+    if not entry:
+        return {"status": "open", "exit_reason": "invalid_entry"}
+    _raw_sl = rules.get("initial_sl_pct") if rules.get("initial_sl_pct") is not None else rules.get("sl_pct")
+    _sl_pct = float(_raw_sl) if _raw_sl is not None else None
+    use_sl = _sl_pct is not None and _sl_pct > -0.49
+    initial_sl = entry * (1 + _sl_pct) if use_sl else None
+    for d in days:
+        low = _to_float(d.get("low"), None)
+        if use_sl and initial_sl is not None and low is not None and low <= initial_sl:
+            return _close_trade(
+                entry, d["date"], initial_sl, "sl", d["day"],
+                days=days,
+                exit_signal_value=(initial_sl - entry) / entry * 100,
+                exit_indicator="initial_sl",
+            )
+    return _timeout_or_open(entry, days, _to_int(rules.get("max_holding_days"), 3))
+
+
+def simulate_h5_conditional_extension_exit(row: dict, rules: dict) -> dict:
+    """H5 research exit: HD3 by default, extend to HD5 when day3 return is weak.
+
+    This is research-only. It preserves the H5 emergency stop and never checks
+    peak pullback. Extension metadata is encoded in existing simulation fields:
+    exit_indicator and exit_signal_value, so persisted case-test inserts remain
+    compatible with the current trade_case_simulations schema.
+    """
+    work_rules = dict(rules)
+    base_days = max(1, _to_int(work_rules.get("base_holding_days"), 3))
+    extension_days = max(base_days, _to_int(work_rules.get("extension_holding_days"), 5))
+    work_rules["max_holding_days"] = extension_days
+    entry, _entry_date, days = _price_path(row, work_rules)
+    if not entry:
+        return {"status": "open", "exit_reason": "invalid_entry"}
+
+    _raw_sl = work_rules.get("initial_sl_pct") if work_rules.get("initial_sl_pct") is not None else work_rules.get("sl_pct")
+    _sl_pct = float(_raw_sl) if _raw_sl is not None else None
+    use_sl = _sl_pct is not None and _sl_pct > -0.49
+    initial_sl = entry * (1 + _sl_pct) if use_sl else None
+    threshold = float(work_rules.get("extension_return_threshold_pct", -1.0))
+
+    if len(days) < base_days:
+        return _timeout_or_open(entry, days, base_days)
+
+    for d in days[:base_days]:
+        low = _to_float(d.get("low"), None)
+        if use_sl and initial_sl is not None and low is not None and low <= initial_sl:
+            return _close_trade(
+                entry, d["date"], initial_sl, "sl", d["day"],
+                days=days,
+                exit_signal_value=(initial_sl - entry) / entry * 100,
+                exit_indicator="base_initial_sl",
+            )
+
+    day3 = days[base_days - 1]
+    day3_close = _to_float(day3.get("close"), entry) or entry
+    day3_return_pct = (day3_close / entry - 1) * 100
+    if day3_return_pct > threshold:
+        return _close_trade(
+            entry, day3["date"], day3_close, "timeout", base_days,
+            days=days,
+            exit_signal_value=day3_return_pct,
+            exit_indicator="base_time_stop",
+        )
+
+    extension_slice = days[base_days:extension_days]
+    for d in extension_slice:
+        low = _to_float(d.get("low"), None)
+        if use_sl and initial_sl is not None and low is not None and low <= initial_sl:
+            return _close_trade(
+                entry, d["date"], initial_sl, "sl", d["day"],
+                days=days,
+                exit_signal_value=day3_return_pct,
+                exit_indicator="extension_initial_sl",
+            )
+
+    if len(days) < extension_days:
+        return _timeout_or_open(entry, days, extension_days)
+
+    day5 = days[extension_days - 1]
+    day5_close = _to_float(day5.get("close"), entry) or entry
+    return _close_trade(
+        entry, day5["date"], day5_close, "extension_time_stop", extension_days,
+        days=days,
+        exit_signal_value=day3_return_pct,
+        exit_indicator="extension_time_stop",
+    )
+
+
+def _day_upper_shadow_pct(day: dict) -> float | None:
+    high = _to_float(day.get("high"), None)
+    close = _to_float(day.get("close"), None)
+    open_proxy = _to_float(day.get("open"), None)
+    if open_proxy is None:
+        open_proxy = _to_float(day.get("prev_close"), close)
+    if high is None or close is None or close <= 0 or open_proxy is None:
+        return None
+    upper = max(0.0, high - max(open_proxy, close))
+    return upper / close * 100
+
+
+def simulate_h5_conditional_extension_with_ban_exit(row: dict, rules: dict) -> dict:
+    """H5 extension research exit with a day-3 ban condition.
+
+    Research-only: day3_return <= threshold normally extends to HD5, but the
+    configured ban pattern exits at HD3. Future labels do not carry true day-3
+    open/RSI, so open uses previous close and RSI uses the entry snapshot rsi14.
+    """
+    work_rules = dict(rules)
+    base_days = max(1, _to_int(work_rules.get("base_holding_days"), 3))
+    extension_days = max(base_days, _to_int(work_rules.get("extension_holding_days"), 5))
+    work_rules["max_holding_days"] = extension_days
+    entry, _entry_date, days = _price_path(row, work_rules)
+    if not entry:
+        return {"status": "open", "exit_reason": "invalid_entry"}
+
+    _raw_sl = work_rules.get("initial_sl_pct") if work_rules.get("initial_sl_pct") is not None else work_rules.get("sl_pct")
+    _sl_pct = float(_raw_sl) if _raw_sl is not None else None
+    use_sl = _sl_pct is not None and _sl_pct > -0.49
+    initial_sl = entry * (1 + _sl_pct) if use_sl else None
+    threshold = float(work_rules.get("extension_return_threshold_pct", -1.0))
+
+    if len(days) < base_days:
+        return _timeout_or_open(entry, days, base_days)
+
+    for d in days[:base_days]:
+        low = _to_float(d.get("low"), None)
+        if use_sl and initial_sl is not None and low is not None and low <= initial_sl:
+            return _close_trade(
+                entry, d["date"], initial_sl, "sl", d["day"],
+                days=days,
+                exit_signal_value=(initial_sl - entry) / entry * 100,
+                exit_indicator="base_initial_sl",
+            )
+
+    day3 = days[base_days - 1]
+    day3_close = _to_float(day3.get("close"), entry) or entry
+    day3_return_pct = (day3_close / entry - 1) * 100
+    day3_upper_shadow_pct = _day_upper_shadow_pct(day3)
+    day3_rsi = _to_float(row.get("rsi14"), None)
+
+    if day3_return_pct > threshold:
+        return _close_trade(
+            entry, day3["date"], day3_close, "timeout", base_days,
+            days=days,
+            exit_signal_value=day3_return_pct,
+            exit_indicator="base_time_stop",
+        )
+
+    ban_rule = str(work_rules.get("extension_ban_rule") or "")
+    banned = False
+    if ban_rule == "deep_loss_upper_shadow_rsi_20_35":
+        ban_return = float(work_rules.get("ban_day3_return_lte_pct", -3.0))
+        ban_upper = float(work_rules.get("ban_day3_upper_shadow_gte_pct", 1.0))
+        ban_rsi_min = float(work_rules.get("ban_day3_rsi_min", 20.0))
+        ban_rsi_max = float(work_rules.get("ban_day3_rsi_max", 35.0))
+        banned = (
+            day3_return_pct <= ban_return
+            and day3_upper_shadow_pct is not None
+            and day3_upper_shadow_pct >= ban_upper
+            and day3_rsi is not None
+            and ban_rsi_min <= day3_rsi <= ban_rsi_max
+        )
+
+    if banned:
+        return _close_trade(
+            entry, day3["date"], day3_close, "timeout", base_days,
+            days=days,
+            exit_signal_value=day3_return_pct,
+            exit_indicator="extension_banned_deep_upper_rsi",
+        )
+
+    extension_slice = days[base_days:extension_days]
+    for d in extension_slice:
+        low = _to_float(d.get("low"), None)
+        if use_sl and initial_sl is not None and low is not None and low <= initial_sl:
+            return _close_trade(
+                entry, d["date"], initial_sl, "sl", d["day"],
+                days=days,
+                exit_signal_value=day3_return_pct,
+                exit_indicator="extension_initial_sl",
+            )
+
+    if len(days) < extension_days:
+        return _timeout_or_open(entry, days, extension_days)
+
+    day5 = days[extension_days - 1]
+    day5_close = _to_float(day5.get("close"), entry) or entry
+    return _close_trade(
+        entry, day5["date"], day5_close, "extension_time_stop", extension_days,
+        days=days,
+        exit_signal_value=day3_return_pct,
+        exit_indicator="extension_time_stop",
+    )
+
+
+def _day_body_pct(day: dict) -> float | None:
+    close = _to_float(day.get("close"), None)
+    open_proxy = _to_float(day.get("open"), None)
+    if open_proxy is None:
+        open_proxy = _to_float(day.get("prev_close"), close)
+    if close is None or close <= 0 or open_proxy is None:
+        return None
+    return abs(close - open_proxy) / close * 100
+
+
+def simulate_h5_conditional_extension_allow_exit(row: dict, rules: dict) -> dict:
+    """H5 extension research exit with a day-3 allow condition.
+
+    day3_body_pct uses real day3 open from stock_feature_snapshots when available
+    (attached via _attach_future_day_features), falling back to prev_close proxy.
+    day3_volume_ratio uses real day3 volume_ratio_20d when available, falling
+    back to entry-snapshot volume_ratio_20d proxy.
+    Proxy usage is tracked in day3_open_is_proxy / day3_volume_ratio_is_proxy flags.
+    """
+    work_rules = dict(rules)
+    base_days = max(1, _to_int(work_rules.get("base_holding_days"), 3))
+    extension_days = max(base_days, _to_int(work_rules.get("extension_holding_days"), 5))
+    work_rules["max_holding_days"] = extension_days
+    entry, _entry_date, days = _price_path(row, work_rules)
+    if not entry:
+        return {"status": "open", "exit_reason": "invalid_entry"}
+
+    _raw_sl = work_rules.get("initial_sl_pct") if work_rules.get("initial_sl_pct") is not None else work_rules.get("sl_pct")
+    _sl_pct = float(_raw_sl) if _raw_sl is not None else None
+    use_sl = _sl_pct is not None and _sl_pct > -0.49
+    initial_sl = entry * (1 + _sl_pct) if use_sl else None
+    threshold = float(work_rules.get("extension_return_threshold_pct", -1.0))
+    allow_day1 = float(work_rules.get("allow_day1_return_gte_pct", -2.22))
+    allow_body = float(work_rules.get("allow_day3_body_lte_pct", 3.74))
+    allow_volume = float(work_rules.get("allow_day3_volume_ratio_lte", 2.0))
+
+    if len(days) < base_days:
+        return _timeout_or_open(entry, days, base_days)
+
+    for d in days[:base_days]:
+        low = _to_float(d.get("low"), None)
+        if use_sl and initial_sl is not None and low is not None and low <= initial_sl:
+            return _close_trade(
+                entry, d["date"], initial_sl, "sl", d["day"],
+                days=days,
+                exit_signal_value=(initial_sl - entry) / entry * 100,
+                exit_indicator="base_initial_sl",
+            )
+
+    day1 = days[0]
+    day3 = days[base_days - 1]
+    day1_close = _to_float(day1.get("close"), entry) or entry
+    day3_close = _to_float(day3.get("close"), entry) or entry
+    day1_return_pct = (day1_close / entry - 1) * 100
+    day3_return_pct = (day3_close / entry - 1) * 100
+
+    # day3 open: real from stock_feature_snapshots if attached, else prev_close proxy.
+    # _day_body_pct() internally falls back to prev_close when open is None.
+    day3_open_is_proxy = day3.get("open") is None
+    day3_body_pct = _day_body_pct(day3)
+
+    # day3 volume_ratio: real from stock_feature_snapshots if attached, else entry-date proxy.
+    day3_volume_ratio = _to_float(day3.get("volume_ratio"), None)
+    day3_volume_is_proxy = day3_volume_ratio is None
+    if day3_volume_is_proxy:
+        day3_volume_ratio = _to_float(row.get("volume_ratio_20d"), None)
+
+    day3_feature_source = (
+        "proxy" if (day3_open_is_proxy and day3_volume_is_proxy)
+        else ("mixed" if (day3_open_is_proxy or day3_volume_is_proxy) else "days_payload")
+    )
+
+    extension_candidate = day3_return_pct <= threshold
+    rejected: list[str] = []
+    if not extension_candidate:
+        rejected.append("day3_return_not_lte_threshold")
+    if day1_return_pct < allow_day1:
+        rejected.append("day1_weak")
+    if day3_body_pct is None:
+        rejected.append("day3_body_missing")
+    elif day3_body_pct > allow_body:
+        rejected.append("day3_body_large")
+    if day3_volume_ratio is None:
+        rejected.append("day3_volume_ratio_missing")
+    elif day3_volume_ratio > allow_volume:
+        rejected.append("day3_volume_hot")
+
+    if rejected:
+        indicator = "extension_rejected:" + ",".join(rejected) if extension_candidate else "base_time_stop"
+        result = _close_trade(
+            entry, day3["date"], day3_close, "timeout", base_days,
+            days=days,
+            exit_signal_value=day3_return_pct,
+            exit_indicator=indicator,
+        )
+        result["extension_candidate"] = extension_candidate
+        result["day3_open_is_proxy"] = day3_open_is_proxy
+        result["day3_volume_ratio_is_proxy"] = day3_volume_is_proxy
+        result["day3_feature_source"] = day3_feature_source
+        return result
+
+    extension_slice = days[base_days:extension_days]
+    for d in extension_slice:
+        low = _to_float(d.get("low"), None)
+        if use_sl and initial_sl is not None and low is not None and low <= initial_sl:
+            result = _close_trade(
+                entry, d["date"], initial_sl, "sl", d["day"],
+                days=days,
+                exit_signal_value=day3_return_pct,
+                exit_indicator="extension_allowed_initial_sl",
+            )
+            result["extension_candidate"] = True
+            result["day3_open_is_proxy"] = day3_open_is_proxy
+            result["day3_volume_ratio_is_proxy"] = day3_volume_is_proxy
+            result["day3_feature_source"] = day3_feature_source
+            return result
+
+    if len(days) < extension_days:
+        return _timeout_or_open(entry, days, extension_days)
+
+    day5 = days[extension_days - 1]
+    day5_close = _to_float(day5.get("close"), entry) or entry
+    result = _close_trade(
+        entry, day5["date"], day5_close, "extension_time_stop", extension_days,
+        days=days,
+        exit_signal_value=day3_return_pct,
+        exit_indicator="extension_allowed_time_stop",
+    )
+    result["extension_candidate"] = True
+    result["day3_open_is_proxy"] = day3_open_is_proxy
+    result["day3_volume_ratio_is_proxy"] = day3_volume_is_proxy
+    result["day3_feature_source"] = day3_feature_source
+    return result
+
+
 def simulate_ma_break_exit(row: dict, rules: dict) -> dict:
     entry, _entry_date, days = _price_path(row, rules)
     if not entry:
@@ -836,6 +1355,14 @@ def simulate_atr_trailing(row: dict, rules: dict) -> dict:
 
 def _exit_for_candidate(row: dict, rules: dict) -> dict:
     exit_type = str(rules.get("exit_type") or "fixed_tp_sl")
+    if exit_type == "conditional_extension_allow":
+        return simulate_h5_conditional_extension_allow_exit(row, rules)
+    if exit_type == "conditional_extension_with_ban":
+        return simulate_h5_conditional_extension_with_ban_exit(row, rules)
+    if exit_type == "conditional_extension":
+        return simulate_h5_conditional_extension_exit(row, rules)
+    if exit_type == "time_stop":
+        return simulate_h5_hd3_est12_exit(row, rules)
     if exit_type == "trailing_stop":
         return simulate_trailing_stop(row, rules)
     if exit_type == "pullback_exit":
@@ -1078,7 +1605,7 @@ def _build_result(run_id: str, case_id: str, simulations: list[dict], max_concur
             if s.get("exit_reason") in PROFIT_EXIT_REASONS and (_to_float(s.get("profit_pct"), 0) or 0) > 0
         ]),
         "sl_count": len([s for s in closed if s.get("exit_reason") == "sl"]),
-        "timeout_count": len([s for s in closed if s.get("exit_reason") == "timeout"]),
+        "timeout_count": len([s for s in closed if s.get("exit_reason") in {"timeout", "extension_time_stop"}]),
         "avg_peak_profit_pct": round(sum(peak_values) / len(peak_values), 3) if peak_values else None,
         "avg_trade_drawdown_pct": round(sum(trade_dd_values) / len(trade_dd_values), 3) if trade_dd_values else None,
     }
@@ -1117,7 +1644,16 @@ def _fetch_snapshots_by_ids(sb, ids: list[int], snap_cols: list[str], *, batch_s
     return rows
 
 
-def _load_candidates_v2(sb, period_start: date, period_end: date) -> list[dict]:
+def _load_candidates_v2(
+    sb,
+    period_start: date,
+    period_end: date,
+    *,
+    score_source: str = "active_model",
+    model_key: str = "rebound_lgbm_5d",
+    model_version: str | None = None,
+    allow_score_fallback: bool = False,
+) -> list[dict]:
     """Timeout-safe loader: labels first (offset pagination) → snapshot IDs → batch load."""
     snap_cols = sorted(set(
         [
@@ -1134,18 +1670,19 @@ def _load_candidates_v2(sb, period_start: date, period_end: date) -> list[dict]:
     start_s = period_start.isoformat()
     end_s = period_end.isoformat()
 
-    def label_query():
+    def label_query(last_id: int):
         return (
             sb.table("stock_rebound_labels")
             .select(",".join(label_cols))
+            .gt("id", last_id)
             .gte("trade_date", start_s)
             .lte("trade_date", end_s)
             .not_.is_("future_high_5d", "null")
             .not_.is_("future_low_5d", "null")
-            .order("trade_date")
+            .order("id")
         )
 
-    labels = _fetch_all_by_offset(label_query, label="labels")
+    labels = _fetch_all(label_query, label="labels")
     logger.info("[case_test] v2 labels loaded rows=%d", len(labels))
 
     snap_ids = [int(r["feature_snapshot_id"]) for r in labels if r.get("feature_snapshot_id")]
@@ -1178,7 +1715,57 @@ def _load_candidates_v2(sb, period_start: date, period_end: date) -> list[dict]:
     logger.info("[case_test] v2 merged candidate rows=%d", len(rows))
     _attach_weekly_margin(rows, _load_weekly_margin_rows(sb, period_start, period_end))
     _attach_market_regime(rows, _load_market_regime_rows(sb, period_start, period_end))
-    return _score_candidates(rows, _active_model_bundle(sb))
+    # Attach future day open/volume_ratio for Extension Allow real-feature evaluation.
+    unique_codes = list({str(r.get("code") or "") for r in rows if r.get("code")})
+    if unique_codes:
+        future_snaps = _load_future_day_snapshots(sb, unique_codes, period_start, period_end)
+        _attach_future_day_features(rows, future_snaps)
+
+    score_source = str(score_source or "active_model")
+    if score_source == "active_model":
+        return _score_candidates(rows, _active_model_bundle(sb))
+
+    if score_source in {"stored_predictions", "stored_or_active_fallback"}:
+        from services.model_predictions import join_predictions_to_candidates, load_model_predictions
+
+        predictions = load_model_predictions(
+            sb,
+            model_key=model_key,
+            model_version=model_version,
+            trade_date_from=period_start,
+            trade_date_to=period_end,
+            active_only=True,
+        )
+        join_result = join_predictions_to_candidates(rows, predictions)
+        logger.info(
+            "[case_test] score_source=%s model_key=%s model_version=%s matched=%d missing=%d",
+            score_source,
+            model_key,
+            model_version or "latest",
+            join_result.get("matched", 0),
+            join_result.get("missing", 0),
+        )
+        if score_source == "stored_or_active_fallback":
+            missing_rows = [r for r in rows if r.get("score_missing")]
+            if missing_rows:
+                _score_candidates(missing_rows, _active_model_bundle(sb))
+                for row in missing_rows:
+                    row["score_source"] = "stored_or_active_fallback"
+                    row["score_fallback_used"] = True
+            return _finalize_candidate_scores(
+                rows,
+                allow_proxy_score=allow_score_fallback,
+                default_score_source="stored_or_active_fallback",
+                score_fallback_used=False,
+            )
+        return _finalize_candidate_scores(
+            rows,
+            allow_proxy_score=allow_score_fallback,
+            default_score_source="stored_predictions",
+            score_fallback_used=False,
+        )
+
+    raise ValueError(f"unknown score_source: {score_source}")
 
 
 def run_trade_case_test_readonly(
@@ -1186,6 +1773,10 @@ def run_trade_case_test_readonly(
     period_end: str | date,
     case_keys: list[str] | None = None,
     sb=None,
+    score_source: str = "active_model",
+    model_key: str = "rebound_lgbm_5d",
+    model_version: str | None = None,
+    allow_score_fallback: bool = False,
 ) -> tuple[list[dict], dict[str, list[dict]], dict[str, dict]]:
     """Read-only variant: no 90-day limit, no DB writes.
 
@@ -1205,7 +1796,15 @@ def run_trade_case_test_readonly(
         q = q.in_("case_key", case_keys)
     cases = q.execute().data or []
 
-    candidates = _load_candidates_v2(sb, start, end)
+    candidates = _load_candidates_v2(
+        sb,
+        start,
+        end,
+        score_source=score_source,
+        model_key=model_key,
+        model_version=model_version,
+        allow_score_fallback=allow_score_fallback,
+    )
     logger.info("[case_test] readonly candidates=%d cases=%d", len(candidates), len(cases))
 
     sims_by_case: dict[str, list[dict]] = {}

@@ -571,7 +571,7 @@
   {% set h5_primary_rows = rows | selectattr('h5_primary_match') | list %}
   <div class="ta-h5-note">
     <strong>H5 Live Limited 実弾候補: {{ h5_primary_rows|selectattr('is_live_candidate')|list|length }}件 / H5 Research: {{ h5_primary_rows|length }}件</strong>
-    <div>AI 65%以上 / 20日高値比 -8%以上 / panic_selloff除外 / 過熱 cool・mild / 信用倍率3〜30倍 / ピーク反落-2% / 最大3営業日 / -12%事故停止</div>
+    <div>AI 65%以上 / 20日高値比 -8%以上 / panic_selloff除外 / 過熱 cool・mild / 信用倍率3〜30倍 / 3営業日目終値撤退 / -12%事故停止（ピーク反落なし）</div>
     {% if not h5_primary_rows %}
     <div>本日のH5条件に一致する購入候補はありません。現行ロジック候補は比較・観察用として下に表示します。</div>
     {% endif %}
@@ -602,7 +602,7 @@
         {% if r.h5_primary_match %}
         <div class="ta-h5-note" style="margin:0">
           <strong>{{ '実弾候補 / 同日終値付近entry前提' if r.is_live_candidate else '研究枠 / 制限なし仮想追跡' }}</strong>
-          <div>20日高値比 {{ pct(r.drop_from_20d_high_pct) }} / 過熱 {{ r.h5_overheat_score }} / 出口 ピーク反落-2%・3営業日・事故停止-12%</div>
+          <div>20日高値比 {{ pct(r.drop_from_20d_high_pct) }} / 過熱 {{ r.h5_overheat_score }} / 出口 3営業日終値・事故停止-12%（ピーク反落なし）</div>
           <div class="muted">
             {% if r.is_live_candidate %}
               Live順位 {{ r.selected_rank or '-' }} / {{ r.h5_candidate_count or '-' }}件中。翌日寄りが前日終値比 +2% を超える場合は飛びつき警戒。
@@ -879,9 +879,8 @@
         <div class="ta-exits">
           <span class="ta-exits-label">出口</span>
           {% if r.h5_primary_match %}
-          <b>ピーク反落-2%</b>
+          <b>3営業日目終値撤退</b>
           <b>事故停止-12%</b>
-          <b>最大3営業日</b>
           {% else %}
           <b>反落{{ num(exit_display.pullback_pct, 1, '%') }}</b>
           <b>RSI{{ num(exit_display.rsi_level, 0) }}後 反落{{ num(exit_display.rsi_pullback_pct, 1, '%') }}</b>
