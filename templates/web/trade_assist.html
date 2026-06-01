@@ -351,8 +351,14 @@
     overflow-wrap: anywhere;
   }
   .ta-reason { border-color: rgba(230, 200, 96, 0.22); }
+  .ta-reason span:not(:first-child) {
+    margin-top: 8px;
+  }
   .ta-reason-action {
     margin-top: 2px;
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
   }
   .ta-reason-action .btn {
     width: fit-content;
@@ -899,6 +905,12 @@
         <div class="ta-reason">
           <span>急落理由{% if r.drop_reason_source %} / {{ r.drop_reason_source }}{% endif %}</span>
           <p>{{ r.drop_reason_comment or '急落理由コメントは未生成です。' }}</p>
+          <span>H5判定理由{% if r.h5_reason_source %} / {{ r.h5_reason_source }}{% endif %}</span>
+          <p>{{ r.h5_reason_comment or 'H5判定理由は未生成です。' }}</p>
+          <span>AIスコア理由{% if r.ai_score_reason_source %} / {{ r.ai_score_reason_source }}{% endif %}</span>
+          <p>{{ r.ai_score_reason_comment or 'AIスコア理由は未生成です。' }}</p>
+          <span>リスク理由{% if r.risk_reason_source %} / {{ r.risk_reason_source }}{% endif %}</span>
+          <p>{{ r.risk_reason_comment or 'リスク理由は未生成です。' }}</p>
         </div>
 
         <form method="post" action="/web/trade-assist/generate-reason" class="ta-reason-action js-disable-on-submit">
@@ -907,6 +919,29 @@
           <input type="hidden" name="drop_pct" value="{{ r.drop_pct if r.drop_pct is not none else '' }}">
           <input type="hidden" name="nikkei_pct" value="{{ r.market_nikkei_pct if r.market_nikkei_pct is not none else '' }}">
           <button class="btn sm" type="submit">AIで急落理由を生成</button>
+        </form>
+        <form method="post" action="/web/trade-assist/generate-h5-ai-reasons" class="ta-reason-action js-disable-on-submit">
+          <input type="hidden" name="trade_date" value="{{ r.trade_date or summary.latest_feature_date or '' }}">
+          <input type="hidden" name="code" value="{{ r.code }}">
+          <input type="hidden" name="name" value="{{ r.name or '' }}">
+          <input type="hidden" name="ai_score" value="{{ r.display_probability if r.display_probability is not none else (r.signal_probability if r.signal_probability is not none else '') }}">
+          <input type="hidden" name="drop_pct" value="{{ r.drop_pct if r.drop_pct is not none else '' }}">
+          <input type="hidden" name="drop_from_20d_high_pct" value="{{ r.drop_from_20d_high_pct if r.drop_from_20d_high_pct is not none else '' }}">
+          <input type="hidden" name="rsi14" value="{{ r.rsi14 if r.rsi14 is not none else '' }}">
+          <input type="hidden" name="volume_ratio_20d" value="{{ r.volume_ratio_20d if r.volume_ratio_20d is not none else (r.volume_ratio if r.volume_ratio is not none else '') }}">
+          <input type="hidden" name="margin_ratio" value="{{ r.margin_ratio if r.margin_ratio is not none else '' }}">
+          <input type="hidden" name="market_regime" value="{{ r.market_regime or '' }}">
+          <input type="hidden" name="h5_overheat_score" value="{{ r.h5_overheat_score if r.h5_overheat_score is not none else '' }}">
+          <input type="hidden" name="signal_stage" value="{{ r.signal_stage or '' }}">
+          <input type="hidden" name="score_source" value="{{ r.score_source or r.prediction_source or '' }}">
+          <input type="hidden" name="model_version" value="{{ r.model_version or '' }}">
+          <input type="hidden" name="score_fallback_used" value="{{ 'true' if r.score_fallback_used else 'false' }}">
+          <input type="hidden" name="h5_primary_match" value="{{ 'true' if r.h5_primary_match else 'false' }}">
+          <input type="hidden" name="h5_skip_reason" value="{{ r.h5_skip_reason or '' }}">
+          <input type="hidden" name="entry_gap_pct" value="{{ r.entry_gap_pct if r.entry_gap_pct is not none else '' }}">
+          <input type="hidden" name="entry_ma25_gap_pct" value="{{ r.entry_ma25_gap_pct if r.entry_ma25_gap_pct is not none else '' }}">
+          <input type="hidden" name="entry_ma75_gap_pct" value="{{ r.entry_ma75_gap_pct if r.entry_ma75_gap_pct is not none else '' }}">
+          <button class="btn sm" type="submit">H5/AI理由を生成</button>
         </form>
       </article>
     {% else %}

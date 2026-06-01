@@ -37,6 +37,12 @@ from services.price_fetcher import (
 from services.trade_assist_history import decorate_history_rows
 from services.nikkei_correlation import decorate_nikkei_correlation
 from services.rebound_diagnostics import decorate_rebound_diagnostics
+from services.h5_reason_builder import (
+    build_h5_ai_reasons,
+    get_cached_reasons,
+    load_reason_cache,
+    upsert_cached_reasons,
+)
 
 from linebot.v3 import WebhookHandler
 from linebot.v3.exceptions import InvalidSignatureError
@@ -4048,6 +4054,7 @@ def web_trade_assist():
     except Exception as e:
         logger.warning("trade assist drop comment lookup failed: %s", e)
         drop_comments = {}
+    h5_ai_reason_cache = load_reason_cache()
 
     def _merge_card_sources(*sources: dict | None) -> dict:
         merged = {}
@@ -4062,6 +4069,7 @@ def web_trade_assist():
     def _build_card(base: dict, *, trade: dict | None = None, source_label: str = "") -> dict:
         row = _with_ai_priority_stage(dict(base), market_adjustment)
         code = str(row.get("code") or "")
+        row["trade_date"] = row.get("trade_date") or latest_feature_date
         profile = company_profiles.get(str(row.get("code") or "")) or {}
         entry_price = _num(trade or {}, "buy_price", default=0.0) or _num(row, "price_at_drop", "close", default=0.0)
         stop_price = entry_price * (1.0 - stop_loss_pct / 100.0) if entry_price > 0 else None
@@ -4152,6 +4160,20 @@ def web_trade_assist():
         row["h5_selected_count"] = (trade or row).get("h5_selected_count")
         row["h5_skip_reason"] = None if row["h5_primary_match"] or trade else " / ".join(h5_reasons)
         row["h5_overheat_score"] = h5_meta.get("entry_overheat_score")
+        cached_reasons = get_cached_reasons(row, h5_ai_reason_cache)
+        if cached_reasons:
+            for reason_key in (
+                "h5_reason_comment",
+                "h5_reason_source",
+                "h5_reason_generated_at",
+                "ai_score_reason_comment",
+                "ai_score_reason_source",
+                "ai_score_reason_generated_at",
+                "risk_reason_comment",
+                "risk_reason_source",
+                "risk_reason_generated_at",
+            ):
+                row[reason_key] = cached_reasons.get(reason_key)
         if row["h5_primary_match"]:
             row["stop_loss_pct"] = h5_exit_display["stop_loss_pct"]
             row["stop_loss_price"] = entry_price * (1.0 - row["stop_loss_pct"] / 100.0) if entry_price > 0 else None
@@ -4417,6 +4439,65 @@ def web_trade_assist_generate_reason():
     except Exception as e:
         logger.exception("trade assist reason generation failed code=%s", code)
         flash(f"{code} の急落理由生成に失敗しました: {e}", "warning")
+
+    return redirect(url_for("web_trade_assist"))
+
+
+@app.route("/web/trade-assist/generate-h5-ai-reasons", methods=["POST"])
+def web_trade_assist_generate_h5_ai_reasons():
+    code = str(request.form.get("code") or "").strip()
+    if not code:
+        flash("H5/AI理由を生成する銘柄が見つかりません。", "warning")
+        return redirect(url_for("web_trade_assist"))
+
+    form_row = {
+        key: value
+        for key, value in request.form.items()
+        if value not in (None, "")
+    }
+    form_row["code"] = code
+    try:
+        rows = (
+            supabase.table("stock_drop_watchlist")
+            .select("*")
+            .eq("code", code)
+            .order("updated_at", desc=True)
+            .limit(1)
+            .execute()
+            .data or []
+        )
+        db_row = rows[0] if rows else {}
+    except Exception as e:
+        logger.warning("trade assist h5/ai reason candidate lookup failed code=%s: %s", code, e)
+        db_row = {}
+
+    row = {**db_row, **form_row}
+    row = _with_ai_priority_stage(row, _current_market_adjustment())
+    row["name"] = row.get("name") or code
+
+    if "h5_primary_match" not in row or str(row.get("h5_primary_match") or "").strip() == "":
+        try:
+            h5_input = {
+                **row,
+                "signal_probability": row.get("ai_score")
+                or row.get("display_probability")
+                or row.get("signal_probability")
+                or row.get("entry_probability"),
+            }
+            h5_passed, h5_reasons, h5_meta = evaluate_h5_primary_entry(h5_input)
+            row["h5_primary_match"] = h5_passed
+            row["h5_skip_reason"] = None if h5_passed else " / ".join(h5_reasons)
+            row["h5_overheat_score"] = h5_meta.get("entry_overheat_score") or row.get("h5_overheat_score")
+        except Exception as e:
+            logger.warning("trade assist h5 reason entry evaluation failed code=%s: %s", code, e)
+
+    try:
+        reasons = build_h5_ai_reasons(row)
+        upsert_cached_reasons(row, reasons)
+        flash(f"{code} のH5/AI理由を生成しました。", "success")
+    except Exception as e:
+        logger.exception("trade assist h5/ai reason generation failed code=%s", code)
+        flash(f"{code} のH5/AI理由生成に失敗しました: {e}", "warning")
 
     return redirect(url_for("web_trade_assist"))
 
