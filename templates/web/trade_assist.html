@@ -363,6 +363,15 @@
   .ta-reason-action .btn {
     width: fit-content;
   }
+  .ta-shap-list {
+    display: grid;
+    gap: 3px;
+    margin: 0;
+    padding-left: 16px;
+    color: var(--ta-dim-2);
+    font-size: 12px;
+    line-height: 1.5;
+  }
   .ta-section-label {
     margin: -2px 0 -8px;
     color: var(--ta-dim-2);
@@ -909,6 +918,27 @@
           <p>{{ r.h5_reason_comment or 'H5判定理由は未生成です。' }}</p>
           <span>AIスコア理由{% if r.ai_score_reason_source %} / {{ r.ai_score_reason_source }}{% endif %}</span>
           <p>{{ r.ai_score_reason_comment or 'AIスコア理由は未生成です。' }}</p>
+          <span>SHAP AIスコア理由{% if r.shap_reason_source %} / {{ r.shap_reason_source }}{% endif %}</span>
+          <p>{{ r.shap_reason_comment or 'SHAP理由は未生成です。' }}</p>
+          {% if r.shap_positive_contributions %}
+          <ol class="ta-shap-list">
+            <li>押し上げ要因</li>
+            {% for item in r.shap_positive_contributions[:5] %}
+            <li>{{ item.label or item.feature }}={{ item.value }}（SHAP {{ "%.4f"|format(item.shap_value) }}）</li>
+            {% endfor %}
+          </ol>
+          {% endif %}
+          {% if r.shap_negative_contributions %}
+          <ol class="ta-shap-list">
+            <li>押し下げ要因</li>
+            {% for item in r.shap_negative_contributions[:5] %}
+            <li>{{ item.label or item.feature }}={{ item.value }}（SHAP {{ "%.4f"|format(item.shap_value) }}）</li>
+            {% endfor %}
+          </ol>
+          {% endif %}
+          {% if r.shap_warnings %}
+          <p>警告: {{ r.shap_warnings|join(' / ') }}</p>
+          {% endif %}
           <span>リスク理由{% if r.risk_reason_source %} / {{ r.risk_reason_source }}{% endif %}</span>
           <p>{{ r.risk_reason_comment or 'リスク理由は未生成です。' }}</p>
         </div>
@@ -942,6 +972,15 @@
           <input type="hidden" name="entry_ma25_gap_pct" value="{{ r.entry_ma25_gap_pct if r.entry_ma25_gap_pct is not none else '' }}">
           <input type="hidden" name="entry_ma75_gap_pct" value="{{ r.entry_ma75_gap_pct if r.entry_ma75_gap_pct is not none else '' }}">
           <button class="btn sm" type="submit">H5/AI理由を生成</button>
+        </form>
+        <form method="post" action="/web/trade-assist/generate-shap-reason" class="ta-reason-action js-disable-on-submit">
+          <input type="hidden" name="trade_date" value="{{ r.trade_date or summary.latest_feature_date or '' }}">
+          <input type="hidden" name="code" value="{{ r.code }}">
+          <input type="hidden" name="name" value="{{ r.name or '' }}">
+          <input type="hidden" name="model_key" value="{{ r.model_key or 'rebound_lgbm_5d' }}">
+          <input type="hidden" name="model_version" value="{{ r.model_version or '' }}">
+          <input type="hidden" name="signal_probability" value="{{ r.signal_probability if r.signal_probability is not none else (r.display_probability if r.display_probability is not none else (r.entry_probability if r.entry_probability is not none else '')) }}">
+          <button class="btn sm" type="submit">SHAPでAI理由を生成</button>
         </form>
       </article>
     {% else %}

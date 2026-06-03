@@ -43,6 +43,13 @@ from services.h5_reason_builder import (
     load_reason_cache,
     upsert_cached_reasons,
 )
+from services.h5_shap_explainer import (
+    DEFAULT_MODEL_KEY as H5_SHAP_DEFAULT_MODEL_KEY,
+    compute_shap_for_candidate,
+    load_shap_cache,
+    save_shap_cache,
+)
+from services.h5_shap_reason_builder import build_shap_reason_comment, merge_shap_reason
 
 from linebot.v3 import WebhookHandler
 from linebot.v3.exceptions import InvalidSignatureError
@@ -4150,6 +4157,7 @@ def web_trade_assist():
         row["h5_primary_match"] = persisted_h5 if trade else h5_passed
         row["h5_case_key"] = H5_PRIMARY_CASE_KEY
         row["h5_case_label"] = H5_PRIMARY_DISPLAY_NAME
+        row["model_key"] = row.get("model_key") or H5_SHAP_DEFAULT_MODEL_KEY
         row["position_limit_mode"] = (trade or row).get("position_limit_mode") or ("live_limited" if row.get("is_live_candidate") else "research")
         row["is_live_candidate"] = bool((trade or row).get("is_live_candidate"))
         row["is_h5_research"] = bool((trade or row).get("is_h5_research")) or (persisted_case_key == H5_RESEARCH_CASE_KEY)
@@ -4174,6 +4182,20 @@ def web_trade_assist():
                 "risk_reason_generated_at",
             ):
                 row[reason_key] = cached_reasons.get(reason_key)
+        cached_shap = load_shap_cache(
+            code,
+            str(row.get("trade_date") or latest_feature_date or "")[:10],
+            str(row.get("model_key") or H5_SHAP_DEFAULT_MODEL_KEY),
+            str(row.get("model_version") or ""),
+        )
+        if cached_shap:
+            shap_reason = build_shap_reason_comment(cached_shap)
+            row["shap_reason_comment"] = cached_shap.get("shap_reason_comment") or shap_reason.get("shap_reason_comment")
+            row["shap_reason_source"] = cached_shap.get("shap_reason_source") or shap_reason.get("shap_reason_source")
+            row["shap_generated_at"] = cached_shap.get("shap_generated_at") or shap_reason.get("shap_generated_at")
+            row["shap_positive_contributions"] = cached_shap.get("positive_contributions") or []
+            row["shap_negative_contributions"] = cached_shap.get("negative_contributions") or []
+            row["shap_warnings"] = cached_shap.get("warnings") or []
         if row["h5_primary_match"]:
             row["stop_loss_pct"] = h5_exit_display["stop_loss_pct"]
             row["stop_loss_price"] = entry_price * (1.0 - row["stop_loss_pct"] / 100.0) if entry_price > 0 else None
@@ -4499,6 +4521,38 @@ def web_trade_assist_generate_h5_ai_reasons():
         logger.exception("trade assist h5/ai reason generation failed code=%s", code)
         flash(f"{code} のH5/AI理由生成に失敗しました: {e}", "warning")
 
+    return redirect(url_for("web_trade_assist"))
+
+
+@app.route("/web/trade-assist/generate-shap-reason", methods=["POST"])
+def web_trade_assist_generate_shap_reason():
+    code = _form_text("code")
+    if not code:
+        flash("SHAP理由を生成する銘柄が見つかりません。", "warning")
+        return redirect(url_for("web_trade_assist"))
+
+    row = {
+        key: value
+        for key, value in request.form.items()
+        if value not in (None, "")
+    }
+    row["code"] = code
+    row["name"] = row.get("name") or code
+    row["model_key"] = row.get("model_key") or H5_SHAP_DEFAULT_MODEL_KEY
+    row["trade_date"] = str(row.get("trade_date") or "")[:10]
+    try:
+        result = compute_shap_for_candidate(row, allow_active_fallback=False, force=False)
+        merged = merge_shap_reason(result)
+        if merged.get("ok"):
+            save_shap_cache(merged)
+            flash(f"SHAP理由を生成しました: {code} {row.get('name') or ''}", "success")
+        else:
+            reason = merged.get("reason") or merged.get("shap_reason_comment") or "unknown"
+            save_shap_cache(merged)
+            flash(f"SHAP理由生成に失敗しました: {reason}", "warning")
+    except Exception as e:
+        logger.exception("trade assist shap reason generation failed code=%s", code)
+        flash(f"SHAP理由生成に失敗しました: {e}", "warning")
     return redirect(url_for("web_trade_assist"))
 
 
