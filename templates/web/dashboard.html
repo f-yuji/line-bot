@@ -342,7 +342,19 @@
       <tr>
         <td class="code">{{ t.code }}</td>
         <td class="name">{{ t.name or "" }}</td>
-        <td>{% if t.is_live_candidate %}<span class="tag">LIVE{% if t.live_allocation_bucket %} / {{ t.live_allocation_bucket }}{% endif %}</span>{% else %}<span class="muted" style="font-size:11px">research</span>{% endif %}</td>
+        <td>
+          {% if t.live_allocation_bucket == 'current_h5_core' %}
+            <span class="tag">H5本命</span>
+          {% elif t.live_allocation_bucket == 'short_pullback' or t.case_key == 'H5_short_pullback_drop5_m3' or t.live_case_key == 'H5_short_pullback_drop5_m3' %}
+            <span class="tag">短期押し目</span>
+          {% elif t.live_allocation_bucket == 'trend_support' %}
+            <span class="tag">順張り補助</span>
+          {% elif t.is_live_candidate %}
+            <span class="tag">LIVE</span>
+          {% else %}
+            <span class="muted" style="font-size:11px">検証/研究</span>
+          {% endif %}
+        </td>
         <td class="right num">{{ "{:,.0f}".format(t.buy_price) if t.buy_price else "—" }}</td>
         <td class="right num">{{ "{:,.0f}".format(t.current_price) if t.current_price else "—" }}</td>
         <td class="right num {% if t.unrealized_pnl_pct is not none %}{% if t.unrealized_pnl_pct >= 0 %}up-text{% else %}down-text{% endif %}{% endif %}">

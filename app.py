@@ -2661,17 +2661,26 @@ def web_dashboard():
     # H5 open positions
     h5_open_trades: list[dict] = []
     try:
-        h5_open_trades = (
+        h5_open_raw = (
             supabase.table("virtual_trades")
-            .select("id,code,name,buy_price,buy_date,peak_price,current_price,unrealized_pnl_pct,case_key,is_primary_h5,is_live_candidate,selected_rank,entry_probability,live_allocation_bucket,allocation_rank,live_skip_reason")
-            .in_("case_key", list(H5_ACTIVE_CASE_KEYS))
+            .select("id,code,name,buy_price,buy_date,peak_price,current_price,unrealized_pnl_pct,case_key,is_primary_h5,is_live_candidate,is_h5_research,is_h5_live_limited,selected_rank,entry_probability,live_allocation_bucket,allocation_rank,live_skip_reason,live_case_key,position_limit_mode")
             .eq("status", "open")
             .is_("sell_date", "null")
             .order("buy_date", desc=True)
-            .limit(20)
+            .limit(100)
             .execute()
             .data or []
         )
+        h5_open_trades = [
+            t for t in h5_open_raw
+            if str(t.get("case_key") or "") in H5_ACTIVE_CASE_KEYS
+            or str(t.get("live_case_key") or "") in H5_ACTIVE_CASE_KEYS
+            or str(t.get("case_key") or "") == "H5_short_pullback_drop5_m3"
+            or str(t.get("live_case_key") or "") == "H5_short_pullback_drop5_m3"
+            or bool(t.get("is_h5_research"))
+            or bool(t.get("is_h5_live_limited"))
+            or bool(t.get("is_live_candidate"))
+        ][:20]
     except Exception as e:
         logger.warning("h5 open trades fetch failed: %s", e)
 
@@ -3980,7 +3989,7 @@ def web_trade_assist():
         rows = (
             supabase.table("stock_drop_watchlist")
             .select("*")
-            .in_("status", ["rebound_signal"])
+            .in_("status", ["rebound_signal", "signal_skipped", "entered"])
             .order("last_signal_at", desc=True)
             .limit(300)
             .execute()
@@ -4150,13 +4159,14 @@ def web_trade_assist():
             "signal_probability": row.get("display_probability") or row.get("signal_probability"),
         }
         h5_passed, h5_reasons, h5_meta = evaluate_h5_primary_entry(h5_input)
-        persisted_case_key = str((trade or {}).get("case_key") or row.get("case_key") or "")
-        persisted_h5 = bool((trade or {}).get("is_primary_h5")) or persisted_case_key in H5_ACTIVE_CASE_KEYS
+        persisted_case_key = str((trade or {}).get("case_key") or row.get("case_key") or row.get("live_case_key") or "")
+        is_short_pullback_case = persisted_case_key == "H5_short_pullback_drop5_m3"
+        persisted_h5 = bool((trade or {}).get("is_primary_h5")) or persisted_case_key in H5_ACTIVE_CASE_KEYS or is_short_pullback_case
         # An already-created legacy virtual trade must not be relabeled as H5,
         # because its stored exit rule remains the legacy one.
         row["h5_primary_match"] = persisted_h5 if trade else h5_passed
-        row["h5_case_key"] = H5_PRIMARY_CASE_KEY
-        row["h5_case_label"] = H5_PRIMARY_DISPLAY_NAME
+        row["h5_case_key"] = persisted_case_key if is_short_pullback_case else H5_PRIMARY_CASE_KEY
+        row["h5_case_label"] = "H5短期押し目: drop5 -3%" if is_short_pullback_case else H5_PRIMARY_DISPLAY_NAME
         row["model_key"] = row.get("model_key") or H5_SHAP_DEFAULT_MODEL_KEY
         row["position_limit_mode"] = (trade or row).get("position_limit_mode") or ("live_limited" if row.get("is_live_candidate") else "research")
         row["is_live_candidate"] = bool((trade or row).get("is_live_candidate"))
@@ -4236,17 +4246,25 @@ def web_trade_assist():
         seen_codes.add(code)
 
     for row in rows:
-        if row.get("status") != "rebound_signal":
+        if row.get("status") != "rebound_signal" and not row.get("is_live_candidate"):
             continue
         if row.get("signal_stage") not in {"confirmed", "strong_confirmed"}:
             continue
-        if row.get("is_excluded") or row.get("virtual_trade_id"):
+        if row.get("is_excluded"):
+            continue
+        if row.get("virtual_trade_id") and not row.get("is_live_candidate"):
             continue
         if str(row.get("code") or "") in seen_codes:
             continue
         if not _not_expired(row):
             continue
-        cards.append(_build_card(row, source_label="未エントリー"))
+        if row.get("status") == "entered":
+            source_label = "LIVE保有中"
+        elif row.get("status") == "signal_skipped":
+            source_label = "LIVE見送り"
+        else:
+            source_label = "未エントリー"
+        cards.append(_build_card(row, source_label=source_label))
         seen_codes.add(str(row.get("code") or ""))
 
     decorate_h5_price_assist_cards(cards)

@@ -55,6 +55,10 @@ from services.h5_live_allocator import (
 )
 from services.model_storage import download_model_artifact
 from services.model_predictions import save_model_predictions
+from services.reentry_cooldown import (
+    DEFAULT_REENTRY_COOLDOWN_DAYS,
+    reentry_cooldown_days_for_closed_trade,
+)
 from services.signal_stage import SIGNAL_STAGES, evaluate_signal_stage
 from services.signal_history import record_rebound_signal
 from services.trading_calendar import latest_feature_matches_today, should_skip_today_cron
@@ -73,7 +77,7 @@ TARGET_CONFIG = {
     "5d": {"model_name": "rebound_lgbm_5d", "legacy_model_name": "rebound_lgbm", "take_profit_pct": 5.0, "stop_loss_pct": -3.0, "holding_days": 5},
     "10d": {"model_name": "rebound_lgbm_10d", "legacy_model_name": None, "take_profit_pct": 7.0, "stop_loss_pct": -4.0, "holding_days": 10},
 }
-VIRTUAL_REENTRY_COOLDOWN_DAYS = 10
+VIRTUAL_REENTRY_COOLDOWN_DAYS = DEFAULT_REENTRY_COOLDOWN_DAYS
 ENTRY_SIGNAL_STAGES = {"confirmed", "strong_confirmed"}
 ACTIVE_SIGNAL_STAGES = {"confirmed", "strong_confirmed"}
 H5_WATCH_AI_MIN = 0.60
@@ -403,7 +407,7 @@ def _recent_closed_trade(sb, code: str, cooldown_days: int = VIRTUAL_REENTRY_COO
     try:
         rows = (
             sb.table("virtual_trades")
-            .select("id,code,status,sell_date,sell_reason,exit_reason,exit_checked_at,updated_at")
+            .select("id,code,status,sell_date,sell_reason,exit_reason,exit_checked_at,updated_at,profit_loss_pct,virtual_pnl_pct,actual_pnl_pct")
             .eq("code", code)
             .eq("status", "closed")
             .order("updated_at", desc=True)
@@ -416,8 +420,10 @@ def _recent_closed_trade(sb, code: str, cooldown_days: int = VIRTUAL_REENTRY_COO
         return None
     for row in rows:
         days = _days_since(row.get("sell_date") or row.get("exit_checked_at") or row.get("updated_at"))
-        if days is not None and days <= cooldown_days:
+        effective_cooldown_days = min(cooldown_days, reentry_cooldown_days_for_closed_trade(row))
+        if days is not None and days <= effective_cooldown_days:
             row["days_since_exit"] = days
+            row["reentry_cooldown_days"] = effective_cooldown_days
             return row
     return None
 
@@ -977,10 +983,11 @@ def _create_virtual_trade(sb, snapshot: dict, watch: dict, result: dict, *, dry_
         recent = _recent_closed_trade(sb, str(snapshot["code"]))
         if recent:
             logger.info(
-                "virtual_trade skipped by reentry cooldown: code=%s reason=%s days=%s",
+                "virtual_trade skipped by reentry cooldown: code=%s reason=%s days=%s cooldown=%s",
                 snapshot.get("code"),
                 recent.get("exit_reason") or recent.get("sell_reason"),
                 recent.get("days_since_exit"),
+                recent.get("reentry_cooldown_days"),
             )
             _virtual_entry_check_log(snapshot, result, "skip", "reentry_cooldown")
             _mark_watchlist_status(sb, watch, snapshot, "signal_skipped", "reentry_cooldown", dry_run=dry_run)

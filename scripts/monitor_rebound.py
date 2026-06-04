@@ -48,6 +48,10 @@ from services.h5_live_allocator import (
     short_pullback_reasons,
     trend_support_reasons,
 )
+from services.reentry_cooldown import (
+    DEFAULT_REENTRY_COOLDOWN_DAYS,
+    reentry_cooldown_days_for_closed_trade,
+)
 from services.signal_stage import SIGNAL_STAGES, evaluate_signal_stage
 from services.signal_history import record_rebound_signal
 from services.virtual_trade_exit import close_related_watchlist, evaluate_virtual_trade_exit, fetch_snapshot_price_rows_since_entry
@@ -62,7 +66,7 @@ JST = timezone(timedelta(hours=9))
 LINE_API_BASE = "https://api.line.me"
 JAPAN_MARKETS = {"nikkei225", "nikkei", "prime", "tse_prime", "japan"}
 NON_JAPAN_MARKETS = {"dow", "dow30", "us", "usa", "nyse", "nasdaq", "djia"}
-VIRTUAL_REENTRY_COOLDOWN_DAYS = 10
+VIRTUAL_REENTRY_COOLDOWN_DAYS = DEFAULT_REENTRY_COOLDOWN_DAYS
 ENTRY_SIGNAL_STAGES = {"confirmed", "strong_confirmed"}
 SMOKE_RELAXED_OVERRIDES = {
     "daily_rebound_threshold": 2.0,
@@ -239,7 +243,7 @@ def _recent_closed_trade(code: str, now_utc: datetime, cooldown_days: int = VIRT
     try:
         rows = (
             supabase.table("virtual_trades")
-            .select("id,code,status,sell_date,sell_reason,exit_reason,exit_checked_at,updated_at")
+            .select("id,code,status,sell_date,sell_reason,exit_reason,exit_checked_at,updated_at,profit_loss_pct,virtual_pnl_pct,actual_pnl_pct")
             .eq("code", code)
             .eq("status", "closed")
             .order("updated_at", desc=True)
@@ -252,8 +256,10 @@ def _recent_closed_trade(code: str, now_utc: datetime, cooldown_days: int = VIRT
         return None
     for row in rows:
         days = _days_since(row.get("sell_date") or row.get("exit_checked_at") or row.get("updated_at"), now_utc)
-        if days is not None and days <= cooldown_days:
+        effective_cooldown_days = min(cooldown_days, reentry_cooldown_days_for_closed_trade(row))
+        if days is not None and days <= effective_cooldown_days:
             row["days_since_exit"] = days
+            row["reentry_cooldown_days"] = effective_cooldown_days
             return row
     return None
 
@@ -692,10 +698,11 @@ def _create_virtual_trade(
         recent = _recent_closed_trade(code, now_utc)
         if recent:
             logger.info(
-                "virtual buy skipped by reentry cooldown: %s reason=%s days=%s",
+                "virtual buy skipped by reentry cooldown: %s reason=%s days=%s cooldown=%s",
                 code,
                 recent.get("exit_reason") or recent.get("sell_reason"),
                 recent.get("days_since_exit"),
+                recent.get("reentry_cooldown_days"),
             )
             _mark_watchlist_status(item, "signal_skipped", "reentry_cooldown", now_utc)
             return False
