@@ -581,6 +581,15 @@ def close_related_watchlist(sb, trade: dict, exit_reason: str, *, dry_run: bool)
         "closed_at": now,
         "close_reason": exit_reason,
         "signal_status_reason": f"virtual_trade_closed:{exit_reason}",
+        "is_live_candidate": False,
+        "is_h5_live_candidate": False,
+        "is_h5_live_limited": False,
+        "selected_rank": None,
+        "live_candidate_rank": None,
+        "live_allocation_bucket": None,
+        "allocation_rank": None,
+        "live_allocation_mode": None,
+        "live_skip_reason": "closed",
         "updated_at": now,
     }
 

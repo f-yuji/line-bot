@@ -2684,7 +2684,7 @@ def web_dashboard():
             supabase.table("stock_drop_watchlist")
             .select("code,name,h5_primary_match,h5_skip_reason,h5_overheat_score,signal_probability,drop_detected_at,is_live_candidate,selected_rank,live_allocation_bucket,allocation_rank,live_skip_reason")
             .not_.is_("h5_case_key", "null")
-            .gte("updated_at", _today_start_utc)
+            .gte("last_signal_at", _today_start_utc)
             .order("h5_primary_match", desc=True)
             .order("signal_probability", desc=True)
             .limit(30)

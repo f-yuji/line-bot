@@ -8,4 +8,11 @@ dev_launcher/
 .env
 .env.*
 *.log
+logs/
+outputs/
+backups/
+.yfinance_cache/
+.mpl_cache/
+.mplconfig/
+.claude/
 .vscode/
