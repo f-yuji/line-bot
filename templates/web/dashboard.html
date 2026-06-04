@@ -342,7 +342,7 @@
       <tr>
         <td class="code">{{ t.code }}</td>
         <td class="name">{{ t.name or "" }}</td>
-        <td>{% if t.is_live_candidate %}<span class="tag">LIVE</span>{% else %}<span class="muted" style="font-size:11px">research</span>{% endif %}</td>
+        <td>{% if t.is_live_candidate %}<span class="tag">LIVE{% if t.live_allocation_bucket %} / {{ t.live_allocation_bucket }}{% endif %}</span>{% else %}<span class="muted" style="font-size:11px">research</span>{% endif %}</td>
         <td class="right num">{{ "{:,.0f}".format(t.buy_price) if t.buy_price else "—" }}</td>
         <td class="right num">{{ "{:,.0f}".format(t.current_price) if t.current_price else "—" }}</td>
         <td class="right num {% if t.unrealized_pnl_pct is not none %}{% if t.unrealized_pnl_pct >= 0 %}up-text{% else %}down-text{% endif %}{% endif %}">
@@ -378,7 +378,7 @@
         <td class="code">{{ r.code }}</td>
         <td class="name">{{ r.name or "" }}</td>
         <td>
-          {% if r.h5_primary_match %}<span class="badge notified">通過{% if r.is_live_candidate %} LIVE{% endif %}</span>
+          {% if r.h5_primary_match %}<span class="badge notified">通過{% if r.is_live_candidate %} LIVE{% if r.live_allocation_bucket %} / {{ r.live_allocation_bucket }}{% endif %}{% endif %}</span>
           {% else %}<span class="badge closed">スキップ</span>{% endif %}
         </td>
         <td class="right num">{% if r.signal_probability is not none %}{{ "%.0f"|format(r.signal_probability * 100) }}{% else %}—{% endif %}</td>

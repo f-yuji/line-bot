@@ -82,16 +82,16 @@ H5_RESEARCH_RULES: dict[str, Any] = {
 
 H5_LIVE_LIMITED_RULES: dict[str, Any] = {
     **H5_BASE_RULES,
-    "position_limit_mode": "live_limited",
-    "max_open_positions": 2,
-    "max_daily_entries": 2,
+    "position_limit_mode": "balanced_cases",
+    "live_allocation_mode": "balanced_cases",
+    "max_daily_live_candidates": 10,
+    "live_allocation_buckets": {
+        "current_h5_core": 4,
+        "short_pullback": 3,
+        "trend_support": 3,
+    },
     "max_sector_positions": 2,
-    "entry_rank_limit": 10,
-    "entry_sort": [
-        "signal_probability_desc",
-        "overheat_score_asc",
-        "volume_ratio_desc",
-    ],
+    "entry_sort": ["existing_order"],
     "is_primary_h5": True,
     "is_h5_research": False,
     "is_h5_live_limited": True,

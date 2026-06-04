@@ -2663,7 +2663,7 @@ def web_dashboard():
     try:
         h5_open_trades = (
             supabase.table("virtual_trades")
-            .select("id,code,name,buy_price,buy_date,peak_price,current_price,unrealized_pnl_pct,case_key,is_primary_h5,is_live_candidate,selected_rank,entry_probability")
+            .select("id,code,name,buy_price,buy_date,peak_price,current_price,unrealized_pnl_pct,case_key,is_primary_h5,is_live_candidate,selected_rank,entry_probability,live_allocation_bucket,allocation_rank,live_skip_reason")
             .in_("case_key", list(H5_ACTIVE_CASE_KEYS))
             .eq("status", "open")
             .is_("sell_date", "null")
@@ -2682,7 +2682,7 @@ def web_dashboard():
         _today_start_utc = datetime(_jst_today.year, _jst_today.month, _jst_today.day, tzinfo=JST).astimezone(timezone.utc).isoformat()
         h5_today_evals = (
             supabase.table("stock_drop_watchlist")
-            .select("code,name,h5_primary_match,h5_skip_reason,h5_overheat_score,signal_probability,drop_detected_at,is_live_candidate,selected_rank")
+            .select("code,name,h5_primary_match,h5_skip_reason,h5_overheat_score,signal_probability,drop_detected_at,is_live_candidate,selected_rank,live_allocation_bucket,allocation_rank,live_skip_reason")
             .not_.is_("h5_case_key", "null")
             .gte("updated_at", _today_start_utc)
             .order("h5_primary_match", desc=True)
@@ -4163,6 +4163,8 @@ def web_trade_assist():
         row["is_h5_research"] = bool((trade or row).get("is_h5_research")) or (persisted_case_key == H5_RESEARCH_CASE_KEY)
         row["is_h5_live_limited"] = bool((trade or row).get("is_h5_live_limited")) or (persisted_case_key == H5_LIVE_LIMITED_CASE_KEY)
         row["selected_rank"] = (trade or row).get("selected_rank")
+        row["live_allocation_bucket"] = (trade or row).get("live_allocation_bucket")
+        row["allocation_rank"] = (trade or row).get("allocation_rank")
         row["live_skip_reason"] = (trade or row).get("live_skip_reason")
         row["h5_candidate_count"] = (trade or row).get("h5_candidate_count")
         row["h5_selected_count"] = (trade or row).get("h5_selected_count")

@@ -41,6 +41,13 @@ from services.h5_primary import (
     H5_RESEARCH_DISPLAY_NAME,
     evaluate_h5_primary_entry,
 )
+from services.h5_live_allocator import (
+    LIVE_ALLOCATION_MODE,
+    allocate_balanced_live_candidates,
+    current_h5_core_reasons,
+    short_pullback_reasons,
+    trend_support_reasons,
+)
 from services.signal_stage import SIGNAL_STAGES, evaluate_signal_stage
 from services.signal_history import record_rebound_signal
 from services.virtual_trade_exit import close_related_watchlist, evaluate_virtual_trade_exit, fetch_snapshot_price_rows_since_entry
@@ -728,11 +735,14 @@ def _create_virtual_trade(
             "is_h5_research_candidate": item.get("is_h5_research"),
             "is_h5_live_candidate": item.get("is_live_candidate"),
             "live_candidate_rank": item.get("selected_rank"),
-            "live_case_key": H5_LIVE_LIMITED_CASE_KEY,
+            "live_case_key": item.get("live_case_key") or item.get("case_key") or H5_LIVE_LIMITED_CASE_KEY,
             "h5_base_case_key": H5_LEGACY_PRIMARY_CASE_KEY,
             "h5_research_case_key": H5_RESEARCH_CASE_KEY,
             "h5_live_case_key": H5_LIVE_LIMITED_CASE_KEY,
             "selected_rank": item.get("selected_rank"),
+            "live_allocation_bucket": item.get("live_allocation_bucket"),
+            "allocation_rank": item.get("allocation_rank"),
+            "live_allocation_mode": item.get("live_allocation_mode"),
             "live_skip_reason": item.get("live_skip_reason"),
             "h5_candidate_count": item.get("h5_candidate_count"),
             "h5_selected_count": item.get("h5_selected_count"),
@@ -873,14 +883,23 @@ def _create_ranked_virtual_trades(
             case_label=H5_RESEARCH_DISPLAY_NAME,
         )
         item.update(h5_meta)
-        if not passed_h5:
+        allocation_check_row = {**item, "signal_probability": item.get("signal_probability")}
+        trend_case_key, trend_reasons = trend_support_reasons(allocation_check_row)
+        allocation_reasons = [
+            current_h5_core_reasons(allocation_check_row),
+            short_pullback_reasons(allocation_check_row),
+            [] if trend_case_key else trend_reasons,
+        ]
+        passed_allocation_pool = any(not reasons for reasons in allocation_reasons)
+        if not passed_allocation_pool:
             reason = reasons[0] if reasons else "h5_primary_filter"
             logger.info(
-                "[h5_primary_filter] skip code=%s reasons=%s ai=%s drop20=%s regime=%s overheat=%s margin_ratio=%s",
+                "[h5_live_pool_filter] skip code=%s h5_reasons=%s ai=%s drop20=%s drop5=%s regime=%s overheat=%s margin_ratio=%s",
                 item.get("code"),
                 ",".join(reasons),
                 item.get("signal_probability"),
                 item.get("drop_from_20d_high_pct"),
+                item.get("drop5") or item.get("drop_from_5d_high_pct"),
                 item.get("market_regime"),
                 h5_meta.get("entry_overheat_score"),
                 item.get("margin_ratio"),
@@ -892,58 +911,35 @@ def _create_ranked_virtual_trades(
     if not filtered_candidates:
         return
 
-    max_open = int(H5_LIVE_LIMITED_RULES["max_open_positions"])
-    max_daily = int(H5_LIVE_LIMITED_RULES["max_daily_entries"])
-    max_sector = int(H5_LIVE_LIMITED_RULES["max_sector_positions"])
-    rank_limit = int(H5_LIVE_LIMITED_RULES["entry_rank_limit"])
-    open_count, today_entries, sector_counts = _entry_limit_state(now_utc)
-    live_selected = 0
-    ranked_all = sorted(filtered_candidates, key=_h5_live_rank_value, reverse=True)
+    _open_count, _today_entries, sector_counts = _entry_limit_state(now_utc)
+    allocation_entries = [
+        {
+            "code": candidate["item"].get("code"),
+            "sector": candidate["item"].get("sector"),
+            "data": candidate["item"],
+            "meta": candidate["item"],
+            "candidate": candidate,
+        }
+        for candidate in filtered_candidates
+    ]
+    allocate_balanced_live_candidates(
+        allocation_entries,
+        sector_counts=sector_counts,
+        max_sector_positions=int(H5_LIVE_LIMITED_RULES.get("max_sector_positions") or 0),
+    )
+    ranked_all = [entry["candidate"] for entry in allocation_entries]
+    live_selected = sum(1 for candidate in ranked_all if candidate["item"].get("is_live_candidate"))
     for selected_rank, candidate in enumerate(ranked_all, start=1):
         item = candidate["item"]
         code = item.get("code", "")
-        sector = str(item.get("sector") or "unknown")
-        reason = None
-        if rank_limit and selected_rank > rank_limit:
-            reason = "entry_rank_limit_exceeded"
-        elif max_open and open_count + live_selected >= max_open:
-            reason = "max_open_positions_exceeded"
-        elif max_daily and today_entries + live_selected >= max_daily:
-            reason = "max_daily_entries_exceeded"
-        else:
-            current_sector = sector_counts.get(sector, 0)
-            if max_sector and current_sector >= max_sector:
-                reason = "max_sector_positions_exceeded"
-
-        item["selected_rank"] = selected_rank
-        item["h5_candidate_count"] = len(filtered_candidates)
-        item["h5_selected_count"] = live_selected
-        item["live_skip_reason"] = reason
-        if reason is None:
-            item["position_limit_mode"] = "live_limited"
-            item["is_h5_research"] = False
-            item["is_h5_live_limited"] = True
-            item["is_live_candidate"] = True
-            item["case_key"] = H5_RESEARCH_CASE_KEY
-            item["case_label"] = H5_RESEARCH_DISPLAY_NAME
-            item["is_primary_h5"] = True
-            live_selected += 1
-            sector_counts[sector] = sector_counts.get(sector, 0) + 1
-        else:
-            item["position_limit_mode"] = "research"
-            item["is_h5_research"] = True
-            item["is_h5_live_limited"] = False
-            item["is_live_candidate"] = False
-            item["case_key"] = H5_RESEARCH_CASE_KEY
-            item["case_label"] = H5_RESEARCH_DISPLAY_NAME
-            item["is_primary_h5"] = False
-
         logger.info(
-            "[h5_position_limit] code=%s rank=%s live=%s reason=%s total=%s",
+            "[h5_live_allocation] code=%s rank=%s live=%s bucket=%s allocation_rank=%s reason=%s total=%s",
             code,
             selected_rank,
             item["is_live_candidate"],
-            reason or "selected",
+            item.get("live_allocation_bucket"),
+            item.get("allocation_rank"),
+            item.get("live_skip_reason") or "selected",
             len(filtered_candidates),
         )
 
