@@ -121,6 +121,32 @@
   </div>
 </div>
 
+{% set h5env = h5_environment or {} %}
+<div class="panel" style="margin-bottom:12px;border-color:{% if h5env.status == 'H5 favorable' %}rgba(94,230,168,.45){% elif h5env.status in ['H5 warning','darasage risk'] %}rgba(255,122,133,.45){% else %}var(--line-dim){% endif %}">
+  <div class="panel-head">
+    <div class="panel-title">H5 ENVIRONMENT</div>
+  </div>
+  <div style="padding:0 16px 14px">
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px;margin-bottom:10px">
+      <div class="mini-stat"><span class="muted">score</span><b>{{ h5env.score if h5env.score is not none else '-' }}</b></div>
+      <div class="mini-stat"><span class="muted">status</span><b>{{ h5env.status or '-' }}</b></div>
+      <div class="mini-stat"><span class="muted">VIX</span><b>{{ "%.1f"|format(h5env.vix) if h5env.vix is not none else '-' }}</b></div>
+      <div class="mini-stat"><span class="muted">SOX shock</span><b>{{ "%.1f"|format(h5env.sox_max_daily_drop) ~ '%' if h5env.sox_max_daily_drop is not none else '-' }}</b></div>
+      <div class="mini-stat"><span class="muted">crash</span><b>{{ h5env.crash_rebound_score if h5env.crash_rebound_score is not none else '-' }}</b></div>
+      <div class="mini-stat"><span class="muted">darasage</span><b>{{ h5env.darasage_score if h5env.darasage_score is not none else '-' }}</b></div>
+    </div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:6px">
+      {% for tag in h5env.tags or [] %}
+        <span class="tag">{{ tag }}</span>
+      {% endfor %}
+    </div>
+    <div class="muted" style="font-size:12px;line-height:1.6">
+      Display only. Entry条件・LIVE選別・LINE通知には使っていません。{{ h5env.reason or '' }}
+      {% if h5env.as_of %}<span class="tag">as of {{ h5env.as_of }}</span>{% endif %}
+    </div>
+  </div>
+</div>
+
 {% set _mc = market_adjustment %}
 {% set em = entry_mode_context or {} %}
 {% set long_labels = {
@@ -383,6 +409,7 @@
     <table class="tbl">
       <thead><tr>
         <th>コード</th><th>名称</th><th>結果</th><th class="right">AI確率</th><th>スキップ理由</th><th class="right">過熱</th>
+        <th>ENV</th>
       </tr></thead>
       <tbody>
       {% for r in h5_today_evals %}
@@ -394,6 +421,10 @@
           {% else %}<span class="badge closed">スキップ</span>{% endif %}
         </td>
         <td class="right num">{% if r.signal_probability is not none %}{{ "%.0f"|format(r.signal_probability * 100) }}{% else %}—{% endif %}</td>
+        <td class="muted" style="font-size:11px;white-space:normal">
+          ENV {{ r.current_environment_score if r.current_environment_score is not none else "-" }} / {{ r.environment_status or "-" }}
+          {% if r.environment_tags %}<br>{{ r.environment_tags }}{% endif %}
+        </td>
         <td class="muted" style="font-size:12px">{{ r.h5_skip_reason or "" }}</td>
         <td class="right num">{{ r.h5_overheat_score if r.h5_overheat_score is not none else "—" }}</td>
       </tr>

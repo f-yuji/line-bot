@@ -547,6 +547,25 @@
     </div>
   </div>
 
+  {% set h5env = h5_environment or {} %}
+  <div class="ta-note" style="border-color:{% if h5env.status == 'H5 favorable' %}rgba(94,230,168,.42){% elif h5env.status in ['H5 warning','darasage risk'] %}rgba(255,122,133,.42){% else %}var(--ta-border){% endif %}">
+    <div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start;flex-wrap:wrap">
+      <div>
+        <span class="ta-h5-tag">H5 ENVIRONMENT</span>
+        <div><strong>score {{ h5env.score if h5env.score is not none else '-' }} / {{ h5env.status or '-' }}</strong></div>
+        <div class="muted">表示専用です。購入候補の抽出・LIVE選別・LINE通知条件には使っていません。</div>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end">
+        <span class="ta-h5-tag">VIX {{ "%.1f"|format(h5env.vix) if h5env.vix is not none else '-' }}</span>
+        <span class="ta-h5-tag">crash {{ h5env.crash_rebound_score if h5env.crash_rebound_score is not none else '-' }}</span>
+        <span class="ta-h5-tag">darasage {{ h5env.darasage_score if h5env.darasage_score is not none else '-' }}</span>
+      </div>
+    </div>
+    {% if h5env.tags %}
+      <div class="muted" style="margin-top:6px">{{ h5env.tags|join(' / ') }}</div>
+    {% endif %}
+  </div>
+
   <div class="ta-note">
     <div>
       <b>{{ summary.latest_feature_date or '-' }}</b> 引け後AI判定の翌営業日購入候補です。
@@ -619,6 +638,7 @@
         <div class="ta-h5-note" style="margin:0">
           <strong>購入検討候補 / 手動確認 / 保存済AIスコア基準</strong>
           <div>20日高値比 {{ pct(r.drop_from_20d_high_pct) }} / 過熱 {{ r.h5_overheat_score }} / 出口 3営業日終値・事故停止-12%（ピーク反落なし）</div>
+          <div class="muted">ENV {{ r.current_environment_score if r.current_environment_score is not none else '-' }} / {{ r.environment_status or '-' }}{% if r.environment_tags %} / {{ r.environment_tags }}{% endif %}</div>
           <div class="muted">翌日寄りが前日終値比 +2% を超える場合は飛びつき警戒。実購入はlatest_h5_full_candidates.csvで確認。</div>
         </div>
         {% elif r.h5_skip_reason %}

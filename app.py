@@ -37,6 +37,7 @@ from services.price_fetcher import (
 from services.trade_assist_history import decorate_history_rows
 from services.nikkei_correlation import decorate_nikkei_correlation
 from services.rebound_diagnostics import decorate_rebound_diagnostics
+from services.h5_market_environment import attach_environment_to_rows, build_h5_environment_snapshot
 from services.h5_reason_builder import (
     build_h5_ai_reasons,
     get_cached_reasons,
@@ -2536,6 +2537,7 @@ def _refresh_h5_watchlist_rows(rows: list[dict], *, force: bool = False) -> dict
 def web_dashboard():
     market_adjustment = _current_market_adjustment()
     long_term_market = _current_long_term_market_regime()
+    h5_environment = build_h5_environment_snapshot()
     cfg = _settings_loader.get_settings()
     entry_mode_context = resolve_entry_mode(cfg, market_adjustment, long_term_market)
     entry_mode_context["scores"] = regime_scores(market_adjustment)
@@ -2700,6 +2702,7 @@ def web_dashboard():
             .execute()
             .data or []
         )
+        attach_environment_to_rows(h5_today_evals, h5_environment)
     except Exception as e:
         logger.warning("h5 today evals fetch failed: %s", e)
 
@@ -2777,6 +2780,7 @@ def web_dashboard():
         actual_holdings=actual_holdings,
         today_jst_str=today_jst_str,
         ai_diary=ai_diary,
+        h5_environment=h5_environment,
     )
 
 
@@ -3850,6 +3854,7 @@ def web_box_detail_chart(code):
 def web_trade_assist():
     market_adjustment = _current_market_adjustment()
     long_term_market = _current_long_term_market_regime()
+    h5_environment = build_h5_environment_snapshot()
     now_utc = datetime.now(timezone.utc)
     settings = _settings_loader.get_settings()
     entry_mode_context = resolve_entry_mode(settings, market_adjustment, long_term_market)
@@ -4284,6 +4289,7 @@ def web_trade_assist():
         reverse=True,
     )
     cards = cards[:30]
+    attach_environment_to_rows(cards, h5_environment)
     cards = _with_nikkei_link(cards)
     cards = _with_rebound_diagnostics(cards, market_adjustment, settings)
     try:
@@ -4327,6 +4333,7 @@ def web_trade_assist():
         long_term_market=long_term_market,
         entry_mode_context=entry_mode_context,
         h5_primary=h5_exit_display,
+        h5_environment=h5_environment,
     )
 
 
