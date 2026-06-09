@@ -40,6 +40,7 @@ from analyze_h5_s_share_execution_timing import (  # noqa: E402
 )
 from analyze_h5_s_share_realistic_operation import annualize, pf, simulate_realistic  # noqa: E402
 from services.h5_primary import h5_overheat_score  # noqa: E402
+from services.position_sizing import calculate_virtual_position_size  # noqa: E402
 
 
 DEFAULT_INPUT = "outputs/h5_walk_forward_predictions/01_walk_forward_predictions.csv"

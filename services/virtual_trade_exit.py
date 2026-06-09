@@ -15,6 +15,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from services.h5_primary import H5_ACTIVE_CASE_KEYS, H5_PRIMARY_CASE_KEY, H5_PRIMARY_RULES
+from services.position_sizing import calculate_virtual_position_size
 
 logger = logging.getLogger(__name__)
 JST = ZoneInfo("Asia/Tokyo")
@@ -34,6 +35,11 @@ DEFAULT_EXIT_SETTINGS = {
     "virtual_exit_ma5_failure_pct": 2.0,
     "virtual_exit_holding_days": 5,
     "virtual_exit_extend_high_update_days": 2,
+}
+
+PRICE_BAND_CASES = {
+    "PB_MR_STRONG_MA25_M10_HD20": {"exit": "ma75_revert_or_hd20", "holding_days": 20},
+    "PB_MR_STRONG_RSI25_HD20": {"exit": "hd20", "holding_days": 20},
 }
 
 try:
@@ -167,7 +173,7 @@ def fetch_snapshot_price_rows_since_entry(sb, trade: dict, *, pre_days: int = 35
     try:
         rows = (
             sb.table("stock_feature_snapshots")
-            .select("trade_date,open,high,low,close,volume")
+            .select("trade_date,open,high,low,close,volume,ma25,ma75,ma25_gap_pct,ma75_gap_pct,rsi14")
             .eq("code", code)
             .gte("trade_date", start)
             .order("trade_date")
@@ -190,6 +196,11 @@ def fetch_snapshot_price_rows_since_entry(sb, trade: dict, *, pre_days: int = 35
             "low": _to_float(row.get("low")),
             "close": close,
             "volume": _to_float(row.get("volume")),
+            "ma25": _to_float(row.get("ma25")),
+            "ma75": _to_float(row.get("ma75")),
+            "ma25_gap_pct": _to_float(row.get("ma25_gap_pct")),
+            "ma75_gap_pct": _to_float(row.get("ma75_gap_pct")),
+            "rsi14": _to_float(row.get("rsi14")),
         })
     return out
 
@@ -238,6 +249,125 @@ def _is_h5_primary_trade(trade: dict) -> bool:
     return bool(trade.get("is_primary_h5")) or str(trade.get("case_key") or "") in H5_ACTIVE_CASE_KEYS
 
 
+def _is_price_band_trade(trade: dict) -> bool:
+    case_key = str(trade.get("case_key") or "")
+    group = str(trade.get("strategy_group") or "").upper()
+    return case_key in PRICE_BAND_CASES or group == "PRICE_BAND"
+
+
+def _theoretical_quantity(trade: dict, buy: float) -> int:
+    shares = int(_to_float(trade.get("theoretical_shares"), 0) or 0)
+    if shares > 0:
+        return shares
+    sizing = calculate_virtual_position_size(buy)
+    shares = int(sizing.get("theoretical_shares") or 0)
+    return shares if shares > 0 else int(_to_float(trade.get("quantity"), 100) or 100)
+
+
+def evaluate_price_band_exit(
+    trade: dict,
+    price_rows: list[dict],
+    *,
+    now: datetime | None = None,
+) -> ExitEvaluation | None:
+    buy = _to_float(trade.get("buy_price"))
+    buy_dt = _parse_dt(trade.get("buy_date"))
+    if buy is None or buy <= 0 or not buy_dt or not price_rows:
+        return None
+    buy_date = _trade_local_date(buy_dt, trade)
+    eval_rows = [r for r in price_rows if str(r.get("date")) >= buy_date and _to_float(r.get("close")) is not None]
+    if not eval_rows:
+        return None
+
+    case_key = str(trade.get("case_key") or "")
+    cfg = PRICE_BAND_CASES.get(case_key, {"holding_days": int(_to_float(trade.get("planned_holding_days"), 20) or 20)})
+    max_holding_days = int(_to_float(trade.get("max_holding_days"), cfg.get("holding_days", 20)) or cfg.get("holding_days", 20))
+    qty = _theoretical_quantity(trade, buy)
+    now_utc = now or datetime.now(timezone.utc)
+    highest_close = _to_float(trade.get("highest_close"), buy) or buy
+    max_return_pct = _to_float(trade.get("max_return_pct"), None)
+    max_drawdown_pct = _to_float(trade.get("max_drawdown_pct"), None)
+    latest_target = _to_float(trade.get("current_exit_target") or trade.get("entry_ma75"))
+    exit_reason: str | None = None
+    exit_mode: str | None = None
+    exit_price: float | None = None
+    exit_date: str | None = None
+
+    for row in eval_rows:
+        close = _to_float(row.get("close"))
+        if close is None or close <= 0:
+            continue
+        d = str(row.get("date"))
+        ma75 = _to_float(row.get("ma75"), latest_target)
+        if ma75 is not None and ma75 > 0:
+            latest_target = ma75
+        pnl_pct = (close / buy - 1.0) * 100.0
+        max_return_pct = pnl_pct if max_return_pct is None else max(max_return_pct, pnl_pct)
+        max_drawdown_pct = pnl_pct if max_drawdown_pct is None else min(max_drawdown_pct, pnl_pct)
+        highest_close = max(highest_close, close)
+
+        if d == buy_date:
+            continue
+        biz_days = _biz_days_between(eval_rows, buy_date, d)
+        if case_key == "PB_MR_STRONG_MA25_M10_HD20" and latest_target is not None and close >= latest_target:
+            exit_reason = "pb_ma75_reversion"
+            exit_mode = "price_band_target"
+            exit_price = close
+            exit_date = d
+            break
+        if biz_days >= max_holding_days:
+            exit_reason = "pb_holding_timeout"
+            exit_mode = "timeout"
+            exit_price = close
+            exit_date = d
+            break
+
+    latest = eval_rows[-1]
+    latest_close = _to_float(latest.get("close"))
+    latest_target = _to_float(latest.get("ma75"), latest_target)
+    update: dict[str, Any] = {
+        "highest_close": round(highest_close, 4),
+        "max_return_pct": round(max_return_pct or 0.0, 2),
+        "max_drawdown_pct": round(max_drawdown_pct or 0.0, 2),
+        "current_price": latest_close,
+        "current_exit_target": round(latest_target, 4) if latest_target is not None else None,
+        "entry_ma25_gap_pct": _to_float(trade.get("entry_ma25_gap_pct"), _to_float(latest.get("ma25_gap_pct"))),
+        "entry_rsi14": _to_float(trade.get("entry_rsi14"), _to_float(latest.get("rsi14"))),
+        "exit_checked_at": now_utc.isoformat(),
+        "updated_at": now_utc.isoformat(),
+    }
+    if latest_close is not None:
+        update["unrealized_pnl"] = round((latest_close - buy) * qty, 0)
+        update["unrealized_pnl_pct"] = round((latest_close / buy - 1.0) * 100.0, 2)
+
+    dry_log = {
+        "case_key": case_key,
+        "strategy_group": "PRICE_BAND",
+        "planned_exit_rule": trade.get("planned_exit_rule"),
+        "max_holding_days": max_holding_days,
+        "current_exit_target": round(latest_target, 4) if latest_target is not None else None,
+        "quantity_basis": qty,
+    }
+    if exit_reason and exit_price is not None and exit_date:
+        pnl_pct = (exit_price / buy - 1.0) * 100.0
+        pnl = (exit_price - buy) * qty
+        update.update({
+            "sell_price": round(exit_price, 4),
+            "sell_date": exit_date,
+            "exit_date": exit_date,
+            "sell_reason": "take_profit" if exit_reason == "pb_ma75_reversion" else "expired",
+            "exit_reason": exit_reason,
+            "exit_mode": exit_mode,
+            "profit_loss": round(pnl, 0),
+            "profit_loss_pct": round(pnl_pct, 2),
+            "virtual_exit_price": round(exit_price, 4),
+            "virtual_pnl_pct": round(pnl_pct, 2),
+            "status": "closed",
+        })
+        dry_log.update({"exit_reason": exit_reason, "sell_price": round(exit_price, 4), "profit_loss_pct": round(pnl_pct, 2)})
+    return ExitEvaluation(update=update, exit_reason=exit_reason, dry_log=dry_log)
+
+
 def evaluate_h5_primary_exit(
     trade: dict,
     price_rows: list[dict],
@@ -273,7 +403,7 @@ def evaluate_h5_primary_exit(
     min_peak_ratio = 1.005
     peak_price = _to_float(trade.get("peak_price"), buy) or buy
     peak_price_at = trade.get("peak_price_at") or buy_dt.isoformat()
-    qty = int(trade.get("quantity") or 100)
+    qty = _theoretical_quantity(trade, buy)
     max_return_pct = _to_float(trade.get("max_return_pct"), None)
     max_drawdown_pct = _to_float(trade.get("max_drawdown_pct"), None)
     exit_reason = None
@@ -381,6 +511,8 @@ def evaluate_virtual_trade_exit(
     rows = price_rows if price_rows is not None else fetch_price_rows_since_entry(trade)
     if not rows:
         return None
+    if _is_price_band_trade(trade):
+        return evaluate_price_band_exit(trade, rows, now=now)
     if _is_h5_primary_trade(trade):
         return evaluate_h5_primary_exit(trade, rows, now=now)
 
@@ -400,7 +532,7 @@ def evaluate_virtual_trade_exit(
     if not eval_rows:
         return None
 
-    qty = int(trade.get("quantity") or 100)
+    qty = _theoretical_quantity(trade, buy)
     highest_close = _to_float(trade.get("highest_close"), buy) or buy
     highest_close_at = str(trade.get("highest_close_at") or buy_dt.isoformat())
     last_high_update_at = str(trade.get("last_high_update_at") or highest_close_at)

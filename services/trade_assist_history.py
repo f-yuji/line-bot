@@ -11,6 +11,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from services.entry_mode import ENTRY_MODE_LABELS, classify_entry_case, ma_gap_pct
+from services.position_sizing import calculate_virtual_position_size
 
 logger = logging.getLogger(__name__)
 
@@ -94,6 +95,7 @@ def _card_payload(row: dict, *, trade_date: str, source_kind: str, margin_by_cod
     margin = margin_by_code.get(code) or {}
     probability = _to_float(row.get("signal_probability"), _to_float(row.get("entry_probability"), None))
     stage = row.get("signal_stage")
+    sizing = calculate_virtual_position_size(entry_price)
     payload = {
         "trade_date": trade_date,
         "code": code,
@@ -129,6 +131,14 @@ def _card_payload(row: dict, *, trade_date: str, source_kind: str, margin_by_cod
         },
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
+    payload.update({
+        "target_position_size": sizing["target_position_size"],
+        "theoretical_shares": sizing["theoretical_shares"],
+        "theoretical_position_size": sizing["theoretical_position_size"],
+        "lot_type": sizing["lot_type"],
+        "position_sizing_rule": sizing["position_sizing_rule"],
+        "sizing_note": sizing["sizing_note"],
+    })
     return payload
 
 
@@ -209,7 +219,20 @@ def save_trade_assist_candidate_history(sb, *, trade_date: str | None = None, st
     if not rows:
         return {"trade_date": trade_date or _fetch_latest_feature_date(sb), "rows": 0}
     try:
-        sb.table("trade_assist_candidate_history").upsert(rows, on_conflict="trade_date,code,source_kind").execute()
+        remaining = [dict(r) for r in rows]
+        while remaining:
+            try:
+                sb.table("trade_assist_candidate_history").upsert(remaining, on_conflict="trade_date,code,source_kind").execute()
+                break
+            except Exception as e:
+                msg = str(e)
+                marker = "Could not find the '"
+                if marker in msg:
+                    missing = msg.split(marker, 1)[1].split("'", 1)[0]
+                    for row in remaining:
+                        row.pop(missing, None)
+                    continue
+                raise
         logger.info("[trade_assist_history] saved rows=%d date=%s", len(rows), rows[0].get("trade_date"))
     except Exception as e:
         msg = str(e)
@@ -230,5 +253,8 @@ def decorate_history_rows(rows: list[dict]) -> list[dict]:
             str(r.get("recommended_entry_mode") or ""),
             r.get("recommended_entry_mode") or "-",
         )
+        sizing = calculate_virtual_position_size(r.get("entry_price"))
+        for key, value in sizing.items():
+            r.setdefault(key, value)
         out.append(r)
     return out

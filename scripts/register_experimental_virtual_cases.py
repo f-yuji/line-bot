@@ -40,6 +40,7 @@ from analyze_trend_following_grid_search import (  # noqa: E402
     score,
 )
 from services.h5_primary import H5_ACTIVE_CASE_KEYS, H5_PRIMARY_CASE_KEY  # noqa: E402
+from services.position_sizing import calculate_virtual_position_size  # noqa: E402
 
 
 OUT_DIR = ROOT / "outputs/experimental_virtual_cases"
@@ -49,6 +50,7 @@ H5_CASE_ROWS = ROOT / "outputs/h5_stored_forward_cases/case_daily_rows.csv"
 H5_SUMMARY = ROOT / "outputs/h5_stored_forward_cases/case_summary.csv"
 TREND_SUMMARY = ROOT / "outputs/trend_following_deep_backtest/03_robust_best_cases.csv"
 DEEP_LATEST = ROOT / "outputs/trend_following_deep_backtest/14_latest_candidates.csv"
+PB_SYMBOL_TYPES = ROOT / "outputs/price_band_expectancy_long/symbol_type_classification.csv"
 
 TAX_RATE = 0.20315
 COST_BPS = 10.0
@@ -63,7 +65,29 @@ TARGET_CASES = [
     "tf_51545_trend_ma25_ma75_mom_market",
     "mix_current_h5_7_3",
     "mix_current7_short3_trend_7_3",
+    "PB_MR_STRONG_MA25_M10_HD20",
+    "PB_MR_STRONG_RSI25_HD20",
 ]
+
+
+PB_CASES = {
+    "PB_MR_STRONG_MA25_M10_HD20": {
+        "label": "PB MA25 Deep Reversion",
+        "condition": "mean_reversion_strong and ma25_gap_pct <= -10",
+        "exit": "MA75_REVERT_OR_HD20",
+        "holding_days": 20,
+        "buy_zone": "ma25_gap_le_m10",
+        "exit_target": "ma75",
+    },
+    "PB_MR_STRONG_RSI25_HD20": {
+        "label": "PB RSI25 Reversion",
+        "condition": "mean_reversion_strong and rsi14 <= 25",
+        "exit": "HD20",
+        "holding_days": 20,
+        "buy_zone": "rsi14_le_25",
+        "exit_target": "",
+    },
+}
 
 
 TREND_CASES: dict[str, CaseDef] = {
@@ -117,6 +141,15 @@ def read_csv(path: Path) -> list[dict[str, Any]]:
         return list(csv.DictReader(f))
 
 
+def load_pb_symbol_types() -> dict[str, str]:
+    out: dict[str, str] = {}
+    for row in read_csv(PB_SYMBOL_TYPES):
+        code = normalize_code(row.get("code"))
+        if code:
+            out[code] = str(row.get("symbol_type") or "")
+    return out
+
+
 def date_text(value: Any) -> str:
     return str(value or "")[:10]
 
@@ -152,6 +185,47 @@ def build_supabase():
 
 def latest_date(rows: list[dict[str, Any]]) -> str:
     return max((date_text(r.get("trade_date") or r.get("signal_date")) for r in rows if date_text(r.get("trade_date") or r.get("signal_date"))), default="")
+
+
+def fetch_latest_feature_snapshot_rows() -> list[dict[str, Any]]:
+    try:
+        sb = build_supabase()
+        latest = (
+            sb.table("stock_feature_snapshots")
+            .select("trade_date")
+            .order("trade_date", desc=True)
+            .limit(1)
+            .execute()
+            .data
+            or []
+        )
+        if not latest:
+            return []
+        trade_date = date_text(latest[0].get("trade_date"))
+        cols = (
+            "trade_date,code,name,sector,open,high,low,close,ma25,ma75,"
+            "ma25_gap_pct,ma75_gap_pct,rsi14,drop_from_5d_high_pct,"
+            "drop_from_10d_high_pct,drop_from_20d_high_pct,volume_ratio_20d"
+        )
+        rows = (
+            sb.table("stock_feature_snapshots")
+            .select(cols)
+            .eq("trade_date", trade_date)
+            .limit(6000)
+            .execute()
+            .data
+            or []
+        )
+    except Exception as e:
+        print(f"pb_latest_snapshot_fetch_failed={e}")
+        return []
+    symbol_types = load_pb_symbol_types()
+    for i, row in enumerate(rows):
+        row["_source_row_index"] = i
+        row["signal_date"] = date_text(row.get("trade_date"))
+        row["code"] = normalize_code(row.get("code"))
+        row["symbol_type"] = symbol_types.get(str(row.get("code") or ""), "")
+    return rows
 
 
 def enrich_latest_rows(out_dir: Path) -> list[dict[str, Any]]:
@@ -226,6 +300,7 @@ def candidate_row(row: dict[str, Any], case: str, adopted: bool, reason: str = "
     trend_flags, momentum_flags, credit_flags = flags_for(row, case, cond_registry())
     source_case = "stored_forward_case" if case.startswith("H5") or case.startswith("mix_current") else "deep_backtest"
     bucket = allocation_bucket(case)
+    sizing = calculate_virtual_position_size(entry_price)
     return {
         "latest_date": signal_date,
         "signal_date": signal_date,
@@ -259,21 +334,57 @@ def candidate_row(row: dict[str, Any], case: str, adopted: bool, reason: str = "
         "除外理由": "" if adopted else reason,
         "source_case": source_case,
         "strategy_group": strategy_group(case),
+        "strategy_label": strategy_label(case),
         "allocation_bucket": bucket,
+        "source_logic": source_logic(case),
+        "target_position_size": sizing["target_position_size"],
+        "theoretical_shares": sizing["theoretical_shares"],
+        "theoretical_position_size": sizing["theoretical_position_size"],
+        "lot_type": sizing["lot_type"],
+        "position_sizing_rule": sizing["position_sizing_rule"],
+        "sizing_note": sizing["sizing_note"],
+        "actual_position_size": "",
+        "is_capital_constrained": sizing["is_capital_constrained"],
         "is_experimental": True,
         "definition_version": DEFINITION_VERSION,
     }
 
 
 def strategy_group(case: str) -> str:
+    if case in PB_CASES:
+        return "PRICE_BAND"
     if case.startswith("tf_"):
-        return "trend_following"
+        return "TREND_SUPPORT"
     if case.startswith("mix_"):
-        return "experimental_mix"
-    return "h5_extension"
+        return "H5_MIX"
+    if case == "H5_short_pullback_drop5_m3":
+        return "H5_SHORT_PULLBACK"
+    return "H5_MIX"
+
+
+def strategy_label(case: str) -> str:
+    if case in PB_CASES:
+        return str(PB_CASES[case]["label"])
+    if case == "H5_short_pullback_drop5_m3":
+        return "H5 Short Pullback"
+    if case == "H5_current7_short3":
+        return "H5 Mix"
+    if case.startswith("tf_"):
+        return "Trend Support"
+    return "H5 Mix"
+
+
+def source_logic(case: str) -> str:
+    if case in PB_CASES:
+        return "price_band_expectancy"
+    if case.startswith("tf_"):
+        return "trend_following_deep_backtest"
+    return "stored_forward_case"
 
 
 def allocation_bucket(case: str) -> str:
+    if case in PB_CASES:
+        return "price_band"
     if case == "H5_short_pullback_drop5_m3":
         return "short_pullback"
     if case == "H5_current7_short3":
@@ -283,7 +394,95 @@ def allocation_bucket(case: str) -> str:
     return "mix"
 
 
+def pb_case_pass(row: dict[str, Any], case: str) -> bool:
+    if str(row.get("symbol_type") or "") != "mean_reversion_strong":
+        return False
+    if case == "PB_MR_STRONG_MA25_M10_HD20":
+        v = num(row.get("ma25_gap_pct"))
+        return v is not None and v <= -10.0
+    if case == "PB_MR_STRONG_RSI25_HD20":
+        v = num(row.get("rsi14"))
+        return v is not None and v <= 25.0
+    return False
+
+
+def pb_first_fail(row: dict[str, Any], case: str) -> str:
+    if str(row.get("symbol_type") or "") != "mean_reversion_strong":
+        return "not_mean_reversion_strong"
+    if case == "PB_MR_STRONG_MA25_M10_HD20":
+        return "ma25_gap>-10"
+    if case == "PB_MR_STRONG_RSI25_HD20":
+        return "rsi14>25"
+    return "pb_filters_not_met"
+
+
+def pb_candidate_row(row: dict[str, Any], case: str, adopted: bool, reason: str = "") -> dict[str, Any]:
+    signal_date = date_text(row.get("trade_date") or row.get("signal_date"))
+    sig_dt = parse_date(signal_date)
+    entry_dt = next_weekday(sig_dt).isoformat() if sig_dt else ""
+    entry_price = num(row.get("close"))
+    cfg = PB_CASES[case]
+    ma75 = num(row.get("ma75"))
+    current_exit_target = ma75 if cfg.get("exit_target") == "ma75" else ""
+    sizing = calculate_virtual_position_size(entry_price)
+    return {
+        "latest_date": signal_date,
+        "signal_date": signal_date,
+        "case_key": case,
+        "code": normalize_code(row.get("code")),
+        "name": row.get("name"),
+        "score": "",
+        "signal_stage": "price_band",
+        "trend_flags": "",
+        "momentum_flags": "",
+        "credit_flags": "",
+        "drop5": row.get("drop_from_5d_high_pct"),
+        "drop10": row.get("drop_from_10d_high_pct"),
+        "drop20": row.get("drop_from_20d_high_pct"),
+        "gap": "",
+        "overheat_score": "",
+        "entry_date": entry_dt,
+        "entry_price": entry_price,
+        "planned_exit_rule": cfg["exit"],
+        "planned_holding_days": cfg["holding_days"],
+        "status": "open" if adopted else "excluded",
+        "exit_date": "",
+        "exit_price": "",
+        "return_pct": "",
+        "pnl_before_cost": "",
+        "pnl_after_cost": "",
+        "tax_adjusted_pnl": "",
+        "cumulative_pnl": "",
+        "採用可否": "採用" if adopted else "除外",
+        "exclusion_reason": "" if adopted else reason,
+        "除外理由": "" if adopted else reason,
+        "source_case": "price_band_revalidation",
+        "source_logic": "price_band_expectancy",
+        "strategy_group": "PRICE_BAND",
+        "strategy_label": cfg["label"],
+        "allocation_bucket": "price_band",
+        "target_position_size": sizing["target_position_size"],
+        "theoretical_shares": sizing["theoretical_shares"],
+        "theoretical_position_size": sizing["theoretical_position_size"],
+        "lot_type": sizing["lot_type"],
+        "position_sizing_rule": sizing["position_sizing_rule"],
+        "sizing_note": sizing["sizing_note"],
+        "actual_position_size": "",
+        "is_capital_constrained": sizing["is_capital_constrained"],
+        "definition_version": DEFINITION_VERSION,
+        "entry_ma25_gap_pct": row.get("ma25_gap_pct"),
+        "entry_ma75_gap_pct": row.get("ma75_gap_pct"),
+        "entry_rsi14": row.get("rsi14"),
+        "entry_ma75": ma75,
+        "current_exit_target": current_exit_target,
+        "mean_reversion_type": row.get("symbol_type"),
+        "max_holding_days": cfg["holding_days"],
+    }
+
+
 def first_fail(row: dict[str, Any], case: str, conditions) -> str:
+    if case in PB_CASES:
+        return "" if pb_case_pass(row, case) else pb_first_fail(row, case)
     if case == "H5_short_pullback_drop5_m3":
         return "" if h5_short_pass(row) else "short_pullback_filters_not_met"
     if case == "H5_current7_short3":
@@ -308,8 +507,32 @@ def latest_candidates_for_cases(rows: list[dict[str, Any]]) -> tuple[list[dict[s
     latest_out: list[dict[str, Any]] = []
     counts: list[dict[str, Any]] = []
     watch: list[dict[str, Any]] = []
+    pb_rows_cache: list[dict[str, Any]] | None = None
     for case in TARGET_CASES:
-        if case == "H5_short_pullback_drop5_m3":
+        if case in PB_CASES:
+            if pb_rows_cache is None:
+                pb_rows_cache = fetch_latest_feature_snapshot_rows()
+            passed = [r for r in pb_rows_cache if pb_case_pass(r, case)]
+            passed = sorted(
+                passed,
+                key=lambda r: (
+                    num(r.get("ma25_gap_pct"), 999) if case == "PB_MR_STRONG_MA25_M10_HD20" else num(r.get("rsi14"), 999),
+                    int(num(r.get("_source_row_index"), 0) or 0),
+                ),
+            )[:10]
+            for row in passed:
+                latest_out.append(pb_candidate_row(row, case, True))
+            if not passed:
+                near = sorted(
+                    pb_rows_cache,
+                    key=lambda r: (
+                        pb_first_fail(r, case),
+                        num(r.get("ma25_gap_pct"), 999) if case == "PB_MR_STRONG_MA25_M10_HD20" else num(r.get("rsi14"), 999),
+                    ),
+                )[:5]
+                for row in near:
+                    latest_out.append(pb_candidate_row(row, case, False, pb_first_fail(row, case)))
+        elif case == "H5_short_pullback_drop5_m3":
             passed = [r for r in rows if h5_short_pass(r)]
         elif case == "H5_current7_short3":
             passed = select_h5_current7_short3(rows)
@@ -324,19 +547,20 @@ def latest_candidates_for_cases(rows: list[dict[str, Any]]) -> tuple[list[dict[s
         else:
             passed = [r for r in rows if base_case_pass(r, TREND_CASES[case], conditions)]
             passed = sorted(passed, key=lambda r: int(num(r.get("_source_row_index"), 0) or 0))[:10]
-        for row in passed:
-            latest_out.append(candidate_row(row, case, True))
-        if not passed:
-            near = sorted(rows, key=lambda r: (first_fail(r, case, conditions), -score(r)))[:5]
-            for row in near:
-                latest_out.append(candidate_row(row, case, False, first_fail(row, case, conditions)))
+            for row in passed:
+                latest_out.append(candidate_row(row, case, True))
+            if not passed:
+                near = sorted(rows, key=lambda r: (first_fail(r, case, conditions), -score(r)))[:5]
+                for row in near:
+                    latest_out.append(candidate_row(row, case, False, first_fail(row, case, conditions)))
         counts.append({
-            "latest_date": latest_date(rows),
+            "latest_date": latest_date(pb_rows_cache or []) if case in PB_CASES else latest_date(rows),
             "case_key": case,
             "candidate_count": len(passed),
-            "near_miss_rows": 0 if passed else min(5, len(rows)),
+            "near_miss_rows": 0 if passed else min(5, len(pb_rows_cache or rows)),
         })
-        watch.extend(overheat_watch(rows, case, conditions))
+        if case not in PB_CASES:
+            watch.extend(overheat_watch(rows, case, conditions))
     return latest_out, counts, watch
 
 
@@ -394,7 +618,19 @@ def overheat_watch(rows: list[dict[str, Any]], case: str, conditions) -> list[di
 def definitions() -> list[dict[str, Any]]:
     out = []
     for case in TARGET_CASES:
-        if case in TREND_CASES:
+        if case in PB_CASES:
+            c = PB_CASES[case]
+            cond = {
+                "conditions": c["condition"],
+                "entry": "next_open",
+                "exit": c["exit"],
+                "is_capital_constrained": False,
+                "theoretical_position_size": NOTIONAL,
+            }
+            proxy_used = False
+            original = case
+            hd, cap, gap = int(c["holding_days"]), None, None
+        elif case in TREND_CASES:
             c = TREND_CASES[case]
             cond = {
                 "conditions": list(c.conditions),
@@ -432,7 +668,9 @@ def definitions() -> list[dict[str, Any]]:
             "tax_mode": "aggregate_tax",
             "created_at": datetime.now(timezone.utc).isoformat(),
             "strategy_group": strategy_group(case),
+            "strategy_label": strategy_label(case),
             "allocation_bucket": allocation_bucket(case),
+            "source_logic": source_logic(case),
         })
     return out
 
@@ -482,6 +720,9 @@ def summary_from_rows(rows: list[dict[str, Any]], latest_counts: list[dict[str, 
         items = by_case.get(case, [])
         returns = [num(r.get("return_pct")) for r in items if num(r.get("return_pct")) is not None]
         pnls = [num(r.get("pnl_after_cost"), 0.0) or 0.0 for r in items]
+        position_sizes = [num(r.get("theoretical_position_size")) for r in items if num(r.get("theoretical_position_size")) is not None]
+        shares = [num(r.get("theoretical_shares")) for r in items if num(r.get("theoretical_shares")) is not None]
+        lot_counts = Counter(str(r.get("lot_type") or "unknown") for r in items)
         wins = [v for v in pnls if v > 0]
         losses = [v for v in pnls if v < 0]
         recent_cut = max((parse_date(r.get("signal_date")) for r in items if parse_date(r.get("signal_date"))), default=None)
@@ -508,6 +749,9 @@ def summary_from_rows(rows: list[dict[str, Any]], latest_counts: list[dict[str, 
             "max_loss_streak": max_loss_streak(pnls) if pnls else ext.get("max_loss_streak"),
             "recent_30d_pnl_after_cost": sum(num(r.get("pnl_after_cost"), 0.0) or 0.0 for r in recent),
             "latest_candidate_count": latest_map.get(case, 0),
+            "avg_theoretical_position_size": mean(position_sizes) if position_sizes else "",
+            "avg_theoretical_shares": mean(shares) if shares else "",
+            "lot_type_counts": ";".join(f"{k}:{v}" for k, v in sorted(lot_counts.items())) if items else "",
         })
     return out
 
@@ -536,21 +780,37 @@ def max_loss_streak(pnls: list[float]) -> int:
 def payload_for_virtual_trade(row: dict[str, Any]) -> dict[str, Any]:
     signal_date = date_text(row.get("signal_date"))
     code = normalize_code(row.get("code"))
+    entry_price = num(row.get("entry_price"))
+    sizing = calculate_virtual_position_size(entry_price)
+    quantity = int(sizing["theoretical_shares"] or 0) or None
+    constrained_raw = row.get("is_capital_constrained")
+    is_capital_constrained = str(constrained_raw).strip().lower() in {"true", "1", "yes", "y"}
     return {
         "code": code,
         "name": row.get("name"),
-        "buy_price": num(row.get("entry_price")),
+        "buy_price": entry_price,
         "buy_date": f"{row.get('entry_date')}T00:00:00+09:00" if row.get("entry_date") else None,
+        "quantity": quantity,
         "buy_score": num(row.get("score")),
         "signal_stage": row.get("signal_stage"),
         "entry_reason": "experimental_forward_test_paper_trade",
         "entry_probability": num(row.get("score")),
         "case_key": row.get("case_key"),
-        "case_label": row.get("case_key"),
+        "case_label": row.get("strategy_label") or row.get("case_key"),
         "strategy_group": row.get("strategy_group"),
+        "strategy_label": row.get("strategy_label"),
         "is_experimental": True,
         "source_case": row.get("source_case"),
+        "source_logic": row.get("source_logic"),
         "allocation_bucket": row.get("allocation_bucket"),
+        "target_position_size": num(row.get("target_position_size"), sizing["target_position_size"]),
+        "theoretical_shares": int(num(row.get("theoretical_shares"), sizing["theoretical_shares"] or 0) or 0) or None,
+        "theoretical_position_size": num(row.get("theoretical_position_size"), sizing["theoretical_position_size"]),
+        "lot_type": row.get("lot_type") or sizing["lot_type"],
+        "position_sizing_rule": row.get("position_sizing_rule") or sizing["position_sizing_rule"],
+        "sizing_note": row.get("sizing_note") or sizing["sizing_note"],
+        "actual_position_size": num(row.get("actual_position_size")),
+        "is_capital_constrained": is_capital_constrained,
         "experimental_definition_version": row.get("definition_version"),
         "trend_flags": row.get("trend_flags"),
         "momentum_flags": row.get("momentum_flags"),
@@ -566,6 +826,13 @@ def payload_for_virtual_trade(row: dict[str, Any]) -> dict[str, Any]:
         "planned_exit_rule": row.get("planned_exit_rule"),
         "planned_holding_days": int(num(row.get("planned_holding_days"), 3) or 3),
         "max_holding_days": int(num(row.get("planned_holding_days"), 3) or 3),
+        "entry_ma25_gap_pct": num(row.get("entry_ma25_gap_pct")),
+        "entry_ma75_gap_pct": num(row.get("entry_ma75_gap_pct")),
+        "entry_rsi14": num(row.get("entry_rsi14")),
+        "entry_ma75": num(row.get("entry_ma75")),
+        "current_exit_target": num(row.get("current_exit_target")),
+        "mean_reversion_type": row.get("mean_reversion_type"),
+        "environment_status": row.get("environment_status"),
         "status": "open",
         "is_primary_h5": False,
         "is_live_candidate": False,

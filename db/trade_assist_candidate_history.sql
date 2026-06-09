@@ -8,6 +8,12 @@ create table if not exists trade_assist_candidate_history (
   signal_stage text,
   display_status text,
   entry_price numeric,
+  target_position_size numeric,
+  theoretical_shares integer,
+  theoretical_position_size numeric,
+  lot_type text,
+  position_sizing_rule text,
+  sizing_note text,
   stop_loss_price numeric,
   risk_100 numeric,
   ai_score numeric,
@@ -38,3 +44,11 @@ create index if not exists idx_trade_assist_candidate_history_trade_date
 
 create index if not exists idx_trade_assist_candidate_history_code
   on trade_assist_candidate_history (code);
+
+alter table trade_assist_candidate_history
+  add column if not exists target_position_size numeric,
+  add column if not exists theoretical_shares integer,
+  add column if not exists theoretical_position_size numeric,
+  add column if not exists lot_type text,
+  add column if not exists position_sizing_rule text,
+  add column if not exists sizing_note text;

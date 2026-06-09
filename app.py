@@ -51,6 +51,7 @@ from services.h5_shap_explainer import (
     save_shap_cache,
 )
 from services.h5_shap_reason_builder import build_shap_reason_comment, merge_shap_reason
+from services.position_sizing import calculate_virtual_position_size
 
 from linebot.v3 import WebhookHandler
 from linebot.v3.exceptions import InvalidSignatureError
@@ -2530,6 +2531,40 @@ def _refresh_h5_watchlist_rows(rows: list[dict], *, force: bool = False) -> dict
     }
 
 
+def _price_for_position_sizing(row: dict | None) -> float | None:
+    if not row:
+        return None
+    for key in (
+        "expected_entry_price",
+        "entry_price",
+        "buy_price",
+        "signal_price",
+        "latest_price",
+        "current_price",
+        "current_price_yf",
+        "close",
+        "price_at_drop",
+    ):
+        try:
+            value = row.get(key)
+            if value is not None and float(value) > 0:
+                return float(value)
+        except Exception:
+            continue
+    return None
+
+
+def _decorate_position_sizing(row: dict, *sources: dict | None) -> dict:
+    merged: dict = {}
+    for source in sources:
+        if source:
+            merged.update({k: v for k, v in source.items() if v not in (None, "")})
+    merged.update({k: v for k, v in row.items() if v not in (None, "")})
+    sizing = calculate_virtual_position_size(_price_for_position_sizing(merged))
+    row.update(sizing)
+    return row
+
+
 @app.route("/web/")
 @app.route("/web/dashboard")
 @app.route("/lab/rebound")
@@ -2641,8 +2676,12 @@ def web_dashboard():
         ),
         reverse=True,
     )
+    for r in signal_rows:
+        _decorate_position_sizing(r)
     _with_rebound_diagnostics(signal_rows, market_adjustment, cfg)
     watching_rows = [r for r in rows if r.get("status") == "watching"]
+    for r in watching_rows:
+        _decorate_position_sizing(r)
     stats = get_watchlist_counts(rows, open_trade_codes)
     stats["holding"] = holding_count
 
@@ -2683,6 +2722,8 @@ def web_dashboard():
             or bool(t.get("is_h5_live_limited"))
             or bool(t.get("is_live_candidate"))
         ][:20]
+        for t in h5_open_trades:
+            _decorate_position_sizing(t)
     except Exception as e:
         logger.warning("h5 open trades fetch failed: %s", e)
 
@@ -2693,7 +2734,7 @@ def web_dashboard():
         _today_start_utc = datetime(_jst_today.year, _jst_today.month, _jst_today.day, tzinfo=JST).astimezone(timezone.utc).isoformat()
         h5_today_evals = (
             supabase.table("stock_drop_watchlist")
-            .select("code,name,h5_primary_match,h5_skip_reason,h5_overheat_score,signal_probability,drop_detected_at,is_live_candidate,selected_rank,live_allocation_bucket,allocation_rank,live_skip_reason")
+            .select("code,name,h5_primary_match,h5_skip_reason,h5_overheat_score,signal_probability,drop_detected_at,is_live_candidate,selected_rank,live_allocation_bucket,allocation_rank,live_skip_reason,signal_price,price_at_drop,current_price")
             .not_.is_("h5_case_key", "null")
             .gte("last_signal_at", _today_start_utc)
             .order("h5_primary_match", desc=True)
@@ -2703,6 +2744,8 @@ def web_dashboard():
             .data or []
         )
         attach_environment_to_rows(h5_today_evals, h5_environment)
+        for r in h5_today_evals:
+            _decorate_position_sizing(r)
     except Exception as e:
         logger.warning("h5 today evals fetch failed: %s", e)
 
@@ -3905,6 +3948,30 @@ def web_trade_assist():
         text = str(value)
         return text.split("T", 1)[0][:10]
 
+    def _same_trade_date(value, trade_date: str | None) -> bool:
+        left = None
+        if value:
+            text = str(value)
+            if "T" in text:
+                try:
+                    dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+                    if dt.tzinfo is None:
+                        dt = dt.replace(tzinfo=timezone.utc)
+                    left = dt.astimezone(JST).date().isoformat()
+                except Exception:
+                    left = _date_text(value)
+            else:
+                left = _date_text(value)
+        right = _date_text(trade_date)
+        return bool(left and right and left == right)
+
+    def _is_prior_open_trade(trade: dict | None) -> bool:
+        if not trade:
+            return False
+        if str((trade or {}).get("status") or "") != "open" or (trade or {}).get("sell_date"):
+            return False
+        return not _same_trade_date((trade or {}).get("buy_date") or (trade or {}).get("created_at"), latest_feature_date)
+
     def _days_between(start: str | None, end: str | None) -> int | None:
         try:
             if not start or not end:
@@ -3983,8 +4050,55 @@ def web_trade_assist():
             logger.warning("trade assist %s lookup failed: %s", table, e)
             return {}
 
+    latest_trade_entries = list(latest_trade_entries)
     trade_ids = [str(e.get("id")) for e in latest_trade_entries if e.get("id")]
     latest_trades = _fetch_by_ids("virtual_trades", trade_ids)
+
+    def _is_trade_assist_buy_candidate(trade: dict | None) -> bool:
+        if not trade:
+            return False
+        case_key = str((trade or {}).get("case_key") or "")
+        live_case_key = str((trade or {}).get("live_case_key") or "")
+        return (
+            bool((trade or {}).get("is_live_candidate"))
+            or bool((trade or {}).get("is_primary_h5"))
+            or bool((trade or {}).get("is_h5_live_limited"))
+            or case_key == H5_LIVE_LIMITED_CASE_KEY
+            or live_case_key == H5_LIVE_LIMITED_CASE_KEY
+            or live_case_key == "H5_short_pullback_drop5_m3"
+        )
+
+    try:
+        if latest_feature_date:
+            live_rows = (
+                supabase.table("virtual_trades")
+                .select("*")
+                .gte("buy_date", f"{latest_feature_date}T00:00:00+09:00")
+                .lt("buy_date", f"{latest_feature_date}T23:59:59+09:00")
+                .eq("is_live_candidate", True)
+                .order("selected_rank", desc=False)
+                .limit(50)
+                .execute()
+                .data or []
+            )
+            known_trade_ids = set(latest_trades)
+            for trade in live_rows:
+                trade_id = str(trade.get("id") or "")
+                if not trade_id:
+                    continue
+                latest_trades[trade_id] = trade
+                if trade_id not in known_trade_ids:
+                    latest_trade_entries.append({
+                        "id": trade_id,
+                        "code": trade.get("code"),
+                        "name": trade.get("name"),
+                        "entry_probability": trade.get("entry_probability"),
+                        "expected_value": trade.get("expected_value"),
+                        "signal_stage": trade.get("signal_stage"),
+                    })
+    except Exception as e:
+        logger.warning("trade assist live candidate lookup failed: %s", e)
+
     snapshot_ids = [str(t.get("feature_snapshot_id")) for t in latest_trades.values() if t.get("feature_snapshot_id")]
     watchlist_ids = [str(t.get("watchlist_id")) for t in latest_trades.values() if t.get("watchlist_id")]
     snapshots = _fetch_by_ids("stock_feature_snapshots", snapshot_ids)
@@ -4114,13 +4228,20 @@ def web_trade_assist():
             if sector_risk_score > 0:
                 reason_bits.append(f"セクターリスク {sector_risk_score:.0f}")
             drop_comment = " / ".join(reason_bits) if reason_bits else "急落理由コメントは未生成です。"
-        row["display_status"] = "強本命" if row.get("signal_stage") == "strong_confirmed" else "翌日購入候補"
+        is_open_virtual_trade = _is_prior_open_trade(trade)
+        row["is_existing_virtual_trade"] = bool(trade)
+        row["is_open_virtual_trade"] = is_open_virtual_trade
+        if is_open_virtual_trade:
+            row["display_status"] = "LIVE保有中"
+        else:
+            row["display_status"] = "強本命" if row.get("signal_stage") == "strong_confirmed" else "翌日購入候補"
         row["sector"] = row.get("sector") or profile_sector
         row["company_summary"] = business_summary
         row["company_profile_status"] = "registered" if business_summary else ("sector_only" if row.get("sector") else "missing")
         row["drop_reason_comment"] = drop_comment
         row["drop_reason_source"] = "AIキャッシュ" if code in drop_comments else "指標メモ"
         row["entry_price"] = entry_price if entry_price > 0 else None
+        _decorate_position_sizing(row, trade, {"expected_entry_price": row.get("expected_entry_price") or row.get("entry_price")})
         row["gu_3_price"] = entry_price * 1.03 if entry_price > 0 else None
         row["gu_5_price"] = entry_price * 1.05 if entry_price > 0 else None
         row["gd_3_price"] = entry_price * 0.97 if entry_price > 0 else None
@@ -4226,6 +4347,10 @@ def web_trade_assist():
     seen_codes = set()
     for entry in latest_trade_entries:
         trade = latest_trades.get(str(entry.get("id"))) or entry
+        if not _is_trade_assist_buy_candidate(trade):
+            continue
+        if _is_prior_open_trade(trade):
+            continue
         snapshot = snapshots.get(str(trade.get("feature_snapshot_id")))
         watchlist = watchlists.get(str(trade.get("watchlist_id")))
         base = _merge_card_sources(
@@ -4247,24 +4372,30 @@ def web_trade_assist():
         code = str(base.get("code") or "")
         if not code:
             continue
-        cards.append(_build_card(base, trade=trade, source_label="今日のAI判定"))
+        source_label = "LIVE保有中" if str(trade.get("status") or "") == "open" and not trade.get("sell_date") else "今日のAI判定"
+        cards.append(_build_card(base, trade=trade, source_label=source_label))
         seen_codes.add(code)
 
     for row in rows:
+        if not row.get("is_live_candidate"):
+            continue
         if row.get("status") != "rebound_signal" and not row.get("is_live_candidate"):
+            if not (row.get("status") == "entered" and _same_trade_date(row.get("drop_detected_at") or row.get("last_signal_at") or row.get("created_at"), latest_feature_date)):
+                continue
+        if row.get("status") == "entered" and not _same_trade_date(row.get("drop_detected_at") or row.get("last_signal_at") or row.get("created_at"), latest_feature_date):
             continue
         if row.get("signal_stage") not in {"confirmed", "strong_confirmed"}:
             continue
         if row.get("is_excluded"):
             continue
-        if row.get("virtual_trade_id") and not row.get("is_live_candidate"):
+        if row.get("virtual_trade_id") and not row.get("is_live_candidate") and row.get("status") != "entered":
             continue
         if str(row.get("code") or "") in seen_codes:
             continue
         if not _not_expired(row):
             continue
         if row.get("status") == "entered":
-            source_label = "LIVE保有中"
+            source_label = "今日のAI判定"
         elif row.get("status") == "signal_skipped":
             source_label = "LIVE見送り"
         else:
@@ -4273,6 +4404,16 @@ def web_trade_assist():
         seen_codes.add(str(row.get("code") or ""))
 
     decorate_h5_price_assist_cards(cards)
+    for card in cards:
+        _decorate_position_sizing(
+            card,
+            {
+                "expected_entry_price": card.get("expected_entry_price")
+                or card.get("signal_price")
+                or card.get("entry_price")
+                or card.get("current_price_yf")
+            },
+        )
     cards.sort(
         key=lambda r: (
             bool(r.get("h5_primary_match")),
@@ -5048,6 +5189,67 @@ def web_box_settings():
 
 @app.route("/web/virtual-trades")
 def web_virtual_trades():
+    strategy_options = [
+        ("all", "All"),
+        ("H5_PRIMARY", "H5 Primary"),
+        ("H5_SHORT_PULLBACK", "H5 Short Pullback"),
+        ("H5_MIX", "H5 Mix"),
+        ("TREND_SUPPORT", "Trend Support"),
+        ("PRICE_BAND", "Price Band"),
+    ]
+
+    def _strategy_group(row: dict) -> str:
+        group = str(row.get("strategy_group") or "").upper()
+        case = str(row.get("case_key") or "")
+        if group == "PRICE_BAND" or case.startswith("PB_"):
+            return "PRICE_BAND"
+        if group in {"TREND_SUPPORT", "TREND_FOLLOWING"} or case.startswith("tf_"):
+            return "TREND_SUPPORT"
+        if row.get("is_primary_h5") or case == H5_PRIMARY_CASE_KEY or case in H5_ACTIVE_CASE_KEYS:
+            return "H5_PRIMARY"
+        if case == "H5_short_pullback_drop5_m3":
+            return "H5_SHORT_PULLBACK"
+        if case.startswith("mix_") or case == "H5_current7_short3" or group in {"H5_MIX", "EXPERIMENTAL_MIX"}:
+            return "H5_MIX"
+        return group or "H5_PRIMARY"
+
+    def _strategy_label(row: dict) -> str:
+        label = row.get("strategy_label") or row.get("case_label")
+        if label:
+            return str(label)
+        group = _strategy_group(row)
+        return dict(strategy_options).get(group, group)
+
+    def _decorate_strategy(row: dict) -> dict:
+        row["strategy_group_display"] = _strategy_group(row)
+        row["strategy_label_display"] = _strategy_label(row)
+        sizing = calculate_virtual_position_size(row.get("buy_price"))
+        for key, value in sizing.items():
+            if row.get(key) in (None, "") or key in {"theoretical_shares", "theoretical_position_size"}:
+                row[key] = value
+        buy = float(row.get("buy_price") or 0)
+        shares = int(row.get("theoretical_shares") or 0)
+        current = row.get("current_price")
+        exit_price = row.get("sell_price") or row.get("exit_price") or row.get("virtual_exit_price")
+        try:
+            if buy > 0 and shares > 0 and current is not None:
+                cur = float(current)
+                row["unrealized_pnl"] = (cur - buy) * shares
+                row["unrealized_pnl_pct"] = (cur / buy - 1.0) * 100.0
+            if buy > 0 and shares > 0 and exit_price is not None:
+                ex = float(exit_price)
+                row["profit_loss"] = (ex - buy) * shares
+                row["profit_loss_pct"] = (ex / buy - 1.0) * 100.0
+        except Exception:
+            pass
+        buy_dt = row.get("buy_date")
+        try:
+            bd = datetime.fromisoformat(str(buy_dt).replace("Z", "+00:00")).date() if buy_dt else None
+            row["hold_days"] = (datetime.now(JST).date() - bd).days if bd else None
+        except Exception:
+            row["hold_days"] = None
+        return row
+
     def _exit_date_value(row: dict):
         return row.get("exit_date") or row.get("sell_date")
 
@@ -5090,9 +5292,18 @@ def web_virtual_trades():
         closed_trades = [t for t in closed_trades if _is_closed_virtual_trade(t)]
         closed_ids = {str(t.get("id")) for t in closed_trades if t.get("id")}
         open_trades = [t for t in open_trades if str(t.get("id")) not in closed_ids]
+        open_trades = [_decorate_strategy(t) for t in open_trades]
+        closed_trades = [_decorate_strategy(t) for t in closed_trades]
     except Exception as e:
         logger.error("virtual_trades error: %s", e)
         open_trades, closed_trades = [], []
+
+    selected_strategy_group = request.args.get("strategy_group", "all")
+    all_open_trades_for_summary = list(open_trades)
+    all_closed_trades_for_summary = list(closed_trades)
+    if selected_strategy_group != "all":
+        open_trades = [t for t in open_trades if t.get("strategy_group_display") == selected_strategy_group]
+        closed_trades = [t for t in closed_trades if t.get("strategy_group_display") == selected_strategy_group]
 
     open_cost_total = 0.0
     open_value_total = 0.0
@@ -5100,7 +5311,10 @@ def web_virtual_trades():
 
     for t in open_trades:
         buy = float(t.get("buy_price") or 0)
-        qty = int(t.get("quantity") or 100)
+        qty = int(t.get("theoretical_shares") or 0) or 100
+        t["display_quantity"] = qty
+        if not t.get("quantity"):
+            t["quantity"] = qty
         cost = buy * qty
         current = t.get("current_price")
         t["cost_amount"] = cost
@@ -5137,6 +5351,53 @@ def web_virtual_trades():
     _with_rebound_diagnostics(open_trades + performance_closed_trades, market_adjustment)
     total_pnl = sum(t.get("profit_loss") or 0 for t in performance_closed_trades)
     win_count = sum(1 for t in performance_closed_trades if (t.get("profit_loss") or 0) > 0)
+    strategy_summary = []
+    for group_key, group_label in strategy_options:
+        if group_key == "all":
+            continue
+        open_group = [t for t in all_open_trades_for_summary if t.get("strategy_group_display") == group_key]
+        closed_group = [
+            t for t in all_closed_trades_for_summary
+            if t.get("strategy_group_display") == group_key and (t.get("exit_reason") or "") not in cleanup_reasons
+        ]
+        wins = [t for t in closed_group if (t.get("profit_loss") or 0) > 0]
+        profits = [float(t.get("profit_loss") or 0) for t in closed_group if (t.get("profit_loss") or 0) > 0]
+        losses = [float(t.get("profit_loss") or 0) for t in closed_group if (t.get("profit_loss") or 0) < 0]
+        returns = [float(t.get("profit_loss_pct") or 0) for t in closed_group if t.get("profit_loss_pct") is not None]
+        position_sizes = [
+            float(t.get("theoretical_position_size") or 0)
+            for t in open_group + closed_group
+            if t.get("theoretical_position_size") is not None
+        ]
+        shares = [
+            float(t.get("theoretical_shares") or 0)
+            for t in open_group + closed_group
+            if t.get("theoretical_shares") is not None
+        ]
+        lot_counts = {}
+        for t in open_group + closed_group:
+            lot = t.get("lot_type") or "unknown"
+            lot_counts[lot] = lot_counts.get(lot, 0) + 1
+        eq = peak = max_dd = 0.0
+        for t in sorted(closed_group, key=lambda x: str(x.get("sell_date") or x.get("exit_date") or "")):
+            eq += float(t.get("profit_loss") or 0)
+            peak = max(peak, eq)
+            max_dd = min(max_dd, eq - peak)
+        strategy_summary.append({
+            "strategy_group": group_key,
+            "strategy_label": group_label,
+            "open_count": len(open_group),
+            "closed_count": len(closed_group),
+            "win_rate": (len(wins) / len(closed_group) * 100) if closed_group else None,
+            "PF": (sum(profits) / abs(sum(losses))) if losses else (None if not profits else float("inf")),
+            "avg_return": (sum(returns) / len(returns)) if returns else None,
+            "unrealized_pnl": sum(float(t.get("unrealized_pnl") or 0) for t in open_group),
+            "realized_pnl": sum(float(t.get("profit_loss") or 0) for t in closed_group),
+            "max_dd": abs(max_dd),
+            "avg_position_size": (sum(position_sizes) / len(position_sizes)) if position_sizes else None,
+            "avg_shares": (sum(shares) / len(shares)) if shares else None,
+            "lot_type_counts": ", ".join(f"{k}:{v}" for k, v in sorted(lot_counts.items())),
+        })
     open_unrealized_pct_total = (
         open_unrealized_pnl_total / open_cost_total * 100
         if open_cost_total > 0 else None
@@ -5155,6 +5416,9 @@ def web_virtual_trades():
         open_unrealized_pnl_total=open_unrealized_pnl_total,
         open_unrealized_pct_total=open_unrealized_pct_total,
         market_adjustment=market_adjustment,
+        strategy_options=strategy_options,
+        selected_strategy_group=selected_strategy_group,
+        strategy_summary=strategy_summary,
     )
 
 

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import csv
 import math
+import time
 from collections import defaultdict
 from datetime import date, datetime
 from pathlib import Path
@@ -17,6 +18,7 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 DAILY_MARKET_PATH = ROOT / "outputs/market_data/daily_market_indices.csv"
+_REMOTE_CACHE: dict[str, Any] = {"fetched_at": 0.0, "rows": []}
 
 H5_ENV_VERSION = "h5_env_meter_v1"
 
@@ -30,12 +32,67 @@ INDEX_NAMES = {
     "us10y_yield": "US 10Y",
 }
 
+YF_TICKERS = {
+    "^VIX": "VIX",
+    "^N225": "nikkei225",
+    "1306.T": "topix_etf_proxy",
+    "^IXIC": "nasdaq",
+    "^SOX": "sox",
+    "USDJPY=X": "usdjpy",
+    "^TNX": "us10y_yield",
+}
+
 
 def _read_csv(path: Path) -> list[dict[str, Any]]:
     if not path.exists() or path.stat().st_size == 0:
         return []
     with path.open("r", encoding="utf-8-sig", newline="") as f:
         return list(csv.DictReader(f))
+
+
+def _fetch_remote_market_rows(max_age_seconds: int = 1800) -> list[dict[str, Any]]:
+    now = time.time()
+    cached = _REMOTE_CACHE.get("rows") or []
+    if cached and now - float(_REMOTE_CACHE.get("fetched_at") or 0) < max_age_seconds:
+        return list(cached)
+    try:
+        import yfinance as yf
+    except Exception:
+        return []
+
+    rows: list[dict[str, Any]] = []
+    for ticker, name in YF_TICKERS.items():
+        try:
+            df = yf.download(ticker, period="1mo", progress=False, auto_adjust=False, threads=False)
+        except Exception:
+            continue
+        if df is None or df.empty:
+            continue
+        if hasattr(df.columns, "nlevels") and df.columns.nlevels > 1:
+            df.columns = [str(c[0]) for c in df.columns]
+        prev_close: float | None = None
+        for idx, rec in df.iterrows():
+            close = _num(rec.get("Close"))
+            if close is None:
+                continue
+            ret = (close / prev_close - 1.0) * 100.0 if prev_close else None
+            prev_close = close
+            rows.append({
+                "date": _date_text(idx),
+                "ticker": ticker,
+                "name": name,
+                "open": _num(rec.get("Open")),
+                "high": _num(rec.get("High")),
+                "low": _num(rec.get("Low")),
+                "close": close,
+                "adj_close": _num(rec.get("Adj Close")),
+                "volume": _num(rec.get("Volume")),
+                "return_pct": ret,
+            })
+    if rows:
+        _REMOTE_CACHE["fetched_at"] = now
+        _REMOTE_CACHE["rows"] = rows
+    return rows
 
 
 def _date_text(value: Any) -> str:
@@ -178,6 +235,10 @@ def build_h5_environment_snapshot(
     """Return a display-only current environment snapshot."""
     path = daily_path or DAILY_MARKET_PATH
     rows = _read_csv(path)
+    source = "csv"
+    if not rows and daily_path is None:
+        rows = _fetch_remote_market_rows()
+        source = "yfinance_fallback" if rows else "unavailable"
     if not rows:
         return {
             "available": False,
@@ -186,6 +247,7 @@ def build_h5_environment_snapshot(
             "tags": ["market data missing"],
             "reason": f"{path} not found or empty",
             "version": H5_ENV_VERSION,
+            "source": source,
         }
     dates = [_parse_date(r.get("date")) for r in rows]
     dates = [d for d in dates if d]
@@ -302,6 +364,7 @@ def build_h5_environment_snapshot(
         "nasdaq_return_pct": nasdaq.get("return_pct"),
         "reason": " / ".join(reasons) if reasons else "display-only market environment meter",
         "version": H5_ENV_VERSION,
+        "source": source,
     }
 
 

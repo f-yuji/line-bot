@@ -61,6 +61,7 @@ from services.reentry_cooldown import (
 )
 from services.signal_stage import SIGNAL_STAGES, evaluate_signal_stage
 from services.signal_history import record_rebound_signal
+from services.trade_assist_history import save_trade_assist_candidate_history
 from services.trading_calendar import latest_feature_matches_today, should_skip_today_cron
 
 load_dotenv()
@@ -1584,6 +1585,22 @@ def run(args: argparse.Namespace) -> None:
             save_result.get("errors", 0),
         )
     _create_ranked_virtual_trades(sb, entry_candidates, cfg, market_adjustment, long_term_market, dry_run=args.dry_run)
+    if not args.dry_run and not args.code:
+        try:
+            stop_loss_pct = float(cfg.get("virtual_exit_stop_loss_pct") or 4.0)
+            history_result = save_trade_assist_candidate_history(
+                sb,
+                trade_date=str(target_date),
+                stop_loss_pct=stop_loss_pct,
+                dry_run=False,
+            )
+            logger.info(
+                "trade_assist_candidate_history synced: trade_date=%s rows=%s",
+                history_result.get("trade_date"),
+                history_result.get("rows"),
+            )
+        except Exception as e:
+            logger.warning("trade_assist_candidate_history sync failed: %s", e)
     if args.notify and not args.dry_run:
         _notify_batch(sb, notify_items, target_date, mode)
     logger.info("complete: predictions=%d signals=%d dry_run=%s", len(snapshots), signal_count, args.dry_run)

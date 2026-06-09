@@ -548,21 +548,21 @@
   </div>
 
   {% set h5env = h5_environment or {} %}
-  <div class="ta-note" style="border-color:{% if h5env.status == 'H5 favorable' %}rgba(94,230,168,.42){% elif h5env.status in ['H5 warning','darasage risk'] %}rgba(255,122,133,.42){% else %}var(--ta-border){% endif %}">
+  <div class="ta-note" style="border-color:{% if h5env.get('status') == 'H5 favorable' %}rgba(94,230,168,.42){% elif h5env.get('status') in ['H5 warning','darasage risk'] %}rgba(255,122,133,.42){% else %}var(--ta-border){% endif %}">
     <div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start;flex-wrap:wrap">
       <div>
         <span class="ta-h5-tag">H5 ENVIRONMENT</span>
-        <div><strong>score {{ h5env.score if h5env.score is not none else '-' }} / {{ h5env.status or '-' }}</strong></div>
+        <div><strong>score {{ h5env.get('score') if h5env.get('score') is not none else '-' }} / {{ h5env.get('status') or '-' }}</strong></div>
         <div class="muted">表示専用です。購入候補の抽出・LIVE選別・LINE通知条件には使っていません。</div>
       </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end">
-        <span class="ta-h5-tag">VIX {{ "%.1f"|format(h5env.vix) if h5env.vix is not none else '-' }}</span>
-        <span class="ta-h5-tag">crash {{ h5env.crash_rebound_score if h5env.crash_rebound_score is not none else '-' }}</span>
-        <span class="ta-h5-tag">darasage {{ h5env.darasage_score if h5env.darasage_score is not none else '-' }}</span>
+        <span class="ta-h5-tag">VIX {{ "%.1f"|format(h5env.get('vix')) if h5env.get('vix') is not none else '-' }}</span>
+        <span class="ta-h5-tag">crash {{ h5env.get('crash_rebound_score') if h5env.get('crash_rebound_score') is not none else '-' }}</span>
+        <span class="ta-h5-tag">darasage {{ h5env.get('darasage_score') if h5env.get('darasage_score') is not none else '-' }}</span>
       </div>
     </div>
-    {% if h5env.tags %}
-      <div class="muted" style="margin-top:6px">{{ h5env.tags|join(' / ') }}</div>
+    {% if h5env.get('tags') %}
+      <div class="muted" style="margin-top:6px">{{ h5env.get('tags')|join(' / ') }}</div>
     {% endif %}
   </div>
 
@@ -603,10 +603,11 @@
 
   {% if h5_primary %}
   {% set h5_primary_rows = rows | selectattr('h5_primary_match') | list %}
+  {% set h5_new_candidate_rows = rows | selectattr('h5_primary_match') | rejectattr('is_open_virtual_trade') | list %}
   <div class="ta-h5-note">
-    <strong>H5 購入検討候補: {{ h5_primary_rows|length }}件 / 手動確認 / Primary未昇格</strong>
+    <strong>H5 新規購入検討候補: {{ h5_new_candidate_rows|length }}件 / 手動確認 / Primary未昇格</strong>
     <div>AI 65%以上 / 20日高値比 -8%以上 / panic_selloff除外 / 過熱 cool・mild / 信用倍率3〜30倍 / 3営業日目終値撤退 / -12%事故停止（ピーク反落なし）</div>
-    {% if not h5_primary_rows %}
+    {% if not h5_new_candidate_rows %}
     <div>本日のH5条件に一致する候補はありません。</div>
     {% endif %}
     <div class="muted">{{ h5_primary.entry_execution_note }} 翌日終値でのentryは非推奨です。yfinance現在値は遅延・欠損のあり得る参考値なので、発注判断は証券口座の現在値・板で確認してください。</div>
@@ -636,9 +637,16 @@
 
         {% if r.h5_primary_match %}
         <div class="ta-h5-note" style="margin:0">
+          {% if r.is_open_virtual_trade %}
+          <strong>LIVE保有中 / 追加入り対象外 / 仮想売買中</strong>
+          {% else %}
           <strong>購入検討候補 / 手動確認 / 保存済AIスコア基準</strong>
+          {% endif %}
           <div>20日高値比 {{ pct(r.drop_from_20d_high_pct) }} / 過熱 {{ r.h5_overheat_score }} / 出口 3営業日終値・事故停止-12%（ピーク反落なし）</div>
           <div class="muted">ENV {{ r.current_environment_score if r.current_environment_score is not none else '-' }} / {{ r.environment_status or '-' }}{% if r.environment_tags %} / {{ r.environment_tags }}{% endif %}</div>
+          {% if r.is_open_virtual_trade %}
+          <div class="muted">この銘柄は既に仮想保有中です。同一銘柄の追加購入候補ではありません。</div>
+          {% endif %}
           <div class="muted">翌日寄りが前日終値比 +2% を超える場合は飛びつき警戒。実購入はlatest_h5_full_candidates.csvで確認。</div>
         </div>
         {% elif r.h5_skip_reason %}
@@ -647,13 +655,36 @@
 
         <div class="ta-hero">
           <div class="ta-hero-block">
-            <span>{% if r.h5_primary_match %}シグナル価格 / 仮想entry{% else %}購入想定価格{% endif %}</span>
+            <span>{% if r.is_open_virtual_trade %}仮想entry価格{% elif r.h5_primary_match %}シグナル価格 / 仮想entry{% else %}購入想定価格{% endif %}</span>
             <b>{{ yen(r.signal_price if r.h5_primary_match else r.entry_price) }}</b>
           </div>
           <div class="ta-hero-block is-right">
             <span>{{ r.ai_score_label or 'AIスコア' }}</span>
             <b class="ta-ai {{ ai_cls }}">{{ ai_score }}<i>%</i></b>
           </div>
+        </div>
+
+        <div class="ta-entry-check">
+          <div class="ta-section-label" style="margin:0">想定ロット（表示のみ）</div>
+          <div class="ta-entry-check-grid">
+            <div>
+              <span>想定株数</span>
+              <b>{% if r.theoretical_shares is not none %}{{ r.theoretical_shares }}株{% else %}-{% endif %}</b>
+            </div>
+            <div>
+              <span>想定建玉金額</span>
+              <b>{{ yen(r.theoretical_position_size) }}</b>
+            </div>
+            <div>
+              <span>lot type</span>
+              <b>{% if r.lot_type == 's_share' %}S株{% elif r.lot_type == 'multi_unit' %}複数単元{% elif r.lot_type == 'one_unit' %}単元{% else %}-{% endif %}</b>
+            </div>
+            <div>
+              <span>rule</span>
+              <b>{{ r.sizing_note or r.position_sizing_rule or '-' }}</b>
+            </div>
+          </div>
+          <div class="ta-entry-source">target 300,000円。候補採用・除外条件には使っていません。</div>
         </div>
 
         {% if r.h5_primary_match %}
@@ -707,8 +738,8 @@
             <div class="ta-entry-check-grid">
               <label><span>実弾entry価格</span><input name="actual_entry_price" type="number" step="0.01" placeholder="例 1235"></label>
               <label><span>entry日時</span><input name="actual_entry_date" type="datetime-local"></label>
-              <label><span>株数</span><input name="quantity" type="number" step="1" placeholder="100"></label>
-              <label><span>ロット金額</span><input name="lot_amount" type="number" step="1" placeholder="100000"></label>
+              <label><span>株数</span><input name="quantity" type="number" step="1" placeholder="{{ r.theoretical_shares or 100 }}"></label>
+              <label><span>ロット金額</span><input name="lot_amount" type="number" step="1" placeholder="{{ r.theoretical_position_size or 300000 }}"></label>
               <label><span>注文種別</span><input name="actual_order_type" placeholder="指値 / 成行"></label>
               <label><span>約定状態</span><input name="actual_fill_status" placeholder="filled / skipped"></label>
               <label><span>実弾exit価格</span><input name="actual_exit_price" type="number" step="0.01"></label>
@@ -1026,6 +1057,7 @@
               </div>
               <div class="ta-stats">
                 <span>価格 <b>{{ yen(r.entry_price) }}</b></span>
+                <span>想定ロット <b>{% if r.theoretical_shares is not none %}{{ r.theoretical_shares }}株 / {{ yen(r.theoretical_position_size) }}{% else %}-{% endif %}</b></span>
                 <span>AI <b>{{ num(r.ai_score, 0, '%') }}</b></span>
                 <span>期待値 <b>{{ pct(r.expected_value) }}</b></span>
                 <span>急落 <b>{{ pct(r.drop_pct) }}</b></span>
